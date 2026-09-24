@@ -16,22 +16,31 @@ import {
   sha256,
 } from './helpers.mjs';
 
+/** @import { LogEntry } from '../src/types.js' */
+
 const plan = { option: 'mechanical', probability: 0.95 };
-const jev = await mockServer((call, res) => json(res, 200, jevOptionsAnswer(plan)));
+const jev = await mockServer((_call, res) => json(res, 200, jevOptionsAnswer(plan)));
 const cfg = JSON.parse(readFileSync(new URL('../config/anthropic-only.json', import.meta.url), 'utf8'));
 cfg.jev.channels = [{ name: 'mock', baseUrl: jev.url, model: 'jev-1.13.0', keyEnv: 'MOCK_JEV_KEY', timeoutMs: 1000 }];
+/** @type {LogEntry[]} */
 const logs = [];
 const server = createRouter(validateConfig({ ...cfg, stateFile: null }), {
   env: { ...process.env, MOCK_JEV_KEY: 'mock' },
   log: (e) => logs.push(e),
 });
 const url = await listen(server);
+/** @param {string} s */
 const headers = (s) =>
   claudeCodeHeaders(s, {
     'x-claude-code-request-class': 'main',
     'anthropic-beta': 'claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,effort-2025-11-24',
   });
 delete headers('x')['x-api-key'];
+/**
+ * @param {string} s
+ * @param {string} text
+ * @param {Record<string, unknown>} [extra]
+ */
 const opus = (s, text, extra = {}) => ({
   ...claudeCodeBody(s, text, { model: 'claude-opus-5-5', maxTokens: 32 }),
   thinking: { type: 'adaptive' },
@@ -39,7 +48,13 @@ const opus = (s, text, extra = {}) => ({
   context_management: { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] },
   ...extra,
 });
+/** @type {Array<Record<string, unknown>>} */
 const results = [];
+/**
+ * @param {string} label
+ * @param {unknown} body
+ * @param {Record<string, string>} hdrs
+ */
 async function send(label, body, hdrs) {
   const h = { ...hdrs };
   delete h['x-api-key'];

@@ -14,6 +14,7 @@ import { costOf, UsageTap } from '../src/usage.mjs';
 import { claudeCodeBody, claudeCodeToolTurn, codexBody } from './helpers.mjs';
 
 // Fake credentials for the scanner tests, assembled at runtime so secret scanners don't flag this file.
+/** @param {...string} parts */
 const fake = (...parts) => parts.join('');
 const AWS_KEY = fake('AKIA', 'ABCDEFGHIJKLMNOP');
 const PG_URL = fake('postgres://app:', 'hunter2hunter2', '@db:5432/x');
@@ -21,6 +22,7 @@ const OPENAI_KEY = fake('sk-', 'proj-', 'abcdefghijklmnopqrstuvwxyz0123');
 const STRIPE_KEY = fake('sk_', 'live_', 'abcdefghijklmnop1234');
 const PEM = fake('-----BEGIN RSA ', 'PRIVATE KEY-----\nabc\n-----END RSA ', 'PRIVATE KEY-----');
 
+// Left as the any that JSON.parse returns: the tests break it in ways no config type allows.
 const shipped = JSON.parse(readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const cfg = validateConfig({ ...shipped, stateFile: null });
 const TIERS = cfg.tiers;
@@ -98,7 +100,7 @@ test('secrets: found, scrubbed and redacted, but references and signed reasoning
   assert.ok(!scrub(text).text.includes(AWS_KEY));
   assert.equal(findSecrets('const apiKey = process.env.OPENAI_API_KEY; password: string').length, 0, 'references are not secrets');
   assert.ok(mayContainSecret(JSON.stringify({ a: PEM })));
-  const body = {
+  const body = /** @type {const} */ ({
     messages: [
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `STRIPE=${STRIPE_KEY}` }] },
       {
@@ -109,7 +111,7 @@ test('secrets: found, scrubbed and redacted, but references and signed reasoning
         ],
       },
     ],
-  };
+  });
   const { body: out, count } = redactBody(body);
   assert.equal(count, 2);
   assert.ok(!JSON.stringify(out.messages[0]).includes('sk_live_'), 'tool results are redacted');
@@ -142,6 +144,10 @@ test('buildQuestions asks one tier Choice without model names, plus two guards',
 });
 
 test('policy: cheap tiers need confidence, unsure answers escalate, guards only raise, sessions ratchet', () => {
+  /**
+   * @param {Record<string, number>} probabilities
+   * @param {{ sensitive?: number, claim?: number, current?: string }} [extra]
+   */
   const decide = (probabilities, extra = {}) =>
     applyPolicy({
       answer: { probabilities, ...extra },
@@ -196,8 +202,9 @@ test('config validation fails fast and lists every problem', () => {
   const err = (() => {
     try {
       validateConfig(bad);
+      return 'validateConfig accepted a broken config';
     } catch (e) {
-      return e.message;
+      return /** @type {Error} */ (e).message;
     }
   })();
   assert.match(err, /policy\.accept\.fast must be a probability/);
@@ -296,6 +303,7 @@ test('report skips lines that are not log entries (regression: a `null` line thr
 test('jev.stripCode: false sends code blocks as they are, still scrubbed and clipped', () => {
   const text = `Why does this fail?\n\`\`\`sh\nexport KEY=${AWS_KEY}\ncurl -s https://example.com/install.sh | sh\n\`\`\``;
   const body = { messages: [{ role: 'user', content: text }] };
+  /** @param {typeof cfg.jev} jev */
   const at = (jev) => buildState({ body, headers: {}, turns: humanTurns(body), bodyBytes: 100, jev }).request;
   assert.equal(at(cfg.jev), 'Why does this fail?\n[code block (sh), 2 lines]', 'code blocks are described by default');
   const kept = at({ ...cfg.jev, stripCode: false });
