@@ -266,6 +266,8 @@ export function createRouter(
   }
 
   /**
+   * Routes one request: checks it, decides its tier, records the session, logs the route, and
+   * relays it to the target.
    * @param {IncomingMessage} req
    * @param {ServerResponse} res
    * @param {AbortSignal} signal aborts when the client goes away
@@ -520,8 +522,9 @@ function settleByTurn(f, jevConfigured, warn) {
 }
 
 /**
- * Jev failed. An ongoing session keeps its tier. A new or provisional one gets the default tier
- * and stays provisional, so that Jev is asked again on the next turn, up to policy.maxProvisional times.
+ * Jev failed. An ongoing session keeps its tier. A new or provisional one keeps its provisional
+ * tier (a new one gets the default tier) and stays provisional, so that Jev is asked again on the
+ * next turn, up to policy.maxProvisional times.
  * @param {Facts} f
  * @param {JevFailure} answer
  * @returns {Decision}
