@@ -150,8 +150,8 @@ category and the fast tier to Haiku 4.5 streams across the flow while the rest o
 - **Totals.** Spend against the baseline model, Jev's latency and its fallbacks.
 - **Any request, on a click.** Click a request in the timeline, or focus it and press Enter, and the decision panel
   and the flow switch to it: its route streams across the graph in its tier's color. A tool step, subagent or
-  compaction shows the prompt whose decision it runs on; a background call shows that it always takes `side`. Escape, or **Back to live**, follows the traffic
-  again; while following, the flow streams the newest request's route.
+  compaction shows the prompt whose decision it runs on; a background call shows that it always takes `side`.
+  Escape, or **Back to live**, follows the traffic again; while following, the flow streams the newest request's route.
 
 ```bash
 jev-router serve --ui 4100    # the router, plus its live view on http://127.0.0.1:4100
