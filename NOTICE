@@ -1,0 +1,15 @@
+jev-router
+Copyright 2026 Engin Diri
+
+This product includes software developed by Engin Diri
+(https://github.com/dirien/jev-router), licensed under the Apache License,
+Version 2.0.
+
+examples/codex/jev-models.json contains the Codex CLI system prompt from
+OpenAI Codex (https://github.com/openai/codex), file
+codex-rs/models-manager/prompt.md at tag rust-v0.156.1, licensed under the
+Apache License, Version 2.0. The prompt is copied unchanged into the
+"base_instructions" field of the catalog entry.
+
+OpenAI Codex
+Copyright 2025 OpenAI
