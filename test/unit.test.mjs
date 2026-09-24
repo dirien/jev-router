@@ -727,3 +727,11 @@ test('report counts unpriced responses and uses the cost as baseline when there 
   assert.deepEqual(r.models['mystery-model'], { requests: 1, cost_usd: 0, input: 5, cache_read: 0, output: 1 });
   assert.deepEqual(r.jev, { calls: 0, fallbacks: 0, fallback_rate: 0, p50_ms: null, p95_ms: null, cost_usd: 0 });
 });
+
+test('config validation reports malformed Jev channels instead of crashing', () => {
+  for (const channels of ['typesafe', { name: 'typesafe' }, [null], [42]]) {
+    const cfg = structuredClone(shipped);
+    cfg.jev.channels = channels;
+    assert.throws(() => validateConfig(cfg), /jev\.channels( must be an array|\[0\] must be an object)/, JSON.stringify(channels));
+  }
+});

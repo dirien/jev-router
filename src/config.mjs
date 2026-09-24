@@ -131,7 +131,11 @@ function checkPolicy(input, tiers, need) {
 function checkJev(input, tiers, need) {
   const jev = { deadlineMs: 2500, requestChars: 4000, stripCode: true, guards: true, channels: [], ...input };
   need(Array.isArray(jev.channels), 'jev.channels must be an array');
-  for (const [i, ch] of (jev.channels ?? []).entries()) {
+  for (const [i, ch] of (Array.isArray(jev.channels) ? jev.channels : []).entries()) {
+    if (!ch || typeof ch !== 'object') {
+      need(false, `jev.channels[${i}] must be an object`);
+      continue;
+    }
     ch.timeoutMs ??= 1200;
     need(typeof ch.name === 'string' && ch.name, `jev.channels[${i}].name is required`);
     need(isUrl(ch.baseUrl), `jev.channels[${i}].baseUrl must be an http(s) URL`);
