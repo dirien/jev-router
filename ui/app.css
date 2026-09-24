@@ -236,10 +236,6 @@ h1 {
   --c: var(--warn);
 }
 
-.pill[data-state="demo"] {
-  --c: var(--frontier);
-}
-
 .pill:not([data-state="connecting"]) {
   color: var(--c);
   border-color: color-mix(in srgb, var(--c) 42%, transparent);
@@ -247,7 +243,6 @@ h1 {
 }
 
 .pill[data-state="live"] .pill-dot::after,
-.pill[data-state="demo"] .pill-dot::after,
 .pill[data-state="connecting"] .pill-dot::after {
   animation: beacon 1.8s ease-out infinite;
 }
@@ -1566,7 +1561,6 @@ h2 {
   }
 
   .pill[data-state="live"] .pill-dot::after,
-  .pill[data-state="demo"] .pill-dot::after,
   .pill[data-state="connecting"] .pill-dot::after,
   .beacon::after,
   .scan,

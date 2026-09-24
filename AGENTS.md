@@ -18,7 +18,7 @@ No build step and no bundler: TypeScript only type-checks the JSDoc.
 | --- | --- |
 | Entry point | `bin/jev-router.mjs` calls `main(argv)` in `src/cli.mjs` |
 | Server | `createRouter`, `describeConfig`, `report` and `VERSION` in `src/router.mjs` |
-| Live view | `jev-router ui`: `LogTail` and `createUiServer` in `src/ui.mjs` follow a router log and serve `ui/` (`index.html`, `app.css`, `app.js`, `demo.js`) with server-sent events on `127.0.0.1:4100`. `ui/tsconfig.json` type-checks the browser code |
+| Live view | `jev-router ui`: `LogTail` and `createUiServer` in `src/ui.mjs` follow a router log and serve `ui/` (`index.html`, `app.css`, `app.js`) with server-sent events on `127.0.0.1:4100`. `ui/tsconfig.json` type-checks the browser code |
 | Modules | `src/config.mjs` defaults and validation; `src/jev.mjs` state, questions, channels, policy; `src/messages.mjs` human turns, wrapper tags, tier tags; `src/secrets.mjs` scanner and redaction; `src/sessions.mjs` persistent store; `src/usage.mjs` usage tap and prices; `src/ui.mjs` live view server |
 | Configs | `config/default.json`, `config/anthropic-only.json`. Lookup: `--config`, `JEV_ROUTER_CONFIG`, `$XDG_CONFIG_HOME/jev-router/config.json`, then `config/default.json` |
 | Endpoints | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `GET /healthz`; `127.0.0.1:4000` by default |

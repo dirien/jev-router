@@ -134,8 +134,8 @@ To set the profile up by hand, see [Codex profile by hand](docs/activation.md#co
 
 `jev-router ui` shows every decision as it happens, in a browser next to the terminal where Claude Code runs:
 
-![The live view: Jev's category and probabilities for the latest message, the routing flow from Claude Code through
-Jev's categories and the tiers to the models, and the session's requests](docs/live-view.png)
+![The live view with a Claude-only config: a quick question went to Haiku 4.5, then a harder message moved the
+session up to Opus 5.5, whose tool steps, subagent and background calls follow without asking Jev](docs/live-view.png)
 
 - **Latest decision.** Jev's category for the message you just sent, its probabilities against each tier's
   threshold, the guards, and the tier and model the router picked, with the reason in plain words.
@@ -152,8 +152,7 @@ open http://127.0.0.1:4100
 
 It only reads the router's log, so it runs wherever that file is readable, for example on your Mac while the router
 runs in a Docker Sandbox whose workspace folder the Mac shares. Without an argument it follows `logFile` from the
-config, else the log that `launch` writes. `--port` picks another port, and `http://127.0.0.1:4100/?demo` plays a
-scripted session without a router.
+config, else the log that `launch` writes. `--port` picks another port.
 
 ## How routing works
 

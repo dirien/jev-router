@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `http://127.0.0.1:4100`. It shows Jev's category and probabilities for each human message, the tier and model the
   router picked and why, every request's path from the client through Jev to the model, a timeline with tokens and
   cost, each session's tier history, and spend against the baseline. It follows the log by polling, so it also works
-  across a Docker Sandbox's shared workspace folder, and `?demo` plays a scripted session.
+  across a Docker Sandbox's shared workspace folder.
 - Log lines for the view: `req` pairs each `route` line with its `done` line, `deciding` marks a Jev call before its
   answer, and `config` lists the tiers, Jev's options and each target's model and host (never keys) at startup and
   after every reload.

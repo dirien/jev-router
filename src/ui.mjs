@@ -19,7 +19,6 @@ const ASSETS = {
   '/index.html': 'index.html',
   '/app.css': 'app.css',
   '/app.js': 'app.js',
-  '/demo.js': 'demo.js',
   '/favicon.svg': 'favicon.svg',
 };
 /** @type {Record<string, string>} */

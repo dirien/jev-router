@@ -1,6 +1,6 @@
-// jev-router live view. Streams the router's JSON log from /events (or a scripted demo with
-// `?demo`) and shows each Jev decision and how every request was routed. The DOM is built with
-// createElement and textContent only: event data never reaches innerHTML.
+// jev-router live view. Streams the router's JSON log from /events and shows each Jev decision
+// and how every request was routed. The DOM is built with createElement and textContent only:
+// event data never reaches innerHTML.
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MAX_ROUTES = 2000;
@@ -896,7 +896,7 @@ function explain(rec) {
 // Header
 
 /** @type {Record<string, string>} */
-const CONNECTION_LABELS = { connecting: 'connecting', live: 'live', reconnecting: 'reconnecting', closed: 'disconnected', demo: 'demo' };
+const CONNECTION_LABELS = { connecting: 'connecting', live: 'live', reconnecting: 'reconnecting', closed: 'disconnected' };
 
 function renderHeader() {
   dom.conn.dataset.state = connection;
@@ -2149,15 +2149,6 @@ function connect() {
   });
 }
 
-async function startDemoMode() {
-  setConnection('demo');
-  const { startDemo } = await import('./demo.js');
-  startDemo((raw) => {
-    const ev = normalize(raw);
-    if (ev) apply(ev, true);
-  });
-}
-
 function tick() {
   prunePending();
   const latest = state.latest;
@@ -2175,11 +2166,7 @@ function init() {
   resize.observe(dom.flowWrap);
   setInterval(tick, 1000);
   schedule('layout', 'header', 'hero', 'feed', 'sessions', 'totals');
-  if (new URLSearchParams(window.location.search).has('demo')) {
-    startDemoMode().catch((err) => toast(`The demo failed to start: ${err instanceof Error ? err.message : String(err)}`, 'error'));
-  } else {
-    connect();
-  }
+  connect();
 }
 
 init();
