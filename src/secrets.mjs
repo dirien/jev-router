@@ -18,7 +18,10 @@ const PATTERNS = [
   ['jwt', /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g],
   ['url-credentials', /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@"'<>]+:[^\s/@"'<>]+@/gi],
   // key = value assignments, but not references such as process.env.X, $VAR, ${VAR} or <placeholder>.
-  ['assignment', /\b(?:password|passwd|pwd|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["']?(?!process\.env|os\.environ|os\.getenv|env\.|\$|<|\{\{|\*{3})[^\s"',;)]{8,}/gi],
+  [
+    'assignment',
+    /\b(?:password|passwd|pwd|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["']?(?!process\.env|os\.environ|os\.getenv|env\.|\$|<|\{\{|\*{3})[^\s"',;)]{8,}/gi,
+  ],
 ];
 const ANY = new RegExp(PATTERNS.map(([, re]) => re.source).join('|'), 'i');
 
@@ -34,14 +37,29 @@ export function findSecrets(text) {
 export function scrub(text) {
   let count = 0;
   let out = text;
-  for (const [kind, re] of PATTERNS) out = out.replace(re, () => { count += 1; return `[REDACTED ${kind}]`; });
+  for (const [kind, re] of PATTERNS)
+    out = out.replace(re, () => {
+      count += 1;
+      return `[REDACTED ${kind}]`;
+    });
   return { text: out, count };
 }
 
 // Signed reasoning must not change (the signature would no longer verify), and ids, images and
 // encrypted payloads carry no prose.
 const KEEP_TYPES = new Set(['thinking', 'redacted_thinking', 'reasoning']);
-const KEEP_KEYS = new Set(['id', 'tool_use_id', 'call_id', 'signature', 'encrypted_content', 'data', 'model', 'type', 'role', 'media_type']);
+const KEEP_KEYS = new Set([
+  'id',
+  'tool_use_id',
+  'call_id',
+  'signature',
+  'encrypted_content',
+  'data',
+  'model',
+  'type',
+  'role',
+  'media_type',
+]);
 
 // Replaces secrets anywhere in a request body: prompts, tool results, assistant text, system prompt.
 export function redactBody(body) {

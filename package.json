@@ -36,15 +36,16 @@
   ],
   "scripts": {
     "start": "node bin/jev-router.mjs serve",
-    "lint": "biome check .",
+    "lint": "biome check --error-on-warnings .",
     "format": "biome check --write .",
     "typecheck": "tsc -p tsconfig.json",
     "lint:md": "markdownlint-cli2",
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=85 --test-coverage-include='src/**' test/*.test.mjs",
-    "check": "npm run lint && npm run typecheck && npm run lint:md && npm test",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm run lint && npm run typecheck && npm run lint:md && npm run test:coverage",
     "test:live": "node test/live.mjs",
     "eval": "node eval/run.mjs",
-    "eval:mock": "node eval/run.mjs --mock"
+    "eval:mock": "node eval/run.mjs --mock",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=85 --test-coverage-include='src/**' test/*.test.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

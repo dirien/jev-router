@@ -1,14 +1,15 @@
 // Unit tests for the pure parts: message analysis, secret handling, the tier policy, config
 // validation, usage accounting and the report.
-import { test } from 'node:test';
+
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { clip, describeCode, humanTurns, recentTools, stripWrappers, tierTag } from '../src/messages.mjs';
-import { findSecrets, mayContainSecret, redactBody, scrub } from '../src/secrets.mjs';
-import { applyPolicy, buildQuestions, buildState, hardenState, tierProbabilities } from '../src/jev.mjs';
+import { test } from 'node:test';
 import { validateConfig } from '../src/config.mjs';
-import { UsageTap, costOf } from '../src/usage.mjs';
+import { applyPolicy, buildQuestions, buildState, hardenState, tierProbabilities } from '../src/jev.mjs';
+import { clip, describeCode, humanTurns, recentTools, stripWrappers, tierTag } from '../src/messages.mjs';
 import { report, requestKind, sessionKey } from '../src/router.mjs';
+import { findSecrets, mayContainSecret, redactBody, scrub } from '../src/secrets.mjs';
+import { costOf, UsageTap } from '../src/usage.mjs';
 import { claudeCodeBody, claudeCodeToolTurn, codexBody } from './helpers.mjs';
 
 // Fake credentials for the scanner tests, assembled at runtime so secret scanners don't flag this file.
@@ -25,17 +26,51 @@ const TIERS = cfg.tiers;
 
 test('humanTurns finds what a person typed and skips harness text, tool results and shell-mode output', () => {
   const body = claudeCodeBody('s', 'Fix the login bug');
-  assert.deepEqual(humanTurns(body).map((t) => t.text), ['Fix the login bug']);
-  assert.deepEqual(humanTurns(claudeCodeToolTurn('s', 'Fix it')).map((t) => t.text), ['Fix it'], 'the tool_result turn is not a human turn');
-  const bash = { messages: [{ role: 'user', content: [{ type: 'text', text: '<bash-input>git log</bash-input>' }, { type: 'text', text: '<bash-stdout>commit abc</bash-stdout>' }] }] };
+  assert.deepEqual(
+    humanTurns(body).map((t) => t.text),
+    ['Fix the login bug'],
+  );
+  assert.deepEqual(
+    humanTurns(claudeCodeToolTurn('s', 'Fix it')).map((t) => t.text),
+    ['Fix it'],
+    'the tool_result turn is not a human turn',
+  );
+  const bash = {
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '<bash-input>git log</bash-input>' },
+          { type: 'text', text: '<bash-stdout>commit abc</bash-stdout>' },
+        ],
+      },
+    ],
+  };
   assert.deepEqual(humanTurns(bash), [], 'shell mode alone is not a prompt');
-  const slash = { messages: [{ role: 'user', content: '<command-name>/review</command-name><command-message>review</command-message><command-args></command-args>' }] };
+  const slash = {
+    messages: [
+      {
+        role: 'user',
+        content: '<command-name>/review</command-name><command-message>review</command-message><command-args></command-args>',
+      },
+    ],
+  };
   assert.deepEqual(humanTurns(slash), []);
-  const image = { messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] }] };
+  const image = {
+    messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] }],
+  };
   assert.deepEqual(humanTurns(image), [{ index: 0, text: '', images: 1 }], 'an image-only prompt still counts');
   const codex = codexBody('t', 'rename it');
-  codex.input.unshift({ type: 'message', role: 'user', content: [{ type: 'input_text', text: '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nUse tabs.\n</INSTRUCTIONS>' }] });
-  assert.deepEqual(humanTurns(codex).map((t) => t.text), ['rename it'], 'Codex AGENTS.md and environment context are not prompts');
+  codex.input.unshift({
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nUse tabs.\n</INSTRUCTIONS>' }],
+  });
+  assert.deepEqual(
+    humanTurns(codex).map((t) => t.text),
+    ['rename it'],
+    'Codex AGENTS.md and environment context are not prompts',
+  );
   assert.equal(stripWrappers('<user_shell_command>ls</user_shell_command> why is it empty?'), 'why is it empty?');
 });
 
@@ -65,7 +100,13 @@ test('secrets: found, scrubbed and redacted, but references and signed reasoning
   const body = {
     messages: [
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `STRIPE=${STRIPE_KEY}` }] },
-      { role: 'assistant', content: [{ type: 'thinking', thinking: `the key ${STRIPE_KEY}`, signature: 'sig' }, { type: 'text', text: `Found ${STRIPE_KEY}` }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: `the key ${STRIPE_KEY}`, signature: 'sig' },
+          { type: 'text', text: `Found ${STRIPE_KEY}` },
+        ],
+      },
     ],
   };
   const { body: out, count } = redactBody(body);
@@ -100,15 +141,45 @@ test('buildQuestions asks one tier Choice without model names, plus two guards',
 });
 
 test('policy: cheap tiers need confidence, unsure answers escalate, guards only raise, sessions ratchet', () => {
-  const decide = (probabilities, extra = {}) => applyPolicy({ answer: { probabilities, ...extra }, tiers: TIERS, options: cfg.jev.options, policy: cfg.policy, reference: 'balanced', ...extra });
-  assert.deepEqual(tierProbabilities({ mechanical: 0.1, routine: 0.2, complex: 0.3, deep: 0.4 }, cfg.jev.options, TIERS), { fast: 0.1, balanced: 0.2, frontier: 0.7 });
+  const decide = (probabilities, extra = {}) =>
+    applyPolicy({
+      answer: { probabilities, ...extra },
+      tiers: TIERS,
+      options: cfg.jev.options,
+      policy: cfg.policy,
+      reference: 'balanced',
+      ...extra,
+    });
+  assert.deepEqual(tierProbabilities({ mechanical: 0.1, routine: 0.2, complex: 0.3, deep: 0.4 }, cfg.jev.options, TIERS), {
+    fast: 0.1,
+    balanced: 0.2,
+    frontier: 0.7,
+  });
   assert.equal(decide({ mechanical: 0.9, routine: 0.1 }).tier, 'fast');
-  assert.deepEqual([decide({ mechanical: 0.7, routine: 0.3 }).tier, decide({ mechanical: 0.7, routine: 0.3 }).reason], ['balanced', 'jev-escalated']);
-  assert.equal(decide({ routine: 0.5, complex: 0.45, mechanical: 0.05 }).tier, 'frontier', 'unsure between balanced and frontier: take frontier');
-  assert.equal(decide({ routine: 0.5, mechanical: 0.45, complex: 0.05 }).tier, 'balanced', 'unsure between fast and balanced: take balanced');
+  assert.deepEqual(
+    [decide({ mechanical: 0.7, routine: 0.3 }).tier, decide({ mechanical: 0.7, routine: 0.3 }).reason],
+    ['balanced', 'jev-escalated'],
+  );
+  assert.equal(
+    decide({ routine: 0.5, complex: 0.45, mechanical: 0.05 }).tier,
+    'frontier',
+    'unsure between balanced and frontier: take frontier',
+  );
+  assert.equal(
+    decide({ routine: 0.5, mechanical: 0.45, complex: 0.05 }).tier,
+    'balanced',
+    'unsure between fast and balanced: take balanced',
+  );
   assert.equal(decide({ mechanical: 0.95 }, { sensitive: 0.8 }).tier, 'frontier', 'risky operations get the top tier');
-  assert.deepEqual([decide({ mechanical: 0.95 }, { claim: 0.9 }).tier, decide({ mechanical: 0.95 }, { claim: 0.9 }).reason], ['balanced', 'claim-guard']);
-  assert.deepEqual(decide({ mechanical: 0.95 }, { current: 'balanced' }), { tier: 'balanced', reason: 'jev-keep', byTier: { fast: 0.95, balanced: 0, frontier: 0 } });
+  assert.deepEqual(
+    [decide({ mechanical: 0.95 }, { claim: 0.9 }).tier, decide({ mechanical: 0.95 }, { claim: 0.9 }).reason],
+    ['balanced', 'claim-guard'],
+  );
+  assert.deepEqual(decide({ mechanical: 0.95 }, { current: 'balanced' }), {
+    tier: 'balanced',
+    reason: 'jev-keep',
+    byTier: { fast: 0.95, balanced: 0, frontier: 0 },
+  });
   assert.equal(decide({ deep: 0.9, routine: 0.1 }, { current: 'balanced' }).reason, 'upgrade:jev');
 });
 
@@ -121,7 +192,13 @@ test('config validation fails fast and lists every problem', () => {
   bad.policy.accept.fast = 2;
   bad.jev.channels[0].baseUrl = 'ftp://x';
   bad.surfaces.anthropic.balanced.auth = 'basic';
-  const err = (() => { try { validateConfig(bad); } catch (e) { return e.message; } })();
+  const err = (() => {
+    try {
+      validateConfig(bad);
+    } catch (e) {
+      return e.message;
+    }
+  })();
   assert.match(err, /policy\.accept\.fast must be a probability/);
   assert.match(err, /jev\.channels\[0\]\.baseUrl/);
   assert.match(err, /surfaces\.anthropic\.balanced\.auth/);
@@ -135,13 +212,18 @@ test('config validation fails fast and lists every problem', () => {
 
 test('usage tap reads Anthropic and Responses usage from the stream; costOf prices it', () => {
   const tap = new UsageTap('text/event-stream');
-  const sse = 'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"cache_read_input_tokens":90000,"cache_creation_input_tokens":2000,"output_tokens":1}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":500}}\n\n';
+  const sse =
+    'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"cache_read_input_tokens":90000,"cache_creation_input_tokens":2000,"output_tokens":1}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":500}}\n\n';
   for (const piece of [sse.slice(0, 57), sse.slice(57, 200), sse.slice(200)]) tap.push(Buffer.from(piece));
   const usage = tap.result();
   assert.deepEqual(usage, { input: 10, cacheRead: 90000, cacheWrite: 2000, output: 500 });
   assert.equal(costOf('claude-sonnet-5', usage, cfg.prices), 0.02802); // 10×2 + 90000×0.2 + 2000×2.5 + 500×10 per million
   const responses = new UsageTap('text/event-stream');
-  responses.push(Buffer.from('event: response.completed\ndata: {"type":"response.completed","response":{"model":"glm-5.3-flash","usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":800},"output_tokens":50}}}\n\n'));
+  responses.push(
+    Buffer.from(
+      'event: response.completed\ndata: {"type":"response.completed","response":{"model":"glm-5.3-flash","usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":800},"output_tokens":50}}}\n\n',
+    ),
+  );
   assert.deepEqual(responses.result(), { input: 200, cacheRead: 800, cacheWrite: 0, output: 50 });
   assert.equal(costOf('unknown-model', usage, cfg.prices), undefined);
 });
@@ -165,9 +247,23 @@ test('session keys and request kinds come from what each client sends', () => {
 test('report sums requests, spend, savings and Jev health from the log', () => {
   const lines = [
     { event: 'route', session: 's1', jev: { ok: true, ms: 300, inputTokens: 600 } },
-    { event: 'done', session: 's1', model: 'glm-5.3-flash', usage: { input: 100, cacheRead: 0, cacheWrite: 0, output: 10 }, cost_usd: 0.00002, baseline_usd: 0.0006 },
+    {
+      event: 'done',
+      session: 's1',
+      model: 'glm-5.3-flash',
+      usage: { input: 100, cacheRead: 0, cacheWrite: 0, output: 10 },
+      cost_usd: 0.00002,
+      baseline_usd: 0.0006,
+    },
     { event: 'route', session: 's2', jev: { ok: false, ms: 2500, error: 'timeout' } },
-    { event: 'done', session: 's2', model: 'claude-sonnet-5', usage: { input: 100, cacheRead: 0, cacheWrite: 0, output: 10 }, cost_usd: 0.0003, baseline_usd: 0.0006 },
+    {
+      event: 'done',
+      session: 's2',
+      model: 'claude-sonnet-5',
+      usage: { input: 100, cacheRead: 0, cacheWrite: 0, output: 10 },
+      cost_usd: 0.0003,
+      baseline_usd: 0.0006,
+    },
   ].map((e) => JSON.stringify(e));
   const r = report(lines);
   assert.equal(r.requests, 2);

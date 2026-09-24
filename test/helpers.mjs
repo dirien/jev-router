@@ -1,6 +1,7 @@
 // Shared test fixtures: mock HTTP servers and Claude Code / Codex shaped requests.
-import http from 'node:http';
+
 import { createHash } from 'node:crypto';
+import http from 'node:http';
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -14,7 +15,10 @@ export async function listen(server, low = 4001, high = 4049) {
     try {
       await new Promise((resolve, reject) => {
         server.once('error', reject);
-        server.listen(port, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+        server.listen(port, '127.0.0.1', () => {
+          server.off('error', reject);
+          resolve();
+        });
       });
       return `http://127.0.0.1:${port}`;
     } catch (err) {
@@ -24,7 +28,11 @@ export async function listen(server, low = 4001, high = 4049) {
   throw new Error(`no free port in ${low}-${high}`);
 }
 
-export const close = (server) => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); });
+export const close = (server) =>
+  new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  });
 
 // A mock upstream that records every call and answers with `handler(call, res)`.
 export async function mockServer(handler) {
@@ -50,7 +58,9 @@ export function jevAnswer({ tier = 'balanced', probability = 0.9, secrets = 0.02
   const rest = Object.keys(probabilities).filter((k) => k !== tier);
   probabilities[rest[0]] = Number((1 - probability).toFixed(2));
   return {
-    id: 'gen-dec-test', model: 'typesafe/jev-1.13-20260917', provider: 'TypeSafe',
+    id: 'gen-dec-test',
+    model: 'typesafe/jev-1.13-20260917',
+    provider: 'TypeSafe',
     answers: {
       tier: { type: 'choice', choice: tier, confidence: Number(((3 * probability - 1) / 2).toFixed(2)), probabilities },
       secrets: { type: 'noul', noul: secrets },
@@ -63,7 +73,21 @@ export function jevAnswer({ tier = 'balanced', probability = 0.9, secrets = 0.02
 // character in half. A proxy that decodes and re-encodes text would corrupt it.
 export function anthropicSse(model) {
   const events = [
-    ['message_start', { type: 'message_start', message: { id: 'msg_mock', type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 12, output_tokens: 1 } } }],
+    [
+      'message_start',
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_mock',
+          type: 'message',
+          role: 'assistant',
+          model,
+          content: [],
+          stop_reason: null,
+          usage: { input_tokens: 12, output_tokens: 1 },
+        },
+      },
+    ],
     ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
     ['ping', { type: 'ping' }],
     ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Grüße, das kostet 5 € 🚀' } }],
@@ -133,7 +157,14 @@ export function claudeCodeToolTurn(sessionId, text) {
 }
 
 export function codexHeaders(threadId, extra = {}) {
-  return { 'content-type': 'application/json', 'session-id': threadId, 'thread-id': threadId, originator: 'codex_cli_rs', authorization: 'Bearer client-side-placeholder', ...extra };
+  return {
+    'content-type': 'application/json',
+    'session-id': threadId,
+    'thread-id': threadId,
+    originator: 'codex_cli_rs',
+    authorization: 'Bearer client-side-placeholder',
+    ...extra,
+  };
 }
 
 export function codexBody(threadId, text) {
@@ -141,10 +172,21 @@ export function codexBody(threadId, text) {
     model: 'gpt-6-sol',
     instructions: 'You are Codex, a coding agent.',
     input: [
-      { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>\n<cwd>/repo</cwd>\n</environment_context>' }] },
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '<environment_context>\n<cwd>/repo</cwd>\n</environment_context>' }],
+      },
       { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
     ],
-    tools: [{ type: 'function', name: 'shell', description: 'Run a command', parameters: { type: 'object', properties: { command: { type: 'array', items: { type: 'string' } } } } }],
+    tools: [
+      {
+        type: 'function',
+        name: 'shell',
+        description: 'Run a command',
+        parameters: { type: 'object', properties: { command: { type: 'array', items: { type: 'string' } } } },
+      },
+    ],
     tool_choice: 'auto',
     parallel_tool_calls: false,
     store: false,
@@ -173,7 +215,20 @@ export function jevOptionsAnswer({ option = 'routine', probability = 0.9, sensit
 // Anthropic usage events the router's usage tap reads.
 export function anthropicSseWithUsage(model, { input = 12, cacheRead = 1000, cacheWrite = 0, output = 9 } = {}) {
   const events = [
-    ['message_start', { type: 'message_start', message: { id: 'msg_u', type: 'message', role: 'assistant', model, content: [], usage: { input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: 1 } } }],
+    [
+      'message_start',
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_u',
+          type: 'message',
+          role: 'assistant',
+          model,
+          content: [],
+          usage: { input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, output_tokens: 1 },
+        },
+      },
+    ],
     ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
     ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } }],
     ['content_block_stop', { type: 'content_block_stop', index: 0 }],

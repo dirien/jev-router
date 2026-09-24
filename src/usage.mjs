@@ -26,16 +26,31 @@ export class UsageTap {
   #event(data) {
     if (!data || data === '[DONE]') return;
     let event;
-    try { event = JSON.parse(data); } catch { return; }
-    if (event.type === 'message_start') { this.model = event.message?.model; Object.assign(this.raw, event.message?.usage); }
-    else if (event.type === 'message_delta') Object.assign(this.raw, event.usage);
-    else if (event.type === 'response.completed' || event.type === 'response.incomplete') { this.model = event.response?.model; Object.assign(this.raw, event.response?.usage); }
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (event.type === 'message_start') {
+      this.model = event.message?.model;
+      Object.assign(this.raw, event.message?.usage);
+    } else if (event.type === 'message_delta') Object.assign(this.raw, event.usage);
+    else if (event.type === 'response.completed' || event.type === 'response.incomplete') {
+      this.model = event.response?.model;
+      Object.assign(this.raw, event.response?.usage);
+    }
   }
 
   // { input, cacheRead, cacheWrite, output }, with input counting uncached input tokens only.
   result() {
     if (!this.sse && this.json) {
-      try { const body = JSON.parse(this.json); this.model = body.model; Object.assign(this.raw, body.usage); } catch { /* not JSON, or cut off */ }
+      try {
+        const body = JSON.parse(this.json);
+        this.model = body.model;
+        Object.assign(this.raw, body.usage);
+      } catch {
+        /* not JSON, or cut off */
+      }
     }
     const u = this.raw;
     if (u.input_tokens === undefined && u.output_tokens === undefined) return undefined;
@@ -55,6 +70,7 @@ export function costOf(model, usage, prices) {
   if (!usage || !model) return undefined;
   const p = prices[model] ?? prices[model.replace(/-\d{8}$/, '')];
   if (!p) return undefined;
-  const usd = (usage.input * p.in + usage.cacheRead * (p.cacheRead ?? p.in) + usage.cacheWrite * (p.cacheWrite ?? p.in) + usage.output * p.out) / 1e6;
+  const usd =
+    (usage.input * p.in + usage.cacheRead * (p.cacheRead ?? p.in) + usage.cacheWrite * (p.cacheWrite ?? p.in) + usage.output * p.out) / 1e6;
   return Math.round(usd * 1e6) / 1e6;
 }

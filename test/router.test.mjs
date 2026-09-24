@@ -1,15 +1,28 @@
 // Integration tests: the whole router against a mock Jev and mock upstreams on local ports. No network.
 // Assertions count calls per test (call deltas), so a leftover call from an earlier test can't pass one.
-import { test, before, after } from 'node:test';
+
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import http from 'node:http';
-import { createRouter } from '../src/router.mjs';
+import { tmpdir } from 'node:os';
+import { after, before, test } from 'node:test';
 import { validateConfig } from '../src/config.mjs';
+import { createRouter } from '../src/router.mjs';
 import {
-  anthropicSseWithUsage, claudeCodeBody, claudeCodeHeaders, claudeCodeToolTurn, close, codexBody, codexHeaders,
-  jevOptionsAnswer, json, listen, mockServer, responsesSse, sha256, sleep,
+  anthropicSseWithUsage,
+  claudeCodeBody,
+  claudeCodeHeaders,
+  claudeCodeToolTurn,
+  close,
+  codexBody,
+  codexHeaders,
+  jevOptionsAnswer,
+  json,
+  listen,
+  mockServer,
+  responsesSse,
+  sha256,
+  sleep,
 } from './helpers.mjs';
 
 const fake = (...parts) => parts.join('');
@@ -32,7 +45,10 @@ function jevMock(plan) {
   return mockServer(async (call, res) => {
     const step = plan.queue?.shift() ?? plan;
     if (step.delayMs) await sleep(step.delayMs);
-    if (step.html403) { res.writeHead(403, { 'content-type': 'text/html' }); return res.end('<html><body>Attention Required! | Cloudflare</body></html>'); }
+    if (step.html403) {
+      res.writeHead(403, { 'content-type': 'text/html' });
+      return res.end('<html><body>Attention Required! | Cloudflare</body></html>');
+    }
     if (step.status) return json(res, step.status, { detail: { error_type: 'api_error', message: `mock ${step.status}` } });
     json(res, 200, jevOptionsAnswer(step), { 'x-typesafe-request-id': 'req_mock_jev' });
   });
@@ -43,20 +59,36 @@ before(async () => {
   jevB = await jevMock(plans.b);
   const messages = async (call, res) => {
     if (call.url.startsWith('/v1/messages/count_tokens')) return json(res, 200, { input_tokens: 42 });
-    if (!call.body.stream) return json(res, 200, { id: 'msg', type: 'message', role: 'assistant', model: call.body.model, content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10, output_tokens: 1 } });
+    if (!call.body.stream)
+      return json(res, 200, {
+        id: 'msg',
+        type: 'message',
+        role: 'assistant',
+        model: call.body.model,
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 10, output_tokens: 1 },
+      });
     const gap = Number(call.headers['x-test-chunk-gap-ms'] ?? 0);
     res.writeHead(200, { 'content-type': 'text/event-stream', 'request-id': 'req_mock_sse', 'retry-after': '7' });
     const bytes = anthropicSseWithUsage(call.body.model);
-    for (const piece of [bytes.subarray(0, 50), bytes.subarray(50, 300), bytes.subarray(300)]) { res.write(piece); if (gap) await sleep(gap); }
+    for (const piece of [bytes.subarray(0, 50), bytes.subarray(50, 300), bytes.subarray(300)]) {
+      res.write(piece);
+      if (gap) await sleep(gap);
+    }
     res.end();
   };
-  const responses = async (call, res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(responsesSse(call.body.model)); };
+  const responses = async (call, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(responsesSse(call.body.model));
+  };
   anthropic = await mockServer(messages);
   ollama = await mockServer((call, res) => (call.url.startsWith('/v1/messages') ? messages(call, res) : responses(call, res)));
   openai = await mockServer(responses);
 });
 
-after(async () => { await Promise.all([...routers.map(close), jevA.close(), jevB.close(), anthropic.close(), ollama.close(), openai.close()]); });
+after(async () => {
+  await Promise.all([...routers.map(close), jevA.close(), jevB.close(), anthropic.close(), ollama.close(), openai.close()]);
+});
 
 const shipped = JSON.parse(readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 
@@ -74,7 +106,13 @@ function testConfig(patch = {}) {
 
 async function startRouter({ cfg = testConfig(), env = {} } = {}) {
   const logs = [];
-  const server = createRouter(cfg, { env: { ...KEYS, ...env }, log: (e) => { logs.push(e); allLogs.push(e); } });
+  const server = createRouter(cfg, {
+    env: { ...KEYS, ...env },
+    log: (e) => {
+      logs.push(e);
+      allLogs.push(e);
+    },
+  });
   routers.push(server);
   const url = await listen(server);
   return { url, server, logs, routes: () => logs.filter((e) => e.event === 'route'), done: () => logs.filter((e) => e.event === 'done') };
@@ -94,7 +132,10 @@ async function delta(fn) {
   const calls = Object.fromEntries(Object.entries(mocks).map(([k, m]) => [k, m.calls.slice(before[k])]));
   return { result, ...calls };
 }
-const reset = (plan, value = {}) => { for (const k of Object.keys(plan)) delete plan[k]; Object.assign(plan, value); };
+const reset = (plan, value = {}) => {
+  for (const k of Object.keys(plan)) delete plan[k];
+  Object.assign(plan, value);
+};
 const cc = (session, text, opts) => claudeCodeBody(session, text, { stream: false, ...opts });
 const ccHeaders = (session, extra) => claudeCodeHeaders(session, { 'x-claude-code-request-class': 'main', ...extra });
 
@@ -149,7 +190,10 @@ test('a session ratchets: tool loops never ask Jev, a harder new turn upgrades, 
     await post(url, '/v1/messages', { ...claudeCodeToolTurn('s-ratchet', 'What does git status -sb print?'), stream: false }, h);
   });
   assert.equal(d1.jevA.length, 1, 'the tool-loop turn did not ask Jev');
-  assert.deepEqual(d1.ollama.map((c) => c.body.model), ['glm-5.3-flash', 'glm-5.3-flash']);
+  assert.deepEqual(
+    d1.ollama.map((c) => c.body.model),
+    ['glm-5.3-flash', 'glm-5.3-flash'],
+  );
 
   reset(plans.a, { option: 'complex', probability: 0.9 });
   const history = [...first.messages, { role: 'assistant', content: [{ type: 'text', text: 'It prints a short status.' }] }];
@@ -158,10 +202,15 @@ test('a session ratchets: tool loops never ask Jev, a harder new turn upgrades, 
   assert.equal(d2.anthropic[0].body.model, 'claude-opus-5-5');
 
   reset(plans.a, { option: 'mechanical', probability: 0.99 });
-  const third = cc('s-ratchet', 'thanks', { history: [...second.messages, { role: 'assistant', content: [{ type: 'text', text: 'Fixed.' }] }] });
+  const third = cc('s-ratchet', 'thanks', {
+    history: [...second.messages, { role: 'assistant', content: [{ type: 'text', text: 'Fixed.' }] }],
+  });
   const d3 = await delta(() => post(url, '/v1/messages', third, h));
   assert.equal(d3.anthropic[0].body.model, 'claude-opus-5-5', 'no downgrade inside a session');
-  assert.deepEqual(routes().map((r) => r.reason), ['jev', 'sticky', 'upgrade:jev', 'jev-keep']);
+  assert.deepEqual(
+    routes().map((r) => r.reason),
+    ['jev', 'sticky', 'upgrade:jev', 'jev-keep'],
+  );
 });
 
 test('sticky mode decides once per session', async () => {
@@ -170,10 +219,20 @@ test('sticky mode decides once per session', async () => {
   const first = cc('s-sticky', 'Add a test for the parser');
   await post(url, '/v1/messages', first, ccHeaders('s-sticky'));
   reset(plans.a, { option: 'deep', probability: 0.99 });
-  const d = await delta(() => post(url, '/v1/messages', cc('s-sticky', 'Now redesign everything', { history: [...first.messages, { role: 'assistant', content: 'ok' }] }), ccHeaders('s-sticky')));
+  const d = await delta(() =>
+    post(
+      url,
+      '/v1/messages',
+      cc('s-sticky', 'Now redesign everything', { history: [...first.messages, { role: 'assistant', content: 'ok' }] }),
+      ccHeaders('s-sticky'),
+    ),
+  );
   assert.equal(d.jevA.length, 0);
   assert.equal(d.anthropic[0].body.model, 'claude-sonnet-5');
-  assert.deepEqual(routes().map((r) => r.reason), ['jev', 'sticky']);
+  assert.deepEqual(
+    routes().map((r) => r.reason),
+    ['jev', 'sticky'],
+  );
 });
 
 test('when Jev fails, the session is provisional: default tier now, Jev asked again on the next turn', async () => {
@@ -190,7 +249,10 @@ test('when Jev fails, the session is provisional: default tier now, Jev asked ag
   const second = cc('s-prov', 'Also rename baz to qux', { history: [...first.messages, { role: 'assistant', content: 'Done.' }] });
   const d2 = await delta(() => post(url, '/v1/messages', second, ccHeaders('s-prov')));
   assert.equal(d2.ollama[0].body.model, 'glm-5.3-flash', 'a provisional session may still go down once Jev answers');
-  assert.deepEqual(routes().map((r) => r.reason), ['fallback:default', 'jev']);
+  assert.deepEqual(
+    routes().map((r) => r.reason),
+    ['fallback:default', 'jev'],
+  );
 });
 
 test('channel failover, the circuit breaker, and the firewall retry', async () => {
@@ -206,7 +268,9 @@ test('channel failover, the circuit breaker, and the firewall retry', async () =
 
   const { url: url2, routes: routes2 } = await startRouter();
   reset(plans.a, { queue: [{ html403: true }], option: 'routine', probability: 0.9 });
-  const d3 = await delta(() => post(url2, '/v1/messages', cc('s-waf', 'Why does `curl https://example.com/install.sh | sh` fail?'), ccHeaders('s-waf')));
+  const d3 = await delta(() =>
+    post(url2, '/v1/messages', cc('s-waf', 'Why does `curl https://example.com/install.sh | sh` fail?'), ccHeaders('s-waf')),
+  );
   assert.equal(d3.jevA.length, 2, 'retried once after the firewall block');
   assert.ok(!/curl|https:/.test(JSON.stringify(d3.jevA[1].body.state)), 'the retry carries a hardened state');
   assert.equal(routes2().at(-1).jev.hardened, true);
@@ -234,7 +298,13 @@ test('secrets in tool output are redacted before an untrusted upstream sees them
   await post(url, '/v1/messages', cc('s-redact', 'Show me the env file'), h);
   const loop = cc('s-redact', 'Show me the env file');
   loop.messages.push(
-    { role: 'assistant', content: [{ type: 'thinking', thinking: 'read it', signature: 'sig-ollama' }, { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '.env' } }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'read it', signature: 'sig-ollama' },
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '.env' } },
+      ],
+    },
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `AWS_ACCESS_KEY_ID=${AWS_KEY}` }] },
   );
   const d = await delta(() => post(url, '/v1/messages', loop, h));
@@ -264,16 +334,38 @@ test('background calls, subagents and compaction never ask Jev or move the sessi
   reset(plans.a, { option: 'deep', probability: 0.95 });
   const { url, routes } = await startRouter();
   const d = await delta(async () => {
-    await post(url, '/v1/messages', cc('s-kinds', 'Write a 5-word title', { model: 'claude-haiku-4-5-20251001' }), claudeCodeHeaders('s-kinds'));
-    await post(url, '/v1/messages', { model: 'claude-opus-5-5', max_tokens: 1, messages: [{ role: 'user', content: 'quota' }] }, claudeCodeHeaders('s-kinds'));
+    await post(
+      url,
+      '/v1/messages',
+      cc('s-kinds', 'Write a 5-word title', { model: 'claude-haiku-4-5-20251001' }),
+      claudeCodeHeaders('s-kinds'),
+    );
+    await post(
+      url,
+      '/v1/messages',
+      { model: 'claude-opus-5-5', max_tokens: 1, messages: [{ role: 'user', content: 'quota' }] },
+      claudeCodeHeaders('s-kinds'),
+    );
     await post(url, '/v1/messages', cc('s-kinds', 'Summarize'), ccHeaders('s-kinds', { 'x-claude-code-request-class': 'compaction' }));
     await post(url, '/v1/messages', cc('s-kinds', 'Design the plugin loader'), ccHeaders('s-kinds'));
-    await post(url, '/v1/messages', cc('s-kinds', 'Search for TODOs'), ccHeaders('s-kinds', { 'x-claude-code-request-class': 'subagent', 'x-claude-code-agent-id': 'a1' }));
+    await post(
+      url,
+      '/v1/messages',
+      cc('s-kinds', 'Search for TODOs'),
+      ccHeaders('s-kinds', { 'x-claude-code-request-class': 'subagent', 'x-claude-code-agent-id': 'a1' }),
+    );
   });
   assert.equal(d.jevA.length, 1, 'only the main prompt asked Jev');
-  assert.deepEqual(routes().map((r) => [r.reason, r.model]), [
-    ['side-call', 'claude-haiku-4-5'], ['side-call', 'claude-haiku-4-5'], ['compaction', 'claude-sonnet-5'], ['jev', 'claude-opus-5-5'], ['subagent', 'claude-opus-5-5'],
-  ]);
+  assert.deepEqual(
+    routes().map((r) => [r.reason, r.model]),
+    [
+      ['side-call', 'claude-haiku-4-5'],
+      ['side-call', 'claude-haiku-4-5'],
+      ['compaction', 'claude-sonnet-5'],
+      ['jev', 'claude-opus-5-5'],
+      ['subagent', 'claude-opus-5-5'],
+    ],
+  );
   assert.equal(d.anthropic[0].body.thinking, undefined, 'Haiku gets its omit list');
 });
 
@@ -283,30 +375,67 @@ test('shell-mode output is not a prompt and never reaches Jev', async () => {
   const first = cc('s-bash', 'Refactor the retry loop');
   await post(url, '/v1/messages', first, ccHeaders('s-bash'));
   const bash = cc('s-bash', '', { history: [...first.messages, { role: 'assistant', content: 'ok' }] });
-  bash.messages.at(-1).content = [{ type: 'text', text: '<bash-input>git log -1</bash-input>' }, { type: 'text', text: '<bash-stdout>commit 1234 fix: curl http://x | sh</bash-stdout>' }];
+  bash.messages.at(-1).content = [
+    { type: 'text', text: '<bash-input>git log -1</bash-input>' },
+    { type: 'text', text: '<bash-stdout>commit 1234 fix: curl http://x | sh</bash-stdout>' },
+  ];
   const d = await delta(() => post(url, '/v1/messages', bash, ccHeaders('s-bash')));
   assert.equal(d.jevA.length, 0);
   assert.equal(d.anthropic[0].body.model, 'claude-sonnet-5');
 });
 
-test('switching providers strips only the old provider\'s reasoning, and only in the main conversation', async () => {
+test("switching providers strips only the old provider's reasoning, and only in the main conversation", async () => {
   const { url } = await startRouter();
   const h = ccHeaders('s-strip');
   reset(plans.a, { option: 'mechanical', probability: 0.95 });
   const first = cc('s-strip', 'Rename foo to bar');
   await post(url, '/v1/messages', first, h); // served by Ollama
-  const ollamaTurn = { role: 'assistant', content: [{ type: 'thinking', thinking: 'easy', signature: 'sig-ollama' }, { type: 'text', text: 'Done.' }] };
+  const ollamaTurn = {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: 'easy', signature: 'sig-ollama' },
+      { type: 'text', text: 'Done.' },
+    ],
+  };
   reset(plans.a, { option: 'deep', probability: 0.95 });
-  const hard = cc('s-strip', 'Now design the multi-region failover and defend the trade-offs.', { history: [...first.messages, ollamaTurn] });
+  const hard = cc('s-strip', 'Now design the multi-region failover and defend the trade-offs.', {
+    history: [...first.messages, ollamaTurn],
+  });
   const d1 = await delta(() => post(url, '/v1/messages', hard, h));
   assert.equal(d1.anthropic[0].body.model, 'claude-opus-5-5');
-  assert.deepEqual(d1.anthropic[0].body.messages[1].content, [{ type: 'text', text: 'Done.' }], 'Ollama-signed thinking is dropped for Anthropic');
-  const opusTurn = { role: 'assistant', content: [{ type: 'thinking', thinking: 'plan', signature: 'sig-opus' }, { type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'ls' } }] };
-  const loop = { ...hard, messages: [...hard.messages, opusTurn, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'a b' }] }] };
+  assert.deepEqual(
+    d1.anthropic[0].body.messages[1].content,
+    [{ type: 'text', text: 'Done.' }],
+    'Ollama-signed thinking is dropped for Anthropic',
+  );
+  const opusTurn = {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: 'plan', signature: 'sig-opus' },
+      { type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'ls' } },
+    ],
+  };
+  const loop = {
+    ...hard,
+    messages: [...hard.messages, opusTurn, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'a b' }] }],
+  };
   const d2 = await delta(() => post(url, '/v1/messages', loop, h));
-  assert.deepEqual(d2.anthropic[0].body.messages[3], opusTurn, 'the current provider\'s own reasoning stays');
-  const sub = cc('s-strip', 'Explore the repo', { history: [{ role: 'user', content: 'start' }, { role: 'assistant', content: [{ type: 'thinking', thinking: 'x', signature: 'sig-opus-sub' }, { type: 'text', text: 'y' }] }] });
-  const d3 = await delta(() => post(url, '/v1/messages', sub, ccHeaders('s-strip', { 'x-claude-code-request-class': 'subagent', 'x-claude-code-agent-id': 'a2' })));
+  assert.deepEqual(d2.anthropic[0].body.messages[3], opusTurn, "the current provider's own reasoning stays");
+  const sub = cc('s-strip', 'Explore the repo', {
+    history: [
+      { role: 'user', content: 'start' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'x', signature: 'sig-opus-sub' },
+          { type: 'text', text: 'y' },
+        ],
+      },
+    ],
+  });
+  const d3 = await delta(() =>
+    post(url, '/v1/messages', sub, ccHeaders('s-strip', { 'x-claude-code-request-class': 'subagent', 'x-claude-code-agent-id': 'a2' })),
+  );
   assert.equal(d3.anthropic[0].body.messages[1].content[0].signature, 'sig-opus-sub', 'subagent conversations are not stripped');
 });
 
@@ -315,7 +444,9 @@ test('count_tokens follows the session tier and stays local for Ollama', async (
   reset(plans.a, { option: 'mechanical', probability: 0.95 });
   await post(url, '/v1/messages', cc('s-count', 'Explain this regex'), ccHeaders('s-count'));
   const { model, max_tokens, stream, metadata, ...countBody } = cc('s-count', 'Explain this regex');
-  const d = await delta(() => post(url, '/v1/messages/count_tokens?beta=true', { model: 'claude-sonnet-5', ...countBody }, claudeCodeHeaders('s-count')));
+  const d = await delta(() =>
+    post(url, '/v1/messages/count_tokens?beta=true', { model: 'claude-sonnet-5', ...countBody }, claudeCodeHeaders('s-count')),
+  );
   assert.equal(d.result.status, 404);
   assert.equal(d.ollama.length + d.anthropic.length + d.jevA.length, 0, 'no provider counted an Ollama-bound prompt');
 });
@@ -324,10 +455,17 @@ test('responses stream back byte for byte, unbuffered, with usage and cost in th
   reset(plans.a, { option: 'routine', probability: 0.9 });
   const { url, done } = await startRouter();
   const started = performance.now();
-  const res = await fetch(`${url}/v1/messages`, { method: 'POST', headers: ccHeaders('s-sse', { 'x-test-chunk-gap-ms': '150' }), body: JSON.stringify(claudeCodeBody('s-sse', 'Add a test for the parser')) });
+  const res = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: ccHeaders('s-sse', { 'x-test-chunk-gap-ms': '150' }),
+    body: JSON.stringify(claudeCodeBody('s-sse', 'Add a test for the parser')),
+  });
   const chunks = [];
   let first;
-  for await (const chunk of res.body) { first ??= performance.now() - started; chunks.push(chunk); }
+  for await (const chunk of res.body) {
+    first ??= performance.now() - started;
+    chunks.push(chunk);
+  }
   const got = Buffer.concat(chunks);
   assert.equal(Buffer.compare(got, anthropicSseWithUsage('claude-sonnet-5')), 0);
   assert.ok(first < performance.now() - started - 200, 'the first bytes arrived before the stream ended');
@@ -342,10 +480,14 @@ test('responses stream back byte for byte, unbuffered, with usage and cost in th
 test('browser-shaped requests, wrong content types, oversized bodies and missing tokens are refused', async () => {
   const { url } = await startRouter();
   const port = new URL(url).port;
-  const raw = (headers, body = '{}') => new Promise((resolve) => {
-    const req = http.request({ host: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
-    req.end(body);
-  });
+  const raw = (headers, body = '{}') =>
+    new Promise((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      req.end(body);
+    });
   const d = await delta(async () => [
     await raw({ host: `attacker.example:${port}`, 'content-type': 'application/json' }),
     await raw({ host: `127.0.0.1:${port}`, origin: 'https://attacker.example', 'content-type': 'text/plain' }),
@@ -358,16 +500,21 @@ test('browser-shaped requests, wrong content types, oversized bodies and missing
   const locked = await startRouter({ env: { JEV_ROUTER_TOKEN: 'local-secret' } });
   assert.equal((await post(locked.url, '/v1/messages', cc('s-tok', 'hi'), ccHeaders('s-tok'))).status, 401);
   reset(plans.a, { option: 'routine', probability: 0.9 });
-  assert.equal((await post(locked.url, '/v1/messages', cc('s-tok', 'hi'), ccHeaders('s-tok', { 'x-jev-router-token': 'local-secret' }))).status, 200);
+  assert.equal(
+    (await post(locked.url, '/v1/messages', cc('s-tok', 'hi'), ccHeaders('s-tok', { 'x-jev-router-token': 'local-secret' }))).status,
+    200,
+  );
 });
 
-test('malformed requests get an error in the client\'s shape and the router keeps serving', async () => {
+test("malformed requests get an error in the client's shape and the router keeps serving", async () => {
   const { url } = await startRouter();
   const plain = { 'content-type': 'application/json' };
   for (const bad of ['null', '[]', '42']) assert.equal((await post(url, '/v1/messages', bad, plain)).status, 400, bad);
   assert.equal((await post(url, '/v1/messages', { messages: 'oops' }, plain)).status, 500);
   const codex = await post(url, '/v1/responses', 'null', plain);
-  assert.deepEqual(JSON.parse(codex.text), { error: { message: 'Request body must be a JSON object', type: 'invalid_request_error', param: null, code: null } });
+  assert.deepEqual(JSON.parse(codex.text), {
+    error: { message: 'Request body must be a JSON object', type: 'invalid_request_error', param: null, code: null },
+  });
   assert.equal(codex.headers.get('x-should-retry'), 'false');
   reset(plans.a, { option: 'routine', probability: 0.9 });
   assert.equal((await post(url, '/v1/messages', cc('s-after', 'hi'), ccHeaders('s-after'))).status, 200);
@@ -381,7 +528,14 @@ test('decisions survive a restart through the state file', async () => {
   await post(one.url, '/v1/messages', first, ccHeaders('s-persist'));
   await close(one.server);
   const two = await startRouter({ cfg: testConfig({ stateFile }) });
-  const d = await delta(() => post(two.url, '/v1/messages', { ...claudeCodeToolTurn('s-persist', 'Design the sharding scheme'), stream: false }, ccHeaders('s-persist')));
+  const d = await delta(() =>
+    post(
+      two.url,
+      '/v1/messages',
+      { ...claudeCodeToolTurn('s-persist', 'Design the sharding scheme'), stream: false },
+      ccHeaders('s-persist'),
+    ),
+  );
   assert.equal(d.jevA.length, 0);
   assert.equal(d.anthropic[0].body.model, 'claude-opus-5-5', 'the tool loop continues on the same model after a restart');
   assert.ok(!readFileSync(stateFile, 'utf8').includes('sharding'), 'the state file holds no prompt text');
@@ -392,7 +546,14 @@ test('/model in Claude Code pins the matching tier; /healthz reports the router 
   const { url } = await startRouter();
   const first = cc('s-model', 'Add a test', { model: 'claude-opus-5-5' });
   await post(url, '/v1/messages', first, ccHeaders('s-model'));
-  const d = await delta(() => post(url, '/v1/messages', cc('s-model', 'keep going', { model: 'claude-haiku-4-5', history: [...first.messages, { role: 'assistant', content: 'ok' }] }), ccHeaders('s-model')));
+  const d = await delta(() =>
+    post(
+      url,
+      '/v1/messages',
+      cc('s-model', 'keep going', { model: 'claude-haiku-4-5', history: [...first.messages, { role: 'assistant', content: 'ok' }] }),
+      ccHeaders('s-model'),
+    ),
+  );
   assert.equal(d.result.headers.get('x-jev-reason'), 'client-model:haiku');
   assert.equal(d.ollama[0].body.model, 'glm-5.3-flash');
   const health = await (await fetch(`${url}/healthz`)).json();
@@ -406,7 +567,12 @@ test('a client that leaves during the Jev call costs no upstream request', async
   const { url, done } = await startRouter();
   const controller = new AbortController();
   const d = await delta(async () => {
-    const pending = fetch(`${url}/v1/messages`, { method: 'POST', headers: ccHeaders('s-abort'), body: JSON.stringify(cc('s-abort', 'Add a test')), signal: controller.signal }).catch(() => null);
+    const pending = fetch(`${url}/v1/messages`, {
+      method: 'POST',
+      headers: ccHeaders('s-abort'),
+      body: JSON.stringify(cc('s-abort', 'Add a test')),
+      signal: controller.signal,
+    }).catch(() => null);
     await sleep(100);
     controller.abort();
     await pending;
@@ -420,5 +586,6 @@ test('logs carry decisions but never keys or prompt text', () => {
   const text = JSON.stringify(allLogs);
   assert.ok(allLogs.length > 30);
   for (const key of Object.values(KEYS)) assert.ok(!text.includes(key), 'a key leaked into the log');
-  for (const prompt of ['zero-downtime migration', 'intermittently', AWS_KEY]) assert.ok(!text.includes(prompt), `prompt text leaked: ${prompt}`);
+  for (const prompt of ['zero-downtime migration', 'intermittently', AWS_KEY])
+    assert.ok(!text.includes(prompt), `prompt text leaked: ${prompt}`);
 });

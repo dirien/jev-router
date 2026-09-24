@@ -1,9 +1,10 @@
 // Per-conversation routing state. It survives restarts through an append-only JSONL file, so a
 // config reload or crash doesn't move live sessions to another model mid-task. Keys are stored
 // hashed; the file holds tiers and hosts, never prompt text.
+
+import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createHash } from 'node:crypto';
 
 export const hashKey = (key) => createHash('sha256').update(String(key)).digest('hex').slice(0, 32);
 
@@ -17,7 +18,9 @@ export class SessionStore {
     if (file) this.#load();
   }
 
-  get size() { return this.map.size; }
+  get size() {
+    return this.map.size;
+  }
 
   get(key) {
     const k = hashKey(key);
@@ -36,7 +39,11 @@ export class SessionStore {
     while (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
     if (this.file) {
       const { lastSeen, ...persisted } = value;
-      try { appendFileSync(this.file, `${JSON.stringify({ k, ...persisted })}\n`, { mode: 0o600 }); } catch (err) { this.onError(err); }
+      try {
+        appendFileSync(this.file, `${JSON.stringify({ k, ...persisted })}\n`, { mode: 0o600 });
+      } catch (err) {
+        this.onError(err);
+      }
     }
     return value;
   }
@@ -58,7 +65,9 @@ export class SessionStore {
           const { k, ...entry } = JSON.parse(line);
           this.map.delete(k);
           if (now - (entry.updated ?? 0) < this.ttlMs) this.map.set(k, { ...entry, lastSeen: entry.updated });
-        } catch { /* a torn last line after a crash */ }
+        } catch {
+          /* a torn last line after a crash */
+        }
       }
       while (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
       // Rewrite one line per live session so the file doesn't grow forever.

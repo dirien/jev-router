@@ -8,7 +8,11 @@ const MODES = new Set(['ratchet', 'sticky']);
 
 export function loadConfig(path) {
   let cfg;
-  try { cfg = JSON.parse(readFileSync(path, 'utf8')); } catch (err) { throw new Error(`Cannot read config ${path}: ${err.message}`); }
+  try {
+    cfg = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    throw new Error(`Cannot read config ${path}: ${err.message}`);
+  }
   return validateConfig(cfg);
 }
 
@@ -16,7 +20,9 @@ export function loadConfig(path) {
 export function validateConfig(input) {
   const cfg = structuredClone(input);
   const problems = [];
-  const need = (ok, message) => { if (!ok) problems.push(message); };
+  const need = (ok, message) => {
+    if (!ok) problems.push(message);
+  };
   const isProbability = (v) => typeof v === 'number' && v >= 0 && v <= 1;
 
   cfg.host ??= '127.0.0.1';
@@ -32,11 +38,22 @@ export function validateConfig(input) {
   need(Number.isInteger(cfg.port) && cfg.port > 0 && cfg.port < 65536, 'port must be an integer between 1 and 65535');
   need(Array.isArray(cfg.allowedHosts), 'allowedHosts must be an array of host[:port] strings');
 
-  need(Array.isArray(cfg.tiers) && cfg.tiers.length > 0 && cfg.tiers.every((t) => typeof t === 'string'), 'tiers must list tier names, cheapest first');
+  need(
+    Array.isArray(cfg.tiers) && cfg.tiers.length > 0 && cfg.tiers.every((t) => typeof t === 'string'),
+    'tiers must list tier names, cheapest first',
+  );
   const tiers = new Set(cfg.tiers ?? []);
   need(tiers.has(cfg.defaultTier), `defaultTier "${cfg.defaultTier}" is not one of tiers`);
 
-  cfg.policy = { mode: 'ratchet', sensitiveOverride: 0.7, claimGuard: 0.5, maxProvisional: 3, idleResetMinutes: 10, failClosed: false, ...cfg.policy };
+  cfg.policy = {
+    mode: 'ratchet',
+    sensitiveOverride: 0.7,
+    claimGuard: 0.5,
+    maxProvisional: 3,
+    idleResetMinutes: 10,
+    failClosed: false,
+    ...cfg.policy,
+  };
   const policy = cfg.policy;
   need(MODES.has(policy.mode), 'policy.mode must be "ratchet" or "sticky"');
   policy.accept = { ...Object.fromEntries([...tiers].map((t) => [t, 0.6])), ...policy.accept };
@@ -46,7 +63,7 @@ export function validateConfig(input) {
   }
   for (const key of ['sensitiveOverride', 'claimGuard']) need(isProbability(policy[key]), `policy.${key} must be a probability`);
 
-  const jev = cfg.jev = { deadlineMs: 2500, requestChars: 4000, stripCode: true, guards: true, channels: [], ...cfg.jev };
+  const jev = (cfg.jev = { deadlineMs: 2500, requestChars: 4000, stripCode: true, guards: true, channels: [], ...cfg.jev });
   need(Array.isArray(jev.channels), 'jev.channels must be an array');
   for (const [i, ch] of (jev.channels ?? []).entries()) {
     ch.timeoutMs ??= 1200;
@@ -65,14 +82,20 @@ export function validateConfig(input) {
   for (const [surface, targets] of Object.entries(cfg.surfaces ?? {})) {
     for (const tier of tiers) need(targets[tier], `surfaces.${surface} has no target for tier "${tier}"`);
     const untrusted = [...tiers].some((t) => targets[t] && !targets[t].trusted);
-    need(!untrusted || targets.trusted?.trusted, `surfaces.${surface} routes some tiers to untrusted upstreams, so it needs a trusted target marked "trusted": true`);
+    need(
+      !untrusted || targets.trusted?.trusted,
+      `surfaces.${surface} routes some tiers to untrusted upstreams, so it needs a trusted target marked "trusted": true`,
+    );
     for (const [name, target] of Object.entries(targets)) {
       const where = `surfaces.${surface}.${name}`;
       need(isUrl(target.url), `${where}.url must be an http(s) URL`);
       need(typeof target.model === 'string' && target.model, `${where}.model is required`);
       need(AUTH.has(target.auth), `${where}.auth must be "x-api-key" or "bearer"`);
       need(target.keyEnv || target.clientAuth, `${where} needs keyEnv or clientAuth`);
-      need(target.omit === undefined || (Array.isArray(target.omit) && target.omit.every((f) => typeof f === 'string')), `${where}.omit must be a list of field paths`);
+      need(
+        target.omit === undefined || (Array.isArray(target.omit) && target.omit.every((f) => typeof f === 'string')),
+        `${where}.omit must be a list of field paths`,
+      );
     }
   }
   cfg.modelPins ??= {};
@@ -84,5 +107,9 @@ export function validateConfig(input) {
 }
 
 function isUrl(value) {
-  try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; }
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
 }

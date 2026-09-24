@@ -1,0 +1,25 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": { "ignoreUnknown": false, "includes": ["**", "!**/package-lock.json", "!eval/prompts.jsonl"] },
+  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 140 },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "correctness": { "noUnusedVariables": "error", "noUnusedImports": "error", "noUnusedFunctionParameters": "error" },
+      "style": {
+        "useNodejsImportProtocol": "error",
+        "useConst": "error",
+        "noParameterAssign": "error",
+        "useTemplate": "error",
+        "noUselessElse": "error"
+      },
+      "suspicious": { "noConsole": "off", "noEmptyBlockStatements": "error", "noVar": "error" },
+      "complexity": { "noExcessiveCognitiveComplexity": { "level": "error", "options": { "maxAllowedComplexity": 25 } } }
+    }
+  },
+  "javascript": { "formatter": { "quoteStyle": "single", "trailingCommas": "all", "semicolons": "always", "arrowParentheses": "always" } },
+  "json": { "formatter": { "lineWidth": 140 } },
+  "assist": { "enabled": true, "actions": { "source": { "organizeImports": "on" } } }
+}

@@ -35,7 +35,8 @@ function serve(configPath) {
   const port = Number(process.env.JEV_ROUTER_PORT ?? cfg.port);
   cfg = { ...cfg, host, port };
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
-  if (!loopback && !(process.env.JEV_ROUTER_TOKEN ?? cfg.token)) throw new Error(`Refusing to listen on ${host} without a token: set JEV_ROUTER_TOKEN.`);
+  if (!loopback && !(process.env.JEV_ROUTER_TOKEN ?? cfg.token))
+    throw new Error(`Refusing to listen on ${host} without a token: set JEV_ROUTER_TOKEN.`);
   let stdoutBroken = false;
   process.stdout.on('error', () => {
     stdoutBroken = true; // a closed log pipe must not crash the router
