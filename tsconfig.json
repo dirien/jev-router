@@ -12,8 +12,8 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "types": ["node"]
   },
-  "include": ["bin/**/*.mjs", "src/**/*.mjs", "test/**/*.mjs", "eval/**/*.mjs"]
+  "include": ["bin/**/*.mjs", "src/**/*.mjs", "src/**/*.d.ts", "test/**/*.mjs", "eval/**/*.mjs"]
 }
