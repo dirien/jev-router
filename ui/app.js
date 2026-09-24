@@ -42,7 +42,7 @@ const MONO_FONT = `11px ${MONO}`;
  * @typedef {RouteEvent | DoneEvent | DecidingEvent | ConfigEvent | NoteEvent} AppEvent
  *
  * @typedef {{ id: number, route: RouteEvent, surface: string, head: boolean, done: DoneEvent | undefined, error: string,
- *   live: boolean, flashed: boolean, inflight: boolean, cell: HTMLElement | undefined }} RouteRec
+ *   live: boolean, flashed: boolean, inflight: boolean, cell: HTMLElement | undefined, group: Group | undefined }} RouteRec
  * @typedef {{ session: string, head: RouteRec | undefined, steps: RouteRec[], live: boolean, shown: number, hidden: number,
  *   el: HTMLElement | undefined, stepsEl: HTMLElement | undefined, moreEl: HTMLElement | undefined }} Group
  * @typedef {{ tier: string, model: string, reason: string, choice: string, live: boolean }} Turn
@@ -390,8 +390,14 @@ function freshState() {
     sessions: new Map(),
     /** @type {Map<string, DecidingEvent>} */
     pending: new Map(),
-    /** @type {RouteRec | undefined} */
+    /** @type {RouteRec | undefined} the newest prompt: the decision in effect */
     latest: undefined,
+    /** @type {RouteRec | undefined} the newest request of any kind */
+    newest: undefined,
+    /** @type {number | undefined} the request the user clicked; undefined follows the live traffic */
+    selected: undefined,
+    /** requests that arrived since the selection */
+    sinceSelect: 0,
     /** @type {Map<string, ModelStat>} */
     models: new Map(),
     /** @type {Map<string, { surface: string, tier: string }>} */
@@ -502,7 +508,9 @@ function remember(rec) {
   state.routes.set(rec.id, rec);
   if (state.routes.size <= MAX_ROUTES) return;
   const oldest = state.routes.keys().next();
-  if (!oldest.done) state.routes.delete(oldest.value);
+  if (oldest.done) return;
+  state.routes.delete(oldest.value);
+  if (state.selected === oldest.value) state.selected = undefined;
 }
 
 /** @param {RouteRec} rec */
@@ -525,6 +533,7 @@ function placeInGroup(rec) {
     state.openGroups.set(session, group);
   }
   if (!rec.head) group.steps.push(rec);
+  rec.group = group;
   trimGroups();
 }
 
@@ -599,12 +608,15 @@ function applyRoute(route, live) {
     flashed: false,
     inflight: !isCount(route),
     cell: undefined,
+    group: undefined,
   };
   remember(rec);
   noteSeen(rec);
   tally(rec);
   placeInGroup(rec);
   trackSession(rec);
+  state.newest = rec;
+  if (live && state.selected !== undefined) state.sinceSelect += 1;
   if (rec.head) {
     state.latest = rec;
     state.pending.delete(route.session);
@@ -747,7 +759,9 @@ const dom = {
   mode: byId('meta-mode'),
   tiermap: byId('tiermap'),
   hero: byId('hero'),
+  heroTitle: byId('hero-title'),
   heroWhen: byId('hero-when'),
+  heroBack: byId('hero-back'),
   catName: byId('cat-name'),
   catConf: byId('cat-conf'),
   heroRoute: byId('hero-route'),
@@ -1100,11 +1114,15 @@ function manualLabel(route) {
 /** @param {RouteRec} rec */
 function renderDecision(rec) {
   const { route } = rec;
-  const jev = route.jev;
+  // A tool step, subagent or background call didn't ask Jev: it runs on what its prompt decided.
+  const source = decisionOf(rec);
+  const jev = source.route.jev;
+  const inherited = source !== rec;
   paint(dom.hero, route.tier);
   if (jev?.ok) {
     dom.catName.textContent = cap(jev.choice || '?');
-    dom.catConf.textContent = `${pct(jev.probabilities[jev.choice])} sure · maps to ${optionTier(jev.choice) ?? '?'}`;
+    const from = inherited ? ` · decided by the prompt at ${clock(source.route.ts)}` : '';
+    dom.catConf.textContent = `${pct(jev.probabilities[jev.choice])} sure · maps to ${optionTier(jev.choice) ?? '?'}${from}`;
   } else {
     dom.catName.textContent = jev ? 'No answer' : manualLabel(route);
     dom.catConf.textContent = jev ? `Jev failed: ${jev.error || 'unknown error'}` : 'Jev was not asked';
@@ -1118,7 +1136,9 @@ function renderDecision(rec) {
   );
   dom.heroRoute.title = `${route.model} on ${route.upstream}`;
   setReason(dom.heroReason, route.reason);
-  dom.heroExplain.textContent = explain(rec);
+  dom.heroExplain.textContent = inherited
+    ? `${explain(rec)} Jev wasn't asked for this ${kindLabel(rec)}; the bars show the prompt it belongs to.`
+    : explain(rec);
   renderOptionBars(jev);
   renderTierBars(jev, route.tier);
   renderGuards(jev);
@@ -1137,6 +1157,16 @@ function newestPending() {
 }
 
 function renderHero() {
+  const picked = selectedRec();
+  dom.heroTitle.textContent = picked ? 'Selected request' : 'Latest decision';
+  dom.hero.classList.toggle('picked', picked !== undefined);
+  dom.heroBack.hidden = picked === undefined;
+  dom.heroBack.textContent = state.sinceSelect ? `Back to live · ${count(state.sinceSelect, 'new request')}` : 'Back to live';
+  if (picked) {
+    dom.hero.dataset.state = 'decided';
+    renderDecision(picked);
+    return;
+  }
   const rec = state.latest;
   const pending = newestPending();
   const deciding = pending !== undefined && (!rec || pending.ts >= rec.route.ts);
@@ -1158,6 +1188,103 @@ function announce(rec) {
   const jev = route.jev;
   const lead = jev?.ok ? `Jev: ${jev.choice}, ${pct(jev.probabilities[jev.choice])} sure.` : 'Jev not used.';
   dom.announce.textContent = `${lead} Routed to ${route.tier}, ${route.model}. Reason: ${route.reason}.`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Selection: a clicked request takes over the decision panel and the flow; Escape or "Back to
+// live" follows the traffic again.
+
+/** @returns {RouteRec | undefined} */
+function selectedRec() {
+  return state.selected === undefined ? undefined : state.routes.get(state.selected);
+}
+
+/** The request the flow shows: the selected one, else the newest. */
+function focusRec() {
+  return selectedRec() ?? state.newest;
+}
+
+/**
+ * The request whose Jev answer set this one's tier: itself when it asked Jev, else the prompt
+ * its group started with.
+ * @param {RouteRec} rec
+ * @returns {RouteRec}
+ */
+function decisionOf(rec) {
+  if (rec.route.jev) return rec;
+  const head = rec.group?.head;
+  return head?.route.jev ? head : rec;
+}
+
+/** @param {number | undefined} id */
+function select(id) {
+  state.selected = id !== undefined && state.routes.has(id) ? id : undefined;
+  state.sinceSelect = 0;
+  for (const row of dom.feed.querySelectorAll('.row[data-req]')) {
+    const on = row instanceof HTMLElement && row.dataset.req === String(state.selected);
+    row.classList.toggle('selected', on);
+    row.setAttribute('aria-pressed', String(on));
+  }
+  if (state.selected !== undefined) restartClass(dom.hero, 'flash', 1200);
+  schedule('hero', 'graph');
+}
+
+/**
+ * Selects the request row an event came from, or goes back to live when it's the selected one.
+ * @param {EventTarget | null} target
+ * @returns {boolean} whether the event hit a request row
+ */
+function toggleRow(target) {
+  const row = target instanceof Element ? target.closest('.row[data-req]') : null;
+  if (!(row instanceof HTMLElement)) return false;
+  const id = Number(row.dataset.req);
+  select(state.selected === id ? undefined : id);
+  return true;
+}
+
+/** @type {string} what the flow layer shows, so it's rebuilt only when that changes */
+let focusKey = '';
+
+/**
+ * The drawn edge between two nodes, else a direct curve (a policy override has no edge of its own).
+ * @param {Graph} g
+ * @param {string} from
+ * @param {string} to
+ * @returns {string | undefined}
+ */
+function pathBetween(g, from, to) {
+  const known = g.edges.get(`${from}>${to}`);
+  if (known) return known.d;
+  const target = g.nodes.get(to);
+  const node = g.nodes.get(from);
+  const a = from === 'entry' ? g.entry : node && rightOf(node);
+  return a && target ? curve(a, leftOf(target)) : undefined;
+}
+
+/**
+ * Draws the focused request's route through the flow: streaming dashes in its tier's color, faster
+ * while the request is in flight, with every other edge and node dimmed.
+ */
+function renderFocus() {
+  const g = graph;
+  if (!g?.flowLayer) return;
+  const rec = focusRec();
+  const key = rec ? `${rec.id}|${rec.inflight}|${state.selected === undefined}` : '';
+  if (key === focusKey) return;
+  focusKey = key;
+  g.flowLayer.replaceChildren();
+  for (const n of g.nodes.values()) n.g?.classList.remove('on-path');
+  dom.flow.classList.toggle('focused', rec !== undefined);
+  if (!rec) return;
+  const chain = routeChain(rec);
+  for (let i = 0; i < chain.length - 1; i += 1) {
+    const d = pathBetween(g, chain[i], chain[i + 1]);
+    if (!d) continue;
+    const line = s('path', { d, class: rec.inflight ? 'flowline live' : 'flowline' });
+    paint(line, rec.route.tier);
+    g.flowLayer.append(line);
+  }
+  for (const id of chain) g.nodes.get(id)?.g?.classList.add('on-path');
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1255,7 +1382,12 @@ function rowEl(rec, tag) {
   rec.cell = res;
   fillResult(rec);
   row.append(h('span', 't', clock(route.ts)), sess, main, res);
-  row.title = `${route.model} on ${route.upstream || '?'}${route.trustedOnly ? ' · trusted only' : ''}`;
+  row.title = `${route.model} on ${route.upstream || '?'}${route.trustedOnly ? ' · trusted only' : ''}. Click to inspect.`;
+  row.dataset.req = String(rec.id);
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
+  row.setAttribute('aria-pressed', String(state.selected === rec.id));
+  row.classList.toggle('selected', state.selected === rec.id);
   if (rec.live && tag === 'li') row.classList.add('enter');
   return row;
 }
@@ -1324,7 +1456,7 @@ function renderFeed() {
   dirtyRecs.clear();
   dom.feedEmpty.hidden = state.groups.length > 0 || ghosts.size > 0;
   const n = state.totals.requests;
-  dom.feedNote.textContent = n ? count(n, 'request') : '';
+  dom.feedNote.textContent = n ? `${count(n, 'request')} · click one to inspect` : '';
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1476,7 +1608,7 @@ function renderTotals() {
  * @typedef {{ key: string, title: string, items: GNode[], x: number, w: number, top: number, height: number }} Column
  * @typedef {{ x: number, y: number }} Point
  * @typedef {{ nodes: Map<string, GNode>, edges: Map<string, GEdge>, columns: Column[], width: number, height: number,
- *   mode: string, entry: Point | undefined, jevBox?: SVGRectElement, particles?: SVGGElement }} Graph
+ *   mode: string, entry: Point | undefined, jevBox?: SVGRectElement, particles?: SVGGElement, flowLayer?: SVGGElement }} Graph
  */
 
 /** @type {Graph | undefined} */
@@ -1859,9 +1991,12 @@ function buildGraph() {
     note.setAttribute('text-anchor', 'middle');
     back.append(note);
   }
-  svg.append(back, edgeLayer, nodeLayer, particles);
+  const flows = s('g', { class: 'flows' });
+  svg.append(back, edgeLayer, flows, nodeLayer, particles);
   g.particles = particles;
+  g.flowLayer = flows;
   graph = g;
+  focusKey = '';
 }
 
 /**
@@ -1900,12 +2035,14 @@ function setModel(n, latest) {
 
 function renderGraphState() {
   if (!graph) return;
-  const latest = state.latest;
-  const jev = latest?.route.jev?.ok ? latest.route.jev : undefined;
+  const focus = focusRec();
+  const source = focus ? decisionOf(focus) : undefined;
+  const jev = source?.route.jev?.ok ? source.route.jev : undefined;
+  const asked = focus?.route.jev?.ok === true;
   for (const n of graph.nodes.values()) {
-    if (n.kind === 'option') setHeat(n, jev?.probabilities[n.key], jev?.choice === n.key);
-    else if (n.kind === 'tier') setHeat(n, jev?.tiers[n.key], latest?.route.tier === n.key);
-    else if (n.kind === 'model') setModel(n, latest);
+    if (n.kind === 'option') setHeat(n, jev?.probabilities[n.key], asked && jev?.choice === n.key);
+    else if (n.kind === 'tier') setHeat(n, jev?.tiers[n.key], focus?.route.tier === n.key);
+    else if (n.kind === 'model') setModel(n, focus);
     else if (n.kind === 'client') n.g?.classList.toggle('dim', state.seenSurfaces.size > 0 && !state.seenSurfaces.has(n.key));
   }
   graph.jevBox?.classList.toggle('thinking', state.pending.size > 0);
@@ -2104,6 +2241,7 @@ function flush() {
   if (parts.has('hero')) renderHero();
   if (parts.has('feed')) renderFeed();
   renderGraphState();
+  renderFocus();
   if (parts.has('sessions')) renderSessions();
   if (parts.has('totals')) renderTotals();
 }
@@ -2160,8 +2298,8 @@ function connect() {
 
 function tick() {
   prunePending();
-  const latest = state.latest;
-  if (latest) dom.heroWhen.textContent = `${clock(latest.route.ts)} · ${ago(latest.route.ts)}`;
+  const shown = selectedRec() ?? state.latest;
+  if (shown) dom.heroWhen.textContent = `${clock(shown.route.ts)} · ${ago(shown.route.ts)}`;
   for (const [id, lane] of lanes) {
     const session = state.sessions.get(id);
     if (session) lane.foot.textContent = laneFoot(session);
@@ -2174,6 +2312,15 @@ function init() {
   });
   resize.observe(dom.flowWrap);
   setInterval(tick, 1000);
+  dom.feed.addEventListener('click', (event) => toggleRow(event.target));
+  dom.feed.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (toggleRow(event.target)) event.preventDefault();
+  });
+  dom.heroBack.addEventListener('click', () => select(undefined));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.selected !== undefined) select(undefined);
+  });
   schedule('layout', 'header', 'hero', 'feed', 'sessions', 'totals');
   connect();
 }
