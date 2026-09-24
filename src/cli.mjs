@@ -24,44 +24,12 @@ import { loadConfig } from './config.mjs';
 import { JevClient } from './jev.mjs';
 import { createRouter, report, VERSION } from './router.mjs';
 
+/** @import { Config, Health, RouterServer } from './types.js' */
+
 /**
- * The parts of the router config this file reads. src/config.mjs validates the whole file.
- * @typedef {object} CliConfig
- * @property {string} host
- * @property {number} port
- * @property {string} [token]
- * @property {string | null} [logFile]
- * @property {string} defaultTier
- * @property {{ channels: Array<{ name: string, keyEnv: string }> }} jev
- * @property {Record<string, Record<string, { keyEnv?: string, clientAuth?: boolean }>>} surfaces
- */
-/**
- * What the CLI uses of the http.Server that createRouter returns.
- * @typedef {import('node:http').Server & { active: number, reload: (cfg: CliConfig) => void }} RouterServer
- */
-/**
- * GET /healthz of a running router.
- * @typedef {object} Health
- * @property {string} version
- * @property {number} uptime_s
- * @property {number} sessions
- * @property {{ configured: boolean, channels: Record<string, { calls: number, errors: number, lastError: string | null, open: boolean }> }} jev
- */
-/**
- * @typedef {{ ok: boolean, channel?: string, model?: string, choice?: string, ms: number, error?: string }} JevAnswer
- * @typedef {{ configured: boolean, decide: (state: object) => Promise<JevAnswer> }} Jev
  * @typedef {'ok' | 'warn' | 'FAIL' | 'hint' | 'info'} Status
  * @typedef {{ add: (status: Status, topic: string, text: string) => void, lines: string[], readonly failed: boolean }} Checklist
  */
-
-// router.mjs and jev.mjs get their JSDoc types on another branch. Until then TypeScript infers their
-// parameter types from default values, so the CLI states the shapes it relies on here, once.
-/** @type {(cfg: CliConfig, deps: { log: (entry: Record<string, unknown>) => void }) => RouterServer} */
-const newRouter = /** @type {any} */ (createRouter);
-/** @type {new (jev: CliConfig['jev'], env: NodeJS.ProcessEnv) => Jev} */
-const NewJevClient = /** @type {any} */ (JevClient);
-/** @type {(path: string) => CliConfig} */
-const readConfig = loadConfig;
 
 /** @param {string} path a path inside the package */
 const packaged = (path) => fileURLToPath(new URL(`../${path}`, import.meta.url));
@@ -209,7 +177,7 @@ function configFile(flag, env) {
  */
 function settings(values, env) {
   const { path, source } = configFile(values.config, env);
-  const cfg = readConfig(path);
+  const cfg = loadConfig(path);
   const host = values.host ?? envValue(env, 'JEV_ROUTER_HOST') ?? cfg.host;
   const port = parsePort(values.port ?? envValue(env, 'JEV_ROUTER_PORT') ?? cfg.port);
   // The router reads the token the same way, so an empty JEV_ROUTER_TOKEN turns it off in both.
@@ -305,14 +273,14 @@ async function serve(args, env) {
       if (!stdoutBroken) process.stdout.write(line);
     },
   );
-  const server = newRouter(cfg, { log });
+  const server = createRouter(cfg, { log });
   const bound = await listen(server, port, host).catch((err) => {
     throw new Error(`cannot listen on ${urlHost(host)}:${port}: ${errorMessage(err)}`);
   });
   console.error(`jev-router ${VERSION} listening on http://${urlHost(host)}:${bound}`);
   process.on('SIGHUP', () => {
     try {
-      cfg = { ...readConfig(path), host, port };
+      cfg = { ...loadConfig(path), host, port };
       server.reload(cfg);
       console.error('jev-router: config reloaded');
     } catch (err) {
@@ -432,7 +400,7 @@ function ownedByLaunch(env, port) {
 /**
  * Finds the router the agent should use: one that already answers at host:port, or a new one in
  * this process on loopback. The new one logs to files only, because the agent's TUI owns the terminal.
- * @param {CliConfig} cfg
+ * @param {Config} cfg
  * @param {string} host
  * @param {number} port
  * @param {NodeJS.ProcessEnv} env
@@ -444,7 +412,7 @@ async function routerFor(cfg, host, port, env) {
   if (found?.health && !ownedByLaunch(env, port)) return { url, reused: true, version: found.health.version, stop: async () => undefined };
   const logFile = routerLogPath(env);
   mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
-  const server = newRouter({ ...cfg, host: LOOPBACK, port }, { log: logger(() => [logFile, cfg.logFile]) });
+  const server = createRouter({ ...cfg, host: LOOPBACK, port }, { log: logger(() => [logFile, cfg.logFile]) });
   let bound;
   try {
     bound = await listen(server, port, LOOPBACK);
@@ -725,12 +693,12 @@ function checklist() {
  * @param {Checklist} list
  * @param {string | undefined} flag
  * @param {NodeJS.ProcessEnv} env
- * @returns {CliConfig | undefined}
+ * @returns {Config | undefined}
  */
 function checkConfig(list, flag, env) {
   const { path, source } = configFile(flag, env);
   try {
-    const cfg = readConfig(path);
+    const cfg = loadConfig(path);
     list.add('ok', 'config', `${path} (${source})`);
     return cfg;
   } catch (err) {
@@ -741,7 +709,7 @@ function checkConfig(list, flag, env) {
 
 /**
  * @param {Checklist} list
- * @param {CliConfig} cfg
+ * @param {Config} cfg
  * @param {NodeJS.ProcessEnv} env
  */
 function checkJevKeys(list, cfg, env) {
@@ -749,7 +717,7 @@ function checkJevKeys(list, cfg, env) {
     list.add(env[keyEnv] ? 'ok' : 'warn', 'jev', `${name}: ${keyEnv} is ${env[keyEnv] ? 'set' : 'not set'}`);
   }
   if (env.JEV_BASE_URL && env.JEV_API_KEY) list.add('ok', 'jev', 'env: JEV_BASE_URL and JEV_API_KEY are set, so this channel goes first');
-  if (!new NewJevClient(cfg.jev, env).configured) {
+  if (!new JevClient(cfg.jev, env).configured) {
     const keys = cfg.jev.channels.map((ch) => ch.keyEnv).join(' or ') || 'JEV_BASE_URL and JEV_API_KEY';
     list.add('FAIL', 'jev', `no Jev channel has a key, so every session would get the default tier "${cfg.defaultTier}". Set ${keys}.`);
   }
@@ -758,7 +726,7 @@ function checkJevKeys(list, cfg, env) {
 /**
  * Upstream keys, grouped by variable: many targets share one.
  * @param {Checklist} list
- * @param {CliConfig} cfg
+ * @param {Config} cfg
  * @param {NodeJS.ProcessEnv} env
  */
 function checkUpstreams(list, cfg, env) {
@@ -793,7 +761,7 @@ function checkProxy(list, env) {
 
 /**
  * @param {Checklist} list
- * @param {CliConfig | undefined} cfg
+ * @param {Config | undefined} cfg
  * @param {NodeJS.ProcessEnv} env
  */
 async function checkRouter(list, cfg, env) {
@@ -823,11 +791,11 @@ async function checkRouter(list, cfg, env) {
 /**
  * One real Jev call with a small state in the shape the router sends. It costs about $0.00003.
  * @param {Checklist} list
- * @param {CliConfig} cfg
+ * @param {Config} cfg
  * @param {NodeJS.ProcessEnv} env
  */
 async function checkLive(list, cfg, env) {
-  const client = new NewJevClient(cfg.jev, env);
+  const client = new JevClient(cfg.jev, env);
   if (!client.configured) {
     list.add('info', 'live', 'skipped: no Jev channel has a key');
     return;
@@ -873,7 +841,7 @@ function printReport(args, env) {
   const { values, rest } = parseArgs(args, { '--config': 'value' });
   if (rest.length > 1) throw new Error('Usage: jev-router report [<log.jsonl>]');
   const launched = routerLogPath(env);
-  const file = rest[0] ?? readConfig(configFile(values.config, env).path).logFile ?? (existsSync(launched) ? launched : undefined);
+  const file = rest[0] ?? loadConfig(configFile(values.config, env).path).logFile ?? (existsSync(launched) ? launched : undefined);
   if (!file) throw new Error('Usage: jev-router report <log.jsonl> (or set logFile in the config)');
   process.stdout.write(`${JSON.stringify(report(readFileSync(file, 'utf8').split('\n')), null, 2)}\n`);
   return 0;

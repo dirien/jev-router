@@ -151,9 +151,7 @@ function writeConfig(path, patch = {}, { upstream, jev } = {}) {
   return path;
 }
 
-/**
- * @typedef {{ method: string, url: string, headers: import('node:http').IncomingHttpHeaders, body: Record<string, unknown> }} MockCall
- */
+/** @import { MockCall } from './helpers.mjs' */
 /**
  * A local mock server that records every call; it's closed after the tests.
  * @param {(call: MockCall, res: import('node:http').ServerResponse) => unknown} handler
