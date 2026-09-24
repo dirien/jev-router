@@ -3,27 +3,60 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
+/** @import { Config, JevChannel, JevConfig, Policy, Target } from './types.js' */
+
+/**
+ * A config file as parsed: the shape of a Config, with anything possibly missing or wrong.
+ * @typedef {Partial<Omit<Config, 'policy' | 'jev' | 'surfaces'>> & {
+ *   policy?: Partial<Policy>,
+ *   jev?: Partial<Omit<JevConfig, 'channels'>> & { channels?: Array<Partial<JevChannel>> },
+ *   surfaces?: Record<string, Record<string, Partial<Target>>>,
+ * }} RawConfig
+ */
+
+/**
+ * Records `message` as a problem unless `ok` is truthy.
+ * @callback Need
+ * @param {unknown} ok
+ * @param {string} message
+ * @returns {void}
+ */
+
+// The file isn't validated yet, so these sets are asked about values of any type.
+/** @type {ReadonlySet<unknown>} */
 const AUTH = new Set(['x-api-key', 'bearer']);
+/** @type {ReadonlySet<unknown>} */
 const MODES = new Set(['ratchet', 'sticky']);
 
+/**
+ * Reads a JSON config file and validates it.
+ * @param {string | URL} path
+ * @returns {Config}
+ */
 export function loadConfig(path) {
+  /** @type {unknown} */
   let cfg;
   try {
     cfg = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
-    throw new Error(`Cannot read config ${path}: ${err.message}`);
+    throw new Error(`Cannot read config ${path}: ${/** @type {Error} */ (err).message}`);
   }
   return validateConfig(cfg);
 }
 
-// Returns the config with defaults filled in, or throws with the full list of problems.
+/**
+ * Returns the config with defaults filled in, or throws with the full list of problems.
+ * @param {unknown} input a parsed config file; it is cloned, never changed
+ * @returns {Config}
+ */
 export function validateConfig(input) {
-  const cfg = structuredClone(input);
+  const cfg = /** @type {RawConfig} */ (structuredClone(input));
+  /** @type {string[]} */
   const problems = [];
+  /** @type {Need} */
   const need = (ok, message) => {
     if (!ok) problems.push(message);
   };
-  const isProbability = (v) => typeof v === 'number' && v >= 0 && v <= 1;
 
   cfg.host ??= '127.0.0.1';
   cfg.port ??= 4000;
@@ -45,27 +78,56 @@ export function validateConfig(input) {
     'tiers must list tier names, cheapest first',
   );
   const tiers = new Set(cfg.tiers ?? []);
-  need(tiers.has(cfg.defaultTier), `defaultTier "${cfg.defaultTier}" is not one of tiers`);
+  need(cfg.defaultTier !== undefined && tiers.has(cfg.defaultTier), `defaultTier "${cfg.defaultTier}" is not one of tiers`);
 
-  cfg.policy = {
+  cfg.policy = checkPolicy(cfg.policy, tiers, need);
+  cfg.jev = checkJev(cfg.jev, tiers, need);
+  checkSurfaces(cfg.surfaces, tiers, need);
+  cfg.modelPins ??= {};
+  for (const [family, tier] of Object.entries(cfg.modelPins)) need(tiers.has(tier), `modelPins.${family} must be one of tiers`);
+  cfg.prices ??= {};
+
+  if (problems.length) throw new Error(`Invalid router config:\n  - ${problems.join('\n  - ')}`);
+  return /** @type {Config} */ (cfg);
+}
+
+/**
+ * The policy with defaults filled in. `accept` defaults to 0.6 for every tier.
+ * @param {Partial<Policy> | undefined} input
+ * @param {Set<string>} tiers
+ * @param {Need} need
+ * @returns {Partial<Policy>}
+ */
+function checkPolicy(input, tiers, need) {
+  /** @type {Partial<Policy>} */
+  const policy = {
     mode: 'ratchet',
     sensitiveOverride: 0.7,
     claimGuard: 0.5,
     maxProvisional: 3,
     idleResetMinutes: 10,
     failClosed: false,
-    ...cfg.policy,
+    ...input,
   };
-  const policy = cfg.policy;
   need(MODES.has(policy.mode), 'policy.mode must be "ratchet" or "sticky"');
   policy.accept = { ...Object.fromEntries([...tiers].map((t) => [t, 0.6])), ...policy.accept };
   for (const [tier, p] of Object.entries(policy.accept)) {
     need(tiers.has(tier), `policy.accept names unknown tier "${tier}"`);
     need(isProbability(p), `policy.accept.${tier} must be a probability`);
   }
-  for (const key of ['sensitiveOverride', 'claimGuard']) need(isProbability(policy[key]), `policy.${key} must be a probability`);
+  need(isProbability(policy.sensitiveOverride), 'policy.sensitiveOverride must be a probability');
+  need(isProbability(policy.claimGuard), 'policy.claimGuard must be a probability');
+  return policy;
+}
 
-  const jev = (cfg.jev = { deadlineMs: 2500, requestChars: 4000, stripCode: true, guards: true, channels: [], ...cfg.jev });
+/**
+ * The Jev settings with defaults filled in, channel timeouts included.
+ * @param {RawConfig['jev']} input
+ * @param {Set<string>} tiers
+ * @param {Need} need
+ */
+function checkJev(input, tiers, need) {
+  const jev = { deadlineMs: 2500, requestChars: 4000, stripCode: true, guards: true, channels: [], ...input };
   need(Array.isArray(jev.channels), 'jev.channels must be an array');
   for (const [i, ch] of (jev.channels ?? []).entries()) {
     ch.timeoutMs ??= 1200;
@@ -79,38 +141,53 @@ export function validateConfig(input) {
   for (const [name, option] of Object.entries(jev.options ?? {})) {
     need(tiers.has(option?.tier), `jev.options.${name}.tier must be one of tiers`);
   }
+  return jev;
+}
 
-  need(cfg.surfaces && typeof cfg.surfaces === 'object', 'surfaces is required');
-  for (const [surface, targets] of Object.entries(cfg.surfaces ?? {})) {
+/**
+ * Every surface needs a target per tier, and a trusted target when some tier's target isn't trusted.
+ * @param {RawConfig['surfaces']} surfaces
+ * @param {Set<string>} tiers
+ * @param {Need} need
+ */
+function checkSurfaces(surfaces, tiers, need) {
+  need(surfaces && typeof surfaces === 'object', 'surfaces is required');
+  for (const [surface, targets] of Object.entries(surfaces ?? {})) {
     for (const tier of tiers) need(targets[tier], `surfaces.${surface} has no target for tier "${tier}"`);
     const untrusted = [...tiers].some((t) => targets[t] && !targets[t].trusted);
     need(
       !untrusted || targets.trusted?.trusted,
       `surfaces.${surface} routes some tiers to untrusted upstreams, so it needs a trusted target marked "trusted": true`,
     );
-    for (const [name, target] of Object.entries(targets)) {
-      const where = `surfaces.${surface}.${name}`;
-      need(isUrl(target.url), `${where}.url must be an http(s) URL`);
-      need(typeof target.model === 'string' && target.model, `${where}.model is required`);
-      need(AUTH.has(target.auth), `${where}.auth must be "x-api-key" or "bearer"`);
-      need(target.keyEnv || target.clientAuth, `${where} needs keyEnv or clientAuth`);
-      need(
-        target.omit === undefined || (Array.isArray(target.omit) && target.omit.every((f) => typeof f === 'string')),
-        `${where}.omit must be a list of field paths`,
-      );
-    }
+    for (const [name, target] of Object.entries(targets)) checkTarget(target, `surfaces.${surface}.${name}`, need);
   }
-  cfg.modelPins ??= {};
-  for (const [family, tier] of Object.entries(cfg.modelPins)) need(tiers.has(tier), `modelPins.${family} must be one of tiers`);
-  cfg.prices ??= {};
-
-  if (problems.length) throw new Error(`Invalid router config:\n  - ${problems.join('\n  - ')}`);
-  return cfg;
 }
 
+/**
+ * @param {Partial<Target>} target
+ * @param {string} where the target's path in the config, for messages
+ * @param {Need} need
+ */
+function checkTarget(target, where, need) {
+  need(isUrl(target.url), `${where}.url must be an http(s) URL`);
+  need(typeof target.model === 'string' && target.model, `${where}.model is required`);
+  need(AUTH.has(target.auth), `${where}.auth must be "x-api-key" or "bearer"`);
+  need(target.keyEnv || target.clientAuth, `${where} needs keyEnv or clientAuth`);
+  need(
+    target.omit === undefined || (Array.isArray(target.omit) && target.omit.every((f) => typeof f === 'string')),
+    `${where}.omit must be a list of field paths`,
+  );
+}
+
+/** @param {unknown} value */
+function isProbability(value) {
+  return typeof value === 'number' && value >= 0 && value <= 1;
+}
+
+/** @param {unknown} value */
 function isUrl(value) {
   try {
-    return ['http:', 'https:'].includes(new URL(value).protocol);
+    return ['http:', 'https:'].includes(new URL(String(value)).protocol);
   } catch {
     return false;
   }
