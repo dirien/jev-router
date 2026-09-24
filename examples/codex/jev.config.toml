@@ -1,0 +1,16 @@
+# ~/.codex/jev.config.toml. Start Codex with: codex --profile jev
+# Codex shapes every request (tool types, shell type, parallel tool calls) from the model's
+# catalog entry, so it talks to one virtual model, "jev-auto", whose metadata every routed
+# model can handle. The router picks the real model behind it.
+model = "jev-auto"
+model_provider = "jev"
+model_catalog_json = "/absolute/path/to/jev-models.json"
+web_search = "disabled"          # Ollama Cloud has no built-in web search on /v1/responses
+
+[model_providers.jev]
+name = "Jev router"
+base_url = "http://127.0.0.1:4000/v1"
+wire_api = "responses"           # the only value Codex 0.156 accepts
+supports_websockets = false      # WebSockets carry previous_response_id, which is stateful
+# Pin a tier for sessions started with this profile instead of asking Jev:
+# http_headers = { "x-jev-tier" = "frontier" }

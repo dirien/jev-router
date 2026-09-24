@@ -1,0 +1,55 @@
+{
+  "name": "jev-router",
+  "version": "1.0.0",
+  "description": "Pass-through model router for Claude Code and Codex CLI that picks a model tier per human turn with Jev, TypeSafe AI's decision model",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "model-router",
+    "jev",
+    "typesafe",
+    "ollama",
+    "llm-gateway"
+  ],
+  "license": "Apache-2.0",
+  "author": "Engin Diri",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dirien/jev-router.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "jev-router": "bin/jev-router.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "config/",
+    "examples/",
+    "sbx/",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node bin/jev-router.mjs serve",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint:md": "markdownlint-cli2",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=85 --test-coverage-include='src/**' test/*.test.mjs",
+    "check": "npm run lint && npm run typecheck && npm run lint:md && npm test",
+    "test:live": "node test/live.mjs",
+    "eval": "node eval/run.mjs",
+    "eval:mock": "node eval/run.mjs --mock"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "22.20.4",
+    "markdownlint-cli2": "0.23.3",
+    "typescript": "7.0.2"
+  }
+}

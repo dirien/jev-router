@@ -1,0 +1,51 @@
+# Docker Sandboxes mixin kit for the Jev router lab.
+# It declares the router's upstream credentials as proxy-managed services, so the real keys stay
+# in the host keychain. Inside the sandbox each variable holds the sentinel "proxy-managed", and the
+# sandbox proxy writes the real Authorization header on the way out.
+# Schema: https://docs.docker.com/ai/sandboxes/customize/kit-reference/
+# Status: the schema and fields are documented, but this exact kit hasn't been run yet. Validate it with:
+#   sbx kit validate <path-to-this-directory>
+schemaVersion: "2"
+kind: mixin
+name: jev-router
+version: "0.1.0"
+description: Upstream credentials and egress for jev-router
+requires:
+  agent: claude
+permissions:
+  network:
+    allow:
+      - openrouter.ai          # Jev through OpenRouter (System One API)
+      - api.typesafe.ai        # Jev direct from TypeSafe
+      - ollama.com             # Ollama Cloud: /v1/messages for Claude Code, /v1/responses for Codex
+      - api.openai.com         # OpenAI: Codex frontier and trusted tiers
+      - registry.npmjs.org     # npm install -g @openai/codex
+credentials:
+  - service: openrouter
+    apiKey:
+      name: OPENROUTER_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: openrouter.ai
+          scheme: bearer
+  - service: typesafe
+    apiKey:
+      name: TYPESAFE_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.typesafe.ai
+          scheme: bearer
+  - service: ollama-cloud
+    apiKey:
+      name: OLLAMA_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: ollama.com
+          scheme: bearer
+  - service: openai
+    apiKey:
+      name: OPENAI_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.openai.com
+          scheme: bearer
