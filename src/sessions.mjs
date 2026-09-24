@@ -36,6 +36,7 @@ export class SessionStore {
     if (file) this.#load(file);
   }
 
+  /** How many sessions the store holds. */
   get size() {
     return this.map.size;
   }
