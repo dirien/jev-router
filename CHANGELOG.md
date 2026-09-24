@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-09-24
+
+### Fixed
+
+- A background call selected in the live view showed its prompt's verdict (for example "the session never moves
+  down → frontier") although it went to `side`. Background calls and token counts don't run on the session's tier,
+  so they no longer inherit a prompt's decision: the panel reads "Background call · Jev not asked" and explains
+  that these calls always take the side target and never change the session's tier.
+
 ## [1.3.1] - 2026-09-24
 
 ### Fixed
@@ -113,7 +122,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/dirien/jev-router/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/dirien/jev-router/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/dirien/jev-router/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/dirien/jev-router/compare/v1.2.0...v1.2.1

@@ -150,7 +150,7 @@ category and the fast tier to Haiku 4.5 streams across the flow while the rest o
 - **Totals.** Spend against the baseline model, Jev's latency and its fallbacks.
 - **Any request, on a click.** Click a request in the timeline, or focus it and press Enter, and the decision panel
   and the flow switch to it: its route streams across the graph in its tier's color. A tool step, subagent or
-  background call shows the prompt whose decision it runs on. Escape, or **Back to live**, follows the traffic
+  compaction shows the prompt whose decision it runs on; a background call shows that it always takes `side`. Escape, or **Back to live**, follows the traffic
   again; while following, the flow streams the newest request's route.
 
 ```bash
@@ -401,7 +401,7 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 
 ## Status
 
-The current release is 1.3.1. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
+The current release is 1.3.2. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
 A live check on 2026-09-24 sent Claude Code's full request shape through the router to Anthropic, with Jev mocked:
 Haiku 4.5 (with its `omit` list, and `max_tokens` lowered from Claude Code's 128,000 to 64,000) and Sonnet 5 both
 answered 200, the streams were byte-exact, and the router made one Jev call per human message.
