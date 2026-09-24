@@ -74,8 +74,9 @@ Inside the sandbox:
 
 ```bash
 node --version && echo "NODE_USE_ENV_PROXY=$NODE_USE_ENV_PROXY"    # Node 22 or newer, and the variable must be 1
+placeholder=proxy-managed                                            # what the kit puts in every key variable
 for u in https://api.typesafe.ai/v1/models https://openrouter.ai/api/v1/key https://ollama.com/api/ps https://api.openai.com/v1/models; do
-  printf '%s  %s\n' "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer proxy-managed' "$u")" "$u"
+  printf '%s  %s\n' "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $placeholder" "$u")" "$u"
 done                                                                 # 200: the key is injected; 401: it isn't
 npm ci && npm test                                                   # offline tests, no network (verified)
 npm link || sudo npm link                                            # puts jev-router on the PATH
