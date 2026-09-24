@@ -34,9 +34,15 @@ import http from 'node:http';
 /** @typedef {RequestBody & { messages: Item[] }} MessagesBody an Anthropic Messages body */
 /** @typedef {RequestBody & { input: Item[] }} ResponsesBody an OpenAI Responses body */
 
-/** @type {(ms: number) => Promise<void>} */
+/**
+ * Resolves after `ms` milliseconds.
+ * @type {(ms: number) => Promise<void>}
+ */
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-/** @param {string | Uint8Array} bytes */
+/**
+ * The hex SHA-256 of some bytes, to compare what the router relayed with what the upstream sent.
+ * @param {string | Uint8Array} bytes
+ */
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 // Listens on an ephemeral port the OS assigns, so parallel test runs never collide.
@@ -89,6 +95,7 @@ export async function mockServer(handler) {
 }
 
 /**
+ * Answers a mock request with a JSON body.
  * @param {ServerResponse} res
  * @param {number} status
  * @param {unknown} body
@@ -126,9 +133,11 @@ export function jevAnswer({ tier = 'balanced', probability = 0.9, secrets = 0.02
  */
 const sse = (events) => Buffer.from(events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
 
-// An Anthropic SSE stream split into uneven chunks, two of which cut a multi-byte UTF-8
-// character in half. A proxy that decodes and re-encodes text would corrupt it.
-/** @param {unknown} model */
+/**
+ * An Anthropic SSE stream split into uneven chunks, two of which cut a multi-byte UTF-8
+ * character in half. A proxy that decodes and re-encodes text would corrupt it.
+ * @param {unknown} model
+ */
 export function anthropicSse(model) {
   const bytes = sse([
     [
@@ -160,7 +169,10 @@ export function anthropicSse(model) {
   return [0, ...cuts].map((start, i) => bytes.subarray(start, cuts[i] ?? bytes.length));
 }
 
-/** @param {unknown} model */
+/**
+ * An OpenAI Responses SSE stream with no usage in it.
+ * @param {unknown} model
+ */
 export function responsesSse(model) {
   return sse([
     ['response.created', { type: 'response.created', response: { id: 'resp_mock', model, status: 'in_progress' } }],
@@ -170,6 +182,7 @@ export function responsesSse(model) {
 }
 
 // Request shapes captured from Claude Code 2.1.281 and the Codex CLI source.
+/** The Bash tool as Claude Code declares it. */
 export const BASH_TOOL = {
   name: 'Bash',
   description: 'Executes a given bash command and returns its output.',
@@ -177,8 +190,9 @@ export const BASH_TOOL = {
 };
 
 /**
+ * The headers Claude Code sends, with a placeholder key of its own.
  * @param {string} sessionId
- * @param {Record<string, string>} [extra]
+ * @param {Record<string, string>} [extra] added or replaced headers
  * @returns {Record<string, string>}
  */
 export function claudeCodeHeaders(sessionId, extra = {}) {
@@ -197,6 +211,7 @@ export function claudeCodeHeaders(sessionId, extra = {}) {
 const reminder = { type: 'text', text: '<system-reminder>\nContents of CLAUDE.md: keep answers short.\n</system-reminder>' };
 
 /**
+ * A Claude Code request for a new human turn, after `history`, with a system reminder in front of the text.
  * @param {string} sessionId
  * @param {string} text what the user typed
  * @param {{ model?: string, stream?: boolean, history?: Item[], maxTokens?: number }} [options]
@@ -230,8 +245,9 @@ export function claudeCodeToolTurn(sessionId, text) {
 }
 
 /**
+ * The headers Codex CLI sends, with a placeholder login of its own.
  * @param {string} threadId
- * @param {Record<string, string>} [extra]
+ * @param {Record<string, string>} [extra] added or replaced headers
  * @returns {Record<string, string>}
  */
 export function codexHeaders(threadId, extra = {}) {
@@ -246,6 +262,7 @@ export function codexHeaders(threadId, extra = {}) {
 }
 
 /**
+ * A Codex CLI request: environment context, then the user's text.
  * @param {string} threadId
  * @param {string} text
  * @returns {ResponsesBody}
