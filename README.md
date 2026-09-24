@@ -201,7 +201,11 @@ Then, for every request, the router:
    of the Claude models in the shipped configs are built in, and a target's `maxOutputTokens` overrides them.
 1. **Folds system messages.** Claude Code puts `role: "system"` messages inside the conversation for the Claude 5
    family. Haiku 4.5 rejects them, so for any other model the router folds each into the user message it follows,
-   as `<system-reminder>` text after that message's tool results. A target's `foldSystemMessages` overrides it.
+   as `<system-reminder>` text after that message's tool results; the tools such a message adds join `tools`. A
+   target's `foldSystemMessages` overrides it.
+1. **Drops betas the model rejects.** Once Claude Code's own model has a 1M window, it asks for the 1M-context
+   beta, which Haiku 4.5 refuses on a subscription. The router leaves it out for Haiku; a target's `omitBetas`
+   overrides that.
 1. **Trims identifiers.** An untrusted target gets a minimal set of headers and no `metadata`.
 1. **Forwards.** It streams the response back with back-pressure, and cancels the upstream request when the client
    goes away.
@@ -325,7 +329,7 @@ documents every key, its default and its validation.
 | `jev.channels` | Ordered System One channels, each with `baseUrl`, `model` (pin a version such as `jev-1.13.0`), `keyEnv` and `timeoutMs` |
 | `jev.deadlineMs`, `jev.requestChars` | The total Jev budget per decision, and the size cap for the latest message |
 | `jev.question`, `jev.options` | The rubric: one choice question with `what`, `examples` and `not_for` per option, and each option's `tier` |
-| `surfaces.<anthropic\|openai>.<tier\|side\|trusted>` | Targets: `url`, `model`, `auth` (`x-api-key` or `bearer`), `keyEnv`, `clientAuth`, `trusted`, `countTokens`, `omit`, `maxOutputTokens`, `foldSystemMessages` |
+| `surfaces.<anthropic\|openai>.<tier\|side\|trusted>` | Targets: `url`, `model`, `auth` (`x-api-key` or `bearer`), `keyEnv`, `clientAuth`, `trusted`, `countTokens`, `omit`, `maxOutputTokens`, `foldSystemMessages`, `omitBetas` |
 | `prices`, `baselineModel` | USD per million tokens for the cost ledger, and the model savings are measured against |
 | `sideCallModel`, `pinOnModelChange`, `modelPins` | Background-call detection, and model family to tier for `/model` switches |
 | `host`, `port`, `token`, `allowedHosts`, `allowedOrigins`, `maxBodyBytes`, `stateFile`, `logFile` | Server settings |
@@ -401,7 +405,7 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 
 ## Status
 
-The current release is 1.3.2. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
+The current release is 1.3.3. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
 A live check on 2026-09-24 sent Claude Code's full request shape through the router to Anthropic, with Jev mocked:
 Haiku 4.5 (with its `omit` list, and `max_tokens` lowered from Claude Code's 128,000 to 64,000) and Sonnet 5 both
 answered 200, the streams were byte-exact, and the router made one Jev call per human message.

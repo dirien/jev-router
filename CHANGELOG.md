@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-09-24
+
+### Fixed
+
+- After `/model` to a model with a 1M window, every Claude Code request routed to Haiku 4.5 failed with "The long
+  context beta is not yet available for this subscription": Claude Code asks for the 1M-context beta on every
+  request. The router now drops beta flags a target's model rejects, built in for Haiku 4.5's
+  `context-1m-2025-08-07`, with a new `omitBetas` per target.
+- A folded system message that added or removed tools failed with "'tool_addition'/'tool_removal' blocks are
+  only permitted within `role: "system"` messages". Folding now adds the tools such a message defines to
+  `tools`, loads a deferred tool it references, and leaves removals out, so a removed tool stays available.
+
 ## [1.3.2] - 2026-09-24
 
 ### Fixed
@@ -122,7 +134,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/dirien/jev-router/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/dirien/jev-router/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/dirien/jev-router/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/dirien/jev-router/compare/v1.2.1...v1.3.0
