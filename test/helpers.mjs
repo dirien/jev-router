@@ -6,26 +6,22 @@ import http from 'node:http';
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-// This sandbox reserves ports 4000-4049 for the prototype, so pick a random free one in that range.
-// Skip 4045: it is on the Fetch standard's "bad ports" list, and fetch() refuses it with "bad port".
-export async function listen(server, low = 4001, high = 4049) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const port = low + Math.floor(Math.random() * (high - low + 1));
-    if (port === 4045) continue;
-    try {
-      await new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(port, '127.0.0.1', () => {
-          server.off('error', reject);
-          resolve();
-        });
-      });
-      return `http://127.0.0.1:${port}`;
-    } catch (err) {
-      if (err.code !== 'EADDRINUSE') throw err;
-    }
-  }
-  throw new Error(`no free port in ${low}-${high}`);
+// Listens on an ephemeral port the OS assigns, so parallel test runs never collide.
+/**
+ * @param {import('node:http').Server} server
+ * @returns {Promise<string>} the base URL, for example http://127.0.0.1:41234
+ */
+export async function listen(server) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve(undefined);
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('server has no TCP address');
+  return `http://127.0.0.1:${address.port}`;
 }
 
 export const close = (server) =>
