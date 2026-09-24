@@ -228,6 +228,12 @@ test('usage tap reads Anthropic and Responses usage from the stream; costOf pric
   assert.equal(costOf('unknown-model', usage, cfg.prices), undefined);
 });
 
+test('the usage tap skips SSE events that are not JSON objects (regression: `data: null` threw and cut the stream)', () => {
+  const tap = new UsageTap('text/event-stream');
+  tap.push(Buffer.from('data: null\n\ndata: 42\n\ndata: {"type":"message_delta","usage":{"output_tokens":5}}\n\n'));
+  assert.deepEqual(tap.result(), { input: 0, cacheRead: 0, cacheWrite: 0, output: 5 });
+});
+
 test('session keys and request kinds come from what each client sends', () => {
   assert.deepEqual(sessionKey({ 'x-claude-code-session-id': 'A' }, {}), { id: 'A', source: 'claude-code-header' });
   assert.equal(sessionKey({}, { metadata: { user_id: JSON.stringify({ session_id: 'B' }) } }).id, 'B');

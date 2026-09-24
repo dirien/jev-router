@@ -31,6 +31,8 @@ export class UsageTap {
     } catch {
       return;
     }
+    // `data: null` must not throw: an exception here would cut the stream the client is reading.
+    if (!event || typeof event !== 'object') return;
     if (event.type === 'message_start') {
       this.model = event.message?.model;
       Object.assign(this.raw, event.message?.usage);
