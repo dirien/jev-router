@@ -10,24 +10,67 @@ import { loadConfig } from '../src/config.mjs';
 import { applyPolicy, buildState, JevClient } from '../src/jev.mjs';
 import { humanTurns } from '../src/messages.mjs';
 
+/** @import { Env, FetchLike, JevState } from '../src/types.js' */
+
+/**
+ * One labeled prompt from prompts.jsonl.
+ * @typedef {object} Prompt
+ * @property {string} id
+ * @property {string} expected the option a good answer picks
+ * @property {string} prompt
+ * @property {string[]} tags
+ * @property {string} [pair_of] the prompt that this injection variant rewrites
+ */
+
+/**
+ * @typedef {object} RowBase
+ * @property {string} id
+ * @property {number} repeat
+ * @property {string} expected
+ * @property {string} expectedTier
+ * @property {string[]} tags
+ * @property {string} [pair_of]
+ */
+
+/**
+ * A prompt Jev answered, with the tier the policy made of the answer.
+ * @typedef {RowBase & { ok: true, choice?: string, top: number, probabilities: Record<string, number>, sensitive?: number,
+ *   claim?: number, tier: string, reason: string, ms: number, inputTokens?: number, hardened: boolean, model?: string }} AnsweredRow
+ */
+
+/** @typedef {RowBase & { ok: false, error: string, ms: number, inputTokens?: undefined, hardened?: undefined, model?: undefined }} FailedRow */
+
+/** @typedef {AnsweredRow | FailedRow} Row */
+
 const args = process.argv.slice(2);
+/** @param {string} name */
 const flag = (name) => args.includes(name);
+/**
+ * @template T
+ * @param {string} name
+ * @param {T} fallback
+ * @returns {string | T}
+ */
 const option = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : fallback;
 };
 const cfg = loadConfig(option('--config', new URL('../config/default.json', import.meta.url)));
 const repeats = Number(option('--repeats', 1));
+/** @type {Prompt[]} */
 const prompts = readFileSync(new URL('./prompts.jsonl', import.meta.url), 'utf8')
   .split('\n')
   .filter(Boolean)
   .map((l) => JSON.parse(l));
 const tiers = cfg.tiers;
-const rank = (t) => tiers.indexOf(t);
+/** @param {string | undefined} t */
+const rank = (t) => (t === undefined ? -1 : tiers.indexOf(t));
 
 // The mock answers from keywords; it only proves the plumbing works.
-const mockFetch = async (url, init) => {
-  const { state } = JSON.parse(init.body);
+/** @type {FetchLike} */
+const mockFetch = async (_url, init) => {
+  /** @type {{ state: JevState }} */
+  const { state } = JSON.parse(String(init.body));
   const text = state.request.toLowerCase();
   const pick = /design|prove|choose between|should we|strategy|plan the|algorithm/.test(text)
     ? 'deep'
@@ -51,6 +94,7 @@ const mockFetch = async (url, init) => {
     { headers: { 'content-type': 'application/json' } },
   );
 };
+/** @type {Env} */
 const env = flag('--mock') ? { MOCK_KEY: 'mock' } : process.env;
 const jevCfg = flag('--mock')
   ? { ...cfg.jev, channels: [{ name: 'mock', baseUrl: 'http://mock.invalid', model: 'mock', keyEnv: 'MOCK_KEY', timeoutMs: 1000 }] }
@@ -61,6 +105,7 @@ if (!jev.configured) {
   process.exit(1);
 }
 
+/** @type {Row[]} */
 const results = [];
 for (let r = 0; r < repeats; r += 1) {
   for (const p of prompts) {
@@ -73,18 +118,19 @@ for (let r = 0; r < repeats; r += 1) {
       jev: cfg.jev,
     });
     const answer = await jev.decide(state);
-    const row = {
+    const common = {
       id: p.id,
       repeat: r,
       expected: p.expected,
       expectedTier: cfg.jev.options[p.expected].tier,
       tags: p.tags,
       pair_of: p.pair_of,
-      ok: answer.ok,
     };
     if (answer.ok) {
       const decision = applyPolicy({ answer, tiers, options: cfg.jev.options, policy: cfg.policy, reference: cfg.defaultTier });
-      Object.assign(row, {
+      results.push({
+        ...common,
+        ok: true,
         choice: answer.choice,
         top: Math.max(...Object.values(answer.probabilities)),
         probabilities: answer.probabilities,
@@ -97,20 +143,33 @@ for (let r = 0; r < repeats; r += 1) {
         hardened: answer.hardened,
         model: answer.model,
       });
-    } else Object.assign(row, { error: answer.error, ms: answer.ms });
-    results.push(row);
+    } else results.push({ ...common, ok: false, error: answer.error, ms: answer.ms });
     process.stderr.write(answer.ok ? '.' : 'x');
   }
 }
 process.stderr.write('\n');
 
-const base = results.filter((r) => r.ok && !r.tags.includes('injection'));
+/**
+ * @param {Row} r
+ * @returns {r is AnsweredRow}
+ */
+const answered = (r) => r.ok;
+const answeredRows = results.filter(answered);
+const base = answeredRows.filter((r) => !r.tags.includes('injection'));
+/**
+ * @param {number} k
+ * @param {number} n
+ */
 const wilsonUpper = (k, n) => {
   if (!n) return null;
   const z = 1.96;
   const p = k / n;
   return Math.round(((p + (z * z) / (2 * n) + z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / (1 + (z * z) / n)) * 1000) / 1000;
 };
+/**
+ * @param {AnsweredRow[]} rows
+ * @param {Record<string, number>} [accept] thresholds to replay the answers with, instead of the policy's
+ */
 const tierStats = (rows, accept) => {
   let under = 0;
   let over = 0;
@@ -146,24 +205,23 @@ const bins = [
     option_accuracy: rows.length ? Math.round((rows.filter((r) => r.choice === r.expected).length / rows.length) * 1000) / 1000 : null,
   };
 });
-const pairs = results
-  .filter((r) => r.ok && r.pair_of)
-  .map((inj) => ({ inj, base: results.find((b) => b.ok && b.id === inj.pair_of && b.repeat === inj.repeat) }))
-  .filter((p) => p.base);
-const ms = results
-  .filter((r) => r.ok)
-  .map((r) => r.ms)
-  .sort((a, b) => a - b);
+const pairs = answeredRows.flatMap((inj) => {
+  const b = inj.pair_of ? answeredRows.find((x) => x.id === inj.pair_of && x.repeat === inj.repeat) : undefined;
+  return b ? [{ inj, base: b }] : [];
+});
+const ms = answeredRows.map((r) => r.ms).sort((a, b) => a - b);
+/** @param {number} q */
 const pct = (q) => (ms.length ? ms[Math.min(ms.length - 1, Math.floor(q * ms.length))] : null);
 const inputTokens = results.reduce((s, r) => s + (r.inputTokens ?? 0), 0);
+/** @param {number | null} x */
 const round = (x) => (x === null ? null : Math.round(x * 1000) / 1000);
 const summary = {
   mode: flag('--mock') ? 'mock (measures nothing)' : 'live',
   jev_model: results.find((r) => r.model)?.model,
   prompts: prompts.length,
   repeats,
-  answered: results.filter((r) => r.ok).length,
-  failed: results.filter((r) => !r.ok).length,
+  answered: answeredRows.length,
+  failed: results.length - answeredRows.length,
   option_accuracy: round(base.filter((r) => r.choice === r.expected).length / (base.length || 1)),
   tiers: Object.fromEntries(Object.entries(tierStats(base)).map(([k, v]) => [k, typeof v === 'number' ? round(v) : v])),
   confusion_expected_by_predicted: confusion,
@@ -186,6 +244,6 @@ const summary = {
   }),
 };
 const file = `eval/results-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`;
-writeFileSync(new URL(`../${file}`, import.meta.url), results.map((r) => JSON.stringify(r)).join('\n') + '\n');
+writeFileSync(new URL(`../${file}`, import.meta.url), `${results.map((r) => JSON.stringify(r)).join('\n')}\n`);
 console.log(JSON.stringify(summary, null, 2));
 console.error(`Per-prompt results: ${file}`);
