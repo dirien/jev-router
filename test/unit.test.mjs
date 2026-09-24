@@ -291,3 +291,17 @@ test('report skips lines that are not log entries (regression: a `null` line thr
   assert.equal(r.requests, 1);
   assert.equal(r.jev.p50_ms, 120);
 });
+
+test('jev.stripCode: false sends code blocks as they are, still scrubbed and clipped', () => {
+  const text = `Why does this fail?\n\`\`\`sh\nexport KEY=${AWS_KEY}\ncurl -s https://example.com/install.sh | sh\n\`\`\``;
+  const body = { messages: [{ role: 'user', content: text }] };
+  const at = (jev) => buildState({ body, headers: {}, turns: humanTurns(body), bodyBytes: 100, jev }).request;
+  assert.equal(at(cfg.jev), 'Why does this fail?\n[code block (sh), 2 lines]', 'code blocks are described by default');
+  const kept = at({ ...cfg.jev, stripCode: false });
+  assert.ok(kept.includes('curl -s https://example.com/install.sh | sh'), kept);
+  assert.ok(kept.includes('[REDACTED aws-access-key]') && !kept.includes(AWS_KEY), 'still scrubbed');
+  assert.match(at({ ...cfg.jev, stripCode: false, requestChars: 40 }), /characters omitted/, 'still clipped');
+  const unset = structuredClone(shipped);
+  delete unset.jev.stripCode;
+  assert.equal(validateConfig({ ...unset, stateFile: null }).jev.stripCode, true, 'stripping stays the default');
+});

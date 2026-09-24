@@ -93,6 +93,7 @@ export interface JevConfig {
   deadlineMs: number;
   /** Longest request text Jev sees; longer ones keep their start and end. */
   requestChars: number;
+  /** Replace code blocks with a one-line description before Jev sees them (the default). */
   stripCode: boolean;
   /** Ask the two guard questions (sensitive state, routing claims) along with the tier. */
   guards: boolean;

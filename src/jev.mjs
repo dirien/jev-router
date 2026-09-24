@@ -42,18 +42,22 @@ import { scrub } from './secrets.mjs';
 
 /**
  * The state Jev sees: the request and a little context, never tool output, file contents or the
- * system prompt. Secrets are scrubbed before truncation.
+ * system prompt. Secrets are scrubbed before truncation, and code blocks become a one-line
+ * description unless `jev.stripCode` is false.
  * @param {object} request
  * @param {RequestBody} request.body
  * @param {IncomingHttpHeaders} request.headers
  * @param {Turn[]} request.turns the human turns; the last one is the request
  * @param {number} request.bodyBytes the body's size, which tells how long the session is
- * @param {Pick<JevConfig, 'requestChars'>} request.jev
+ * @param {Pick<JevConfig, 'requestChars' | 'stripCode'>} request.jev
  * @returns {JevState}
  */
 export function buildState({ body, headers, turns, bodyBytes, jev }) {
   /** @type {(text: string, max: number) => string} */
-  const prepare = (text, max) => clip(describeCode(scrub(text).text), max);
+  const prepare = (text, max) => {
+    const scrubbed = scrub(text).text;
+    return clip(jev.stripCode ? describeCode(scrubbed) : scrubbed, max);
+  };
   const latest = turns[turns.length - 1];
   const earlier = turns
     .slice(-3, -1)
