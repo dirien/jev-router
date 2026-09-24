@@ -1,6 +1,6 @@
 // The jev-router command. `serve` runs the router in the foreground; `launch` runs Claude Code or
-// Codex through a router for one session; `env`, `doctor`, `init` and `report` set it up and read
-// its log. What scripts consume (exports, reports, the router log under `serve`) goes to stdout,
+// Codex through a router for one session; `env`, `doctor`, `init`, `report` and `ui` set it up and
+// read its log. What scripts consume (exports, reports, the router log under `serve`) goes to stdout,
 // messages for people go to stderr.
 import { spawn } from 'node:child_process';
 import {
@@ -22,7 +22,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { JevClient } from './jev.mjs';
-import { createRouter, report, VERSION } from './router.mjs';
+import { createRouter, describeConfig, report, VERSION } from './router.mjs';
+import { createUiServer } from './ui.mjs';
 
 /** @import { Config, Health, RouterServer } from './types.js' */
 
@@ -38,6 +39,7 @@ const ANTHROPIC_ONLY_CONFIG = packaged('config/anthropic-only.json');
 const CODEX_TEMPLATE = packaged('examples/codex/jev.config.toml');
 const CODEX_MODELS = packaged('examples/codex/jev-models.json');
 const LOOPBACK = '127.0.0.1';
+const UI_PORT = 4100;
 const TOKEN_HEADER = 'x-jev-router-token';
 // Claude Code can't learn a routed model's context window through a gateway, so it compacts well
 // before the smallest window among the tiers.
@@ -53,6 +55,7 @@ Usage:
   jev-router doctor [--config <file>] [--live]
   jev-router init [--anthropic-only] [--force]
   jev-router report [<log.jsonl>]
+  jev-router ui [<log.jsonl>] [--port <n>]
   jev-router version | help
 
   serve    run the router in the foreground (the default command)
@@ -61,6 +64,7 @@ Usage:
   doctor   check the config, the keys and a running router; --live makes one Jev call (~$0.00003)
   init     write the user config; --anthropic-only sends every Claude Code tier to Anthropic
   report   sum up requests, spend and savings from a router log
+  ui       watch routing live in the browser, from a router log (http://127.0.0.1:4100)
 
 Config: --config, else $JEV_ROUTER_CONFIG, else $XDG_CONFIG_HOME/jev-router/config.json
 (~/.config by default) if it exists, else the packaged default. JEV_ROUTER_HOST and
@@ -234,6 +238,13 @@ function logger(files, echo) {
 }
 
 /**
+ * Logs where the config routes, so `jev-router ui` can draw it. Called at start and after a reload.
+ * @param {(entry: Record<string, unknown>) => void} log
+ * @param {Config} cfg
+ */
+const logConfig = (log, cfg) => log({ ts: new Date().toISOString(), event: 'config', ...describeConfig(cfg) });
+
+/**
  * @param {import('node:http').Server} server
  * @param {number} port
  * @param {string} host
@@ -278,10 +289,12 @@ async function serve(args, env) {
     throw new Error(`cannot listen on ${urlHost(host)}:${port}: ${errorMessage(err)}`);
   });
   console.error(`jev-router ${VERSION} listening on http://${urlHost(host)}:${bound}`);
+  logConfig(log, cfg);
   process.on('SIGHUP', () => {
     try {
       cfg = { ...loadConfig(path), host, port };
       server.reload(cfg);
+      logConfig(log, cfg);
       console.error('jev-router: config reloaded');
     } catch (err) {
       console.error(`jev-router: reload failed, keeping the old config\n${errorMessage(err)}`);
@@ -412,7 +425,8 @@ async function routerFor(cfg, host, port, env) {
   if (found?.health && !ownedByLaunch(env, port)) return { url, reused: true, version: found.health.version, stop: async () => undefined };
   const logFile = routerLogPath(env);
   mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
-  const server = createRouter({ ...cfg, host: LOOPBACK, port }, { log: logger(() => [logFile, cfg.logFile]) });
+  const log = logger(() => [logFile, cfg.logFile]);
+  const server = createRouter({ ...cfg, host: LOOPBACK, port }, { log });
   let bound;
   try {
     bound = await listen(server, port, LOOPBACK);
@@ -422,6 +436,7 @@ async function routerFor(cfg, host, port, env) {
     if (!['EADDRINUSE', 'EACCES'].includes(errorCode(err) ?? '')) throw err;
     bound = await listen(server, 0, LOOPBACK);
   }
+  logConfig(log, cfg);
   const owner = ownerFile(env, bound);
   writeFileSync(owner, String(process.pid), { mode: 0o600 });
   const stop = async () => {
@@ -847,6 +862,34 @@ function printReport(args, env) {
   return 0;
 }
 
+/**
+ * `jev-router ui [log]`: a live view of routing in the browser, on loopback. It follows the log
+ * given, else the config's logFile, else the log that `launch` writes, and waits for a log that
+ * doesn't exist yet.
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<undefined>}
+ */
+async function ui(args, env) {
+  const { values, rest } = parseArgs(args, { '--config': 'value', '--port': 'value' });
+  if (rest.length > 1) throw new Error('Usage: jev-router ui [<log.jsonl>] [--port <n>]');
+  const file = resolve(rest[0] ?? loadConfig(configFile(values.config, env).path).logFile ?? routerLogPath(env));
+  const port = values.port === undefined ? UI_PORT : parsePort(values.port);
+  const view = createUiServer({ file });
+  const url = await view.listen(port).catch((err) => {
+    throw new Error(`cannot listen on ${LOOPBACK}:${port}: ${errorMessage(err)}`);
+  });
+  console.error(
+    `jev-router ui: open ${url}\nFollowing ${file}${existsSync(file) ? '' : ' (not there yet: waiting for the router to write it)'}`,
+  );
+  const stop = () => {
+    void view.close().then(() => process.exit(0));
+  };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
+  return undefined;
+}
+
 const printVersion = () => {
   process.stdout.write(`${VERSION}\n`);
   return 0;
@@ -865,6 +908,7 @@ const COMMANDS = {
   doctor,
   init,
   report: printReport,
+  ui,
   version: printVersion,
   '--version': printVersion,
   help: printHelp,

@@ -209,11 +209,13 @@ function isListening(port) {
 }
 
 /** @param {string} text */
-const logEvents = (text) =>
+const logEntries = (text) =>
   text
     .trim()
     .split('\n')
-    .map((line) => JSON.parse(line).event);
+    .map((line) => JSON.parse(line));
+/** @param {string} text */
+const logEvents = (text) => logEntries(text).map((entry) => entry.event);
 
 /** @param {string} url */
 const portOf = (url) => Number(new URL(url).port);
@@ -538,7 +540,16 @@ test('serve logs JSON to stdout and the logFile, reloads on SIGHUP, and drains o
 
   assert.equal((await ask(url)).status, 200);
   await waitFor(() => serving.out.stdout.includes('"event":"done"'), 'the done line');
-  assert.deepEqual(logEvents(serving.out.stdout), ['warning', 'route', 'done']);
+  assert.deepEqual(logEvents(serving.out.stdout), ['config', 'warning', 'route', 'done']);
+  const [configured, , route, done] = logEntries(serving.out.stdout);
+  assert.equal(configured.version, VERSION);
+  assert.deepEqual(configured.tiers, shipped.tiers);
+  assert.equal(configured.surfaces.anthropic.frontier.model, shipped.surfaces.anthropic.frontier.model);
+  assert.equal(configured.surfaces.anthropic.frontier.upstream, new URL(upstream.url).host);
+  assert.equal(configured.options.mechanical, shipped.jev.options.mechanical.tier);
+  assert.doesNotMatch(JSON.stringify(configured), /keyEnv|_KEY|token/i, 'no keys or key names in the config line');
+  assert.equal(route.req, 1);
+  assert.equal(done.req, route.req, 'route and done pair up by req');
   assert.equal(readFileSync(logFile, 'utf8'), serving.out.stdout, 'the logFile gets the same lines');
   assert.equal(upstream.calls[0].headers['x-api-key'], CLIENT_KEY, "no router key, so the client's login goes through");
 
@@ -548,11 +559,13 @@ test('serve logs JSON to stdout and the logFile, reloads on SIGHUP, and drains o
   writeConfig(config, { logFile: join(box.root, 'no-such-dir', 'serve.log') }, { upstream: upstream.url });
   serving.child.kill('SIGHUP');
   await waitFor(() => serving.out.stderr.includes('jev-router: config reloaded'), 'the reload');
+  await waitFor(() => logEvents(serving.out.stdout).length === 5, 'the reloaded config line');
+  assert.equal(logEvents(serving.out.stdout)[4], 'config');
 
   // Neither a logFile that can't be written nor a closed stdout pipe may stop the router.
   const logged = readFileSync(logFile, 'utf8');
   assert.equal((await ask(url)).status, 200);
-  await waitFor(() => logEvents(serving.out.stdout).length === 5, 'the next two lines on stdout');
+  await waitFor(() => logEvents(serving.out.stdout).length === 7, 'the next two lines on stdout');
   assert.equal(readFileSync(logFile, 'utf8'), logged, 'the reloaded config moved the logFile');
   serving.child.stdout.destroy();
   for (let i = 0; i < 3; i += 1) assert.equal((await ask(url)).status, 200);
@@ -562,6 +575,28 @@ test('serve logs JSON to stdout and the logFile, reloads on SIGHUP, and drains o
   assert.equal(code, 0);
   assert.match(serving.out.stderr, /shutting down, waiting for 0 request\(s\)/);
   assert.equal(await isListening(portOf(url)), false);
+});
+
+test('ui serves the live view of a log that may not exist yet, and stops on SIGTERM', async () => {
+  const box = sandbox();
+  const log = join(box.root, 'later.log');
+  const viewing = start(['ui', log, '--port', '0'], box.env);
+  const url = await waitFor(() => /open (http:\/\/127\.0\.0\.1:\d+\/)\n/.exec(viewing.out.stderr)?.[1], 'the view to listen');
+  assert.match(viewing.out.stderr, /not there yet/);
+  const page = await fetch(url);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-security-policy') ?? '', /script-src 'self'/);
+  assert.match(await page.text(), /app\.js/, 'the packaged page');
+  assert.equal((await fetch(url, { method: 'POST' })).status, 405);
+  viewing.child.kill('SIGTERM');
+  assert.equal((await viewing.done).code, 0);
+
+  const extra = await run(['ui', 'a.log', 'b.log'], box.env);
+  assert.equal(extra.code, 1);
+  assert.match(extra.stderr, /Usage: jev-router ui/);
+  const badPort = await run(['ui', log, '--port', 'x'], box.env);
+  assert.equal(badPort.code, 1);
+  assert.match(badPort.stderr, /port must be a number/);
 });
 
 test('serve refuses to listen on a network address without a token, or on a taken port', async () => {
@@ -612,7 +647,7 @@ test('launch claude starts a router for the session, hands the agent its args an
   assert.equal(upstream.calls[0].body.model, 'claude-sonnet-5');
   assert.equal(upstream.calls[0].headers['x-api-key'], CLIENT_KEY, "the agent's own login goes through");
   const log = join(box.state, 'jev-router', 'router.log');
-  assert.deepEqual(logEvents(readFileSync(log, 'utf8')), ['warning', 'route', 'done'], 'the router logs to its file');
+  assert.deepEqual(logEvents(readFileSync(log, 'utf8')), ['config', 'warning', 'route', 'done'], 'the router logs to its file');
   assert.equal(statSync(log).mode & 0o777, 0o600);
   assert.equal(readFileSync(logFile, 'utf8'), readFileSync(log, 'utf8'), 'and to the config logFile');
   assert.equal(await isListening(port), false, 'the router stops with the agent');

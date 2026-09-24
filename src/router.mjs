@@ -17,9 +17,9 @@ import { costOf, UsageTap } from './usage.mjs';
 
 /** @import { IncomingMessage, ServerResponse } from 'node:http' */
 /**
- * @import { Config, Decision, Env, Health, IncomingHttpHeaders, JevAnswer, JevFailure, JevInfo, JevOption, JevSuccess, LogEntry,
- *   ModelTotals, Report, RequestBody, RouterOptions, RouterServer, SessionEntry, SessionKey, Surface, SurfaceTargets, Target,
- *   Turn, Usage } from './types.js'
+ * @import { Config, ConfigSummary, Decision, Env, Health, IncomingHttpHeaders, JevAnswer, JevFailure, JevInfo, JevOption, JevSuccess,
+ *   LogEntry, ModelTotals, Report, RequestBody, RouterOptions, RouterServer, SessionEntry, SessionKey, Surface, SurfaceTargets,
+ *   Target, Turn, Usage } from './types.js'
  */
 
 /**
@@ -89,6 +89,11 @@ const ERROR_TYPES = {
 };
 /** @param {string} text */
 const sha = (text) => createHash('sha256').update(text).digest('hex');
+/**
+ * The session id that logs and response headers show: a hash, so the session key never leaves the router.
+ * @param {string} key
+ */
+const sessionId = (key) => sha(key).slice(0, 12);
 
 /**
  * The conversation a request belongs to, from the ids the clients send or, without one, a hash of
@@ -166,6 +171,8 @@ export function createRouter(
   const inflight = new Map();
   const started = Date.now();
   let active = 0;
+  // Numbers each request, so its `route` and `done` log entries can be paired.
+  let requests = 0;
   const token = env.JEV_ROUTER_TOKEN ?? cfg.token;
   const allowedHosts = () => {
     const address = server.address();
@@ -226,6 +233,7 @@ export function createRouter(
     const flightKey = `${f.key.id}#${f.turns.length}`;
     let flight = inflight.get(flightKey);
     if (!flight) {
+      log({ ts: new Date().toISOString(), event: 'deciding', session: sessionId(f.key.id), turn: f.turns.length });
       const state = buildState({ body: f.body, headers: f.headers, turns: f.turns, bodyBytes: f.bodyBytes, jev: cfg.jev });
       flight = jev.decide(state, { signal }).finally(() => inflight.delete(flightKey));
       inflight.set(flightKey, flight);
@@ -276,13 +284,15 @@ export function createRouter(
     const startedAt = performance.now();
     const request = await accept(req, res);
     if (!request) return;
+    requests += 1;
+    const id = requests;
     const { path, surface, targets, body } = request;
     const countOnly = path.endsWith('/count_tokens');
     const decision = await decide({ headers: req.headers, body, bodyBytes: request.bodyBytes, countOnly, signal });
     const chosen = targets[decision.tier] ?? targets[cfg.tiers[0]];
     const target = decision.trustedOnly && !chosen.trusted ? targets.trusted : chosen;
     const host = new URL(target.url).host;
-    const session = createHash('sha256').update(decision.key.id).digest('hex').slice(0, 12);
+    const session = sessionId(decision.key.id);
     const main = decision.kind === undefined || decision.kind === 'main';
     const entry = storeDecision(sessions, decision, { host, main, countOnly });
 
@@ -291,6 +301,7 @@ export function createRouter(
     log({
       ts: new Date().toISOString(),
       event: 'route',
+      req: id,
       session,
       path,
       kind: decision.kind,
@@ -306,11 +317,19 @@ export function createRouter(
     // Never count a prompt with another provider's tokenizer; Claude Code estimates on a 404.
     if (countOnly && target.countTokens === false) return fail(res, 404, `${target.model} has no count_tokens endpoint`, surface, shown);
     if (signal.aborted)
-      return log({ ts: new Date().toISOString(), event: 'done', session, status: 499, client_aborted: true, ms: elapsed(startedAt) });
+      return log({
+        ts: new Date().toISOString(),
+        event: 'done',
+        req: id,
+        session,
+        status: 499,
+        client_aborted: true,
+        ms: elapsed(startedAt),
+      });
 
     const outgoing = prepareBody(body, request.text, target, !countOnly && main ? entry?.anchor : undefined);
     if (outgoing.redacted) shown['x-jev-redacted'] = String(outgoing.redacted);
-    const status = await relay(req, res, { target, surface, session, shown, signal, startedAt, ...outgoing });
+    const status = await relay(req, res, { id, target, surface, session, shown, signal, startedAt, ...outgoing });
     if (main && status !== undefined && status < 300 && decision.tier !== 'side' && !countOnly && entry && entry.lastHost !== host)
       sessions.set(decision.key.id, { ...entry, lastHost: host });
   }
@@ -319,11 +338,11 @@ export function createRouter(
    * Sends a request to its target and streams the response back, then logs its usage and cost.
    * @param {IncomingMessage} req
    * @param {ServerResponse} res
-   * @param {{ target: Target, surface: Surface, session: string, shown: Record<string, string>, signal: AbortSignal,
+   * @param {{ id: number, target: Target, surface: Surface, session: string, shown: Record<string, string>, signal: AbortSignal,
    *   startedAt: number, body: RequestBody, redacted: number }} route
    * @returns {Promise<number | undefined>} the upstream's status, or undefined when the request failed
    */
-  async function relay(req, res, { target, surface, session, shown, signal, startedAt, body, redacted }) {
+  async function relay(req, res, { id, target, surface, session, shown, signal, startedAt, body, redacted }) {
     try {
       const result = await forward(req, res, target, body, shown, signal, env);
       const cost = costOf(target.model, result.usage, cfg.prices);
@@ -331,6 +350,7 @@ export function createRouter(
       log({
         ts: new Date().toISOString(),
         event: 'done',
+        req: id,
         session,
         status: result.status,
         model: target.model,
@@ -346,7 +366,7 @@ export function createRouter(
       return result.status;
     } catch (err) {
       const { message } = /** @type {Error} */ (err);
-      log({ ts: new Date().toISOString(), event: 'error', session, error: message });
+      log({ ts: new Date().toISOString(), event: 'error', req: id, session, error: message });
       if (!res.headersSent) fail(res, 502, `Upstream request failed: ${message}`, surface, shown);
       else res.destroy();
       return undefined;
@@ -865,6 +885,37 @@ function tally(m, e) {
     m.output += e.usage.output;
   }
   if (e.cost_usd !== undefined) m.cost_usd += e.cost_usd;
+}
+
+/**
+ * Where a config routes, for the `config` log entry that `jev-router ui` draws its graph from: model
+ * names and upstream hosts, never keys or the names of their variables.
+ * @param {Config} cfg
+ * @returns {ConfigSummary}
+ */
+export function describeConfig(cfg) {
+  /** @type {ConfigSummary['surfaces']} */
+  const surfaces = {};
+  for (const [surface, targets] of Object.entries(cfg.surfaces)) {
+    surfaces[surface] = Object.fromEntries(
+      Object.entries(targets).map(([name, target]) => [
+        name,
+        { model: target.model, upstream: new URL(target.url).host, trusted: Boolean(target.trusted) },
+      ]),
+    );
+  }
+  return {
+    version: VERSION,
+    mode: cfg.policy.mode,
+    tiers: cfg.tiers,
+    defaultTier: cfg.defaultTier,
+    options: Object.fromEntries(Object.entries(cfg.jev.options).map(([name, option]) => [name, option.tier])),
+    accept: cfg.policy.accept,
+    sensitiveOverride: cfg.policy.sensitiveOverride,
+    claimGuard: cfg.policy.claimGuard,
+    surfaces,
+    jev: { channels: cfg.jev.channels.map((c) => ({ name: c.name, model: c.model, host: new URL(c.baseUrl).host })) },
+  };
 }
 
 /**

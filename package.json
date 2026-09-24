@@ -30,6 +30,7 @@
   "files": [
     "bin/",
     "src/",
+    "ui/",
     "config/",
     "examples/",
     "sbx/",
@@ -39,9 +40,10 @@
   ],
   "scripts": {
     "start": "node bin/jev-router.mjs serve",
+    "ui": "node bin/jev-router.mjs ui",
     "lint": "biome check --error-on-warnings .",
     "format": "biome check --write .",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p ui/tsconfig.json",
     "lint:md": "markdownlint-cli2",
     "test": "node --test test/*.test.mjs",
     "check": "npm run lint && npm run typecheck && npm run lint:md && npm run test:coverage",

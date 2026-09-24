@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">
+  <title>jev-router</title>
+  <rect width="36" height="36" rx="9" fill="#0f141c"/>
+  <g fill="none" stroke-width="2.4" stroke-linecap="round">
+    <path d="M5 18h7" stroke="#b6c0cf"/>
+    <path d="M12 18c6 0 7-9 16-9" stroke="#43c1ab"/>
+    <path d="M12 18c6 0 8-3 16-3" stroke="#8aa2ff"/>
+    <path d="M12 18c6 0 8 3 16 3" stroke="#c39bff"/>
+    <path d="M12 18c6 0 7 9 16 9" stroke="#ff8fc0"/>
+  </g>
+  <circle cx="12" cy="18" r="2.8" fill="#e7ecf3"/>
+</svg>

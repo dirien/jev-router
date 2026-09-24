@@ -249,7 +249,7 @@ test('Codex traffic goes to Ollama Cloud with a bearer key, minimal headers and 
 });
 
 test('a session ratchets: tool loops never ask Jev, a harder new turn upgrades, an easier one keeps the tier', async () => {
-  const { url, routes } = await startRouter();
+  const { url, routes, logs, done } = await startRouter();
   const h = ccHeaders('s-ratchet');
   reset(plans.a, { option: 'mechanical', probability: 0.95 });
   const first = cc('s-ratchet', 'What does git status -sb print?');
@@ -278,6 +278,24 @@ test('a session ratchets: tool loops never ask Jev, a harder new turn upgrades, 
   assert.deepEqual(
     routes().map((r) => r.reason),
     ['jev', 'sticky', 'upgrade:jev', 'jev-keep'],
+  );
+
+  // The live view's events: `deciding` announces each Jev call, and `req` pairs a route with its done.
+  assert.deepEqual(
+    logs.flatMap((e) => (e.event === 'deciding' ? [`deciding:${e.turn}`] : e.event === 'route' ? [`route:${e.reason}`] : [])),
+    ['deciding:1', 'route:jev', 'route:sticky', 'deciding:2', 'route:upgrade:jev', 'deciding:3', 'route:jev-keep'],
+    'one deciding entry per human turn, none for the tool-loop step',
+  );
+  const session = routes()[0].session;
+  assert.ok(logs.every((e) => e.event !== 'deciding' || e.session === session));
+  for (let i = 0; i < 50 && done().length < routes().length; i += 1) await sleep(10);
+  const numbers = routes().map((r) => r.req);
+  assert.equal(new Set(numbers).size, numbers.length, 'every request gets its own number');
+  assert.deepEqual(
+    done()
+      .map((d) => d.req)
+      .sort(),
+    [...numbers].sort(),
   );
 });
 

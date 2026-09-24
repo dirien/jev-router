@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>jev-router live</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <svg class="logo" viewBox="0 0 36 36" aria-hidden="true">
+            <circle class="l-ring" cx="18" cy="18" r="16.5" />
+            <path class="l-in" d="M4 18h8" />
+            <path class="l-a" d="M12 18c6 0 7-9 16-9" />
+            <path class="l-b" d="M12 18c6 0 8-3 16-3" />
+            <path class="l-c" d="M12 18c6 0 8 3 16 3" />
+            <path class="l-d" d="M12 18c6 0 7 9 16 9" />
+            <circle class="l-hub" cx="12" cy="18" r="2.6" />
+          </svg>
+          <div>
+            <h1>jev-router</h1>
+            <span class="brand-sub">live routing view</span>
+          </div>
+        </div>
+        <div class="status">
+          <span class="pill" id="conn" data-state="connecting"><span class="pill-dot"></span><span id="conn-label">connecting</span></span>
+          <span class="meta" id="meta-file" title="Log file"></span>
+          <span class="meta" id="meta-version" title="Router version"></span>
+          <span class="meta" id="meta-mode" title="Routing mode"></span>
+        </div>
+        <div class="tiermap" id="tiermap"></div>
+      </header>
+
+      <main class="grid">
+        <div class="col">
+          <section class="panel hero" id="hero" data-state="empty" aria-labelledby="hero-title">
+            <div class="panel-head">
+              <h2 id="hero-title">Latest decision</h2>
+              <span class="panel-note" id="hero-when"></span>
+            </div>
+            <div class="hero-empty">
+              <span class="beacon" aria-hidden="true"></span>
+              <span>Waiting for Claude Code. Type a prompt.</span>
+            </div>
+            <div class="hero-body">
+              <div class="hero-top">
+                <div class="hero-cat">
+                  <span class="eyebrow">Jev category</span>
+                  <div class="cat-name" id="cat-name"></div>
+                  <div class="cat-conf" id="cat-conf"></div>
+                </div>
+                <div class="hero-route" id="hero-route"></div>
+              </div>
+              <div class="classifying">
+                <span class="scan" aria-hidden="true"></span>
+                <span id="classifying-text">Jev is classifying…</span>
+              </div>
+              <div class="hero-reason">
+                <span class="chip reason" id="hero-reason"></span>
+                <p id="hero-explain"></p>
+              </div>
+              <div class="hero-sections">
+                <div>
+                  <div class="sub-head"><span>Jev probabilities</span><span id="bars-note"></span></div>
+                  <div class="bars" id="bars"></div>
+                </div>
+                <div>
+                  <div class="sub-head"><span>Tiers</span><span>tick = accept threshold</span></div>
+                  <div class="bars" id="tierbars"></div>
+                </div>
+                <div class="guards" id="guards"></div>
+                <dl class="jevmeta" id="jevmeta"></dl>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel sessions-panel" aria-labelledby="sessions-title">
+            <div class="panel-head">
+              <h2 id="sessions-title">Sessions</h2>
+              <span class="panel-note">tier per prompt</span>
+            </div>
+            <p class="empty" id="sessions-empty">No sessions yet.</p>
+            <ul class="lanes" id="sessions"></ul>
+          </section>
+
+          <section class="panel totals-panel" aria-labelledby="totals-title">
+            <div class="panel-head">
+              <h2 id="totals-title">Totals</h2>
+              <span class="panel-note" id="totals-note"></span>
+            </div>
+            <div class="tiles" id="tiles"></div>
+            <div class="mbars" id="mbars"></div>
+          </section>
+        </div>
+
+        <div class="col">
+          <section class="panel flow" aria-labelledby="flow-title">
+            <div class="panel-head">
+              <h2 id="flow-title">Routing flow</h2>
+              <div class="legend">
+                <span><i class="lg-big"></i>asked Jev</span>
+                <span><i class="lg-small"></i>tool step or background call</span>
+              </div>
+            </div>
+            <div class="flow-wrap" id="flow-wrap">
+              <svg class="flow-svg" id="flow" role="img" aria-label="Routing flow from the client through jev-router and Jev's categories to tiers and models"></svg>
+            </div>
+          </section>
+
+          <section class="panel timeline" aria-labelledby="feed-title">
+            <div class="panel-head">
+              <h2 id="feed-title">Requests</h2>
+              <span class="panel-note" id="feed-note"></span>
+            </div>
+            <p class="empty" id="feed-empty">No requests yet.</p>
+            <ol class="feed" id="feed"></ol>
+          </section>
+        </div>
+      </main>
+      <p class="foot">Reads the router's log. Prompts and keys never appear in it.</p>
+    </div>
+    <div class="toasts" id="toasts"></div>
+    <div class="sr-only" id="announce" aria-live="polite"></div>
+  </body>
+</html>

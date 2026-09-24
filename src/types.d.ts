@@ -358,6 +358,8 @@ export interface RawUsage {
 export type RouteLog = {
   ts: string;
   event: 'route';
+  /** Numbers the request within this router run; its `done` entry carries the same number. */
+  req: number;
   session: string;
   path: string;
   kind?: string;
@@ -374,6 +376,7 @@ export type RouteLog = {
 export type DoneLog = {
   ts: string;
   event: 'done';
+  req?: number;
   session: string;
   status: number;
   model?: string;
@@ -389,10 +392,61 @@ export type DoneLog = {
 
 export type WarningLog = { ts: string; event: 'warning'; message: string };
 
-export type ErrorLog = { ts: string; event: 'error'; session?: string; path?: string; error: string };
+export type ErrorLog = { ts: string; event: 'error'; req?: number; session?: string; path?: string; error: string };
+
+/** Jev is being asked about a session's new human turn; its `route` entry follows. */
+export type DecidingLog = { ts: string; event: 'deciding'; session: string; turn: number };
+
+/** Where a config routes: model names and upstream hosts, never keys or the names of their variables. */
+export type ConfigSummary = {
+  version: string;
+  mode: 'ratchet' | 'sticky';
+  tiers: string[];
+  defaultTier: string;
+  /** Each Jev option's tier. */
+  options: Record<string, string>;
+  accept: Record<string, number>;
+  sensitiveOverride: number;
+  claimGuard: number;
+  /** Per surface, each tier's target plus `side` and `trusted`. */
+  surfaces: Record<string, Record<string, { model: string; upstream: string; trusted: boolean }>>;
+  jev: { channels: Array<{ name: string; model: string; host: string }> };
+};
+
+/** Logged when the router starts and after every config reload. */
+export type ConfigLog = { ts: string; event: 'config' } & ConfigSummary;
 
 /** One line of the router's JSONL log. */
-export type LogEntry = RouteLog | DoneLog | WarningLog | ErrorLog;
+export type LogEntry = RouteLog | DoneLog | WarningLog | ErrorLog | DecidingLog | ConfigLog;
+
+/** A log line as `jev-router ui` streams it: a log entry, or the router's plain-text output. */
+export type UiEvent = LogEntry | { ts: string; event: 'text'; text: string } | ({ ts?: string; event: string } & Record<string, unknown>);
+
+/** Options of `createUiServer`. */
+export interface UiOptions {
+  /** The router log to follow. It may not exist yet. */
+  file: string;
+  /** How often to look for new lines. Defaults to 250 ms. */
+  pollMs?: number;
+  /** How much of the existing log to replay to a new page. Defaults to 512 KiB. */
+  backlogBytes?: number;
+  /** How many recent events a new page gets. Defaults to 2000. */
+  history?: number;
+  /** How often to send a keep-alive comment. Defaults to 15 s. */
+  heartbeatMs?: number;
+  /** Where the page's files are. Defaults to the packaged `ui/` directory. */
+  assets?: string;
+}
+
+/** The live view's server; see `createUiServer`. */
+export interface UiServer {
+  /** Replays the log's end, starts following it, and listens on 127.0.0.1. Resolves to the page URL. */
+  listen(port: number): Promise<string>;
+  /** Ends every open page stream, stops following the log, and closes the server. */
+  close(): Promise<void>;
+  /** Open page streams. */
+  readonly clients: number;
+}
 
 /** Totals of one model in a report. */
 export interface ModelTotals {
