@@ -17,7 +17,7 @@ import { costOf, UsageTap } from './usage.mjs';
 
 /** @import { IncomingMessage, ServerResponse } from 'node:http' */
 /**
- * @import { Config, Decision, Env, IncomingHttpHeaders, JevAnswer, JevFailure, JevInfo, JevOption, JevSuccess, LogEntry,
+ * @import { Config, Decision, Env, Health, IncomingHttpHeaders, JevAnswer, JevFailure, JevInfo, JevOption, JevSuccess, LogEntry,
  *   ModelTotals, Report, RequestBody, RouterOptions, RouterServer, SessionEntry, SessionKey, Surface, SurfaceTargets, Target,
  *   Turn, Usage } from './types.js'
  */
@@ -376,17 +376,17 @@ export function createRouter(
 
   /** @param {ServerResponse} res */
   function health(res) {
+    /** @type {Health} */
+    const body = {
+      ok: true,
+      version: VERSION,
+      uptime_s: Math.round((Date.now() - started) / 1000),
+      sessions: sessions.size,
+      active,
+      jev: { configured: jev.configured, channels: jev.health() },
+    };
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        ok: true,
-        version: VERSION,
-        uptime_s: Math.round((Date.now() - started) / 1000),
-        sessions: sessions.size,
-        active,
-        jev: { configured: jev.configured, channels: jev.health() },
-      }),
-    );
+    res.end(JSON.stringify(body));
   }
 
   // Not Object.assign: it would read the `active` getter once and copy a 0 that never changes.

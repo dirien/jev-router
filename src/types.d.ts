@@ -438,6 +438,17 @@ export interface RouterOptions {
   store?: SessionStore;
 }
 
+/** The body of `GET /healthz`. */
+export interface Health {
+  ok: true;
+  version: string;
+  uptime_s: number;
+  sessions: number;
+  /** Requests being handled right now. */
+  active: number;
+  jev: { configured: boolean; channels: Record<string, ChannelStats & { open: boolean }> };
+}
+
 /** What `createRouter` adds to the HTTP server. */
 export interface RouterExtras {
   readonly sessions: SessionStore;
