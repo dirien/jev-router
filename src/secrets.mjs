@@ -2,6 +2,7 @@
 // before Jev sees a prompt, and before a request goes to an upstream that isn't trusted with secrets.
 // A regex can't catch every secret, so trust decisions also stay sticky once something is found.
 
+/** @type {Array<[kind: string, pattern: RegExp]>} */
 const PATTERNS = [
   ['private-key', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g],
   ['anthropic-key', /\bsk-ant-(?:api|admin|oat|ort)\d{2}-[A-Za-z0-9_-]{20,}/g],
@@ -25,15 +26,31 @@ const PATTERNS = [
 ];
 const ANY = new RegExp(PATTERNS.map(([, re]) => re.source).join('|'), 'i');
 
-// Cheap check on raw text, including a serialized request body.
+/**
+ * Cheap check on raw text, including a serialized request body. It may say yes to text without a
+ * secret, never no to text with one.
+ * @param {string} text
+ * @returns {boolean}
+ */
 export const mayContainSecret = (text) => ANY.test(text);
 
+/**
+ * Lists the kind of every secret in `text`, once per occurrence.
+ * @param {string} text
+ * @returns {string[]}
+ */
 export function findSecrets(text) {
+  /** @type {string[]} */
   const found = [];
   for (const [kind, re] of PATTERNS) for (const _ of text.matchAll(re)) found.push(kind);
   return found;
 }
 
+/**
+ * Replaces every secret in `text` with `[REDACTED <kind>]`.
+ * @param {string} text
+ * @returns {{ text: string, count: number }}
+ */
 export function scrub(text) {
   let count = 0;
   let out = text;
@@ -47,6 +64,7 @@ export function scrub(text) {
 
 // Signed reasoning must not change (the signature would no longer verify), and ids, images and
 // encrypted payloads carry no prose.
+/** @type {ReadonlySet<unknown>} */
 const KEEP_TYPES = new Set(['thinking', 'redacted_thinking', 'reasoning']);
 const KEEP_KEYS = new Set([
   'id',
@@ -61,9 +79,15 @@ const KEEP_KEYS = new Set([
   'media_type',
 ]);
 
-// Replaces secrets anywhere in a request body: prompts, tool results, assistant text, system prompt.
+/**
+ * Replaces secrets anywhere in a request body: prompts, tool results, assistant text, system prompt.
+ * @template T
+ * @param {T} body
+ * @returns {{ body: T, count: number }}
+ */
 export function redactBody(body) {
   let count = 0;
+  /** @type {(value: unknown) => unknown} */
   const walk = (value) => {
     if (typeof value === 'string') {
       const result = scrub(value);
@@ -72,11 +96,12 @@ export function redactBody(body) {
     }
     if (Array.isArray(value)) return value.map(walk);
     if (value && typeof value === 'object') {
-      if (KEEP_TYPES.has(value.type)) return value;
+      if ('type' in value && KEEP_TYPES.has(value.type)) return value;
       return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, KEEP_KEYS.has(k) ? v : walk(v)]));
     }
     return value;
   };
-  const redacted = walk(body);
+  // walk keeps the shape and only rewrites strings, so the result has the body's type.
+  const redacted = /** @type {T} */ (walk(body));
   return { body: redacted, count };
 }
