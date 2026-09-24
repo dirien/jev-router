@@ -900,6 +900,8 @@ function explain(rec) {
       return `Jev did not answer (${jev?.error || 'no answer'}), so the router used the default tier for now and asks again next message: ${target}.`;
     case 'fallback:keep':
       return `Jev did not answer (${jev?.error || 'no answer'}), so the session keeps ${target}.`;
+    case 'side-call':
+      return `Claude Code's own background call, such as a session title, a topic check or a quota probe. It always goes to the side target, never asks Jev and never changes the session's tier: ${target}.`;
     case 'no-jev':
       return `No Jev key is configured, so every session uses the default tier: ${target}.`;
     default:
@@ -1108,7 +1110,19 @@ function manualLabel(route) {
   if (base === 'tag') return `#${route.tier}`;
   if (base.startsWith('client-model:')) return `/model ${base.slice(13)}`;
   if (base === 'pinned') return 'pinned';
+  if (base === 'side-call' || route.tier === 'side') return 'Background call';
+  if (isCount(route)) return 'Token count';
   return 'no Jev';
+}
+
+/**
+ * Why a request didn't ask Jev, for the line under its headline.
+ * @param {RouteEvent} route
+ */
+function notAsked(route) {
+  if (route.tier === 'side') return "Jev not asked · Claude Code's own call · always the side target";
+  if (isCount(route)) return "Jev not asked · Claude Code counts tokens on the session's model";
+  return 'Jev was not asked';
 }
 
 /** @param {RouteRec} rec */
@@ -1125,7 +1139,7 @@ function renderDecision(rec) {
     if (inherited) dom.catConf.append(` · decided by the prompt at ${clock(source.route.ts)}`);
   } else {
     dom.catName.textContent = jev ? 'No answer' : manualLabel(route);
-    dom.catConf.textContent = jev ? `Jev failed: ${jev.error || 'unknown error'}` : 'Jev was not asked';
+    dom.catConf.textContent = jev ? `Jev failed: ${jev.error || 'unknown error'}` : notAsked(route);
   }
   dom.heroRoute.replaceChildren(
     h('span', 'client', clientName(rec.surface)),
@@ -1248,7 +1262,8 @@ function focusRec() {
  * @returns {RouteRec}
  */
 function decisionOf(rec) {
-  if (rec.route.jev) return rec;
+  // A background call or a token count doesn't run on the session's tier: no prompt decided it.
+  if (rec.route.jev || rec.route.tier === 'side' || isCount(rec.route)) return rec;
   const head = rec.group?.head;
   return head?.route.jev ? head : rec;
 }
