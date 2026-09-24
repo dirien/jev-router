@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-/** @import { Config, JevChannel, JevConfig, Policy, Target } from './types.js' */
+/** @import { Config, Env, JevChannel, JevConfig, Policy, Target } from './types.js' */
 
 /**
  * A config file as parsed: the shape of a Config, with anything possibly missing or wrong.
@@ -31,9 +31,10 @@ const MODES = new Set(['ratchet', 'sticky']);
 /**
  * Reads a JSON config file and validates it.
  * @param {string | URL} path
+ * @param {Env} [env] the environment the defaults come from
  * @returns {Config}
  */
-export function loadConfig(path) {
+export function loadConfig(path, env = process.env) {
   /** @type {unknown} */
   let cfg;
   try {
@@ -41,15 +42,16 @@ export function loadConfig(path) {
   } catch (err) {
     throw new Error(`Cannot read config ${path}: ${/** @type {Error} */ (err).message}`);
   }
-  return validateConfig(cfg);
+  return validateConfig(cfg, env);
 }
 
 /**
  * Returns the config with defaults filled in, or throws with the full list of problems.
  * @param {unknown} input a parsed config file; it is cloned, never changed
+ * @param {Env} [env] the environment the defaults come from: XDG_STATE_HOME places the state file
  * @returns {Config}
  */
-export function validateConfig(input) {
+export function validateConfig(input, env = process.env) {
   const cfg = /** @type {RawConfig} */ (structuredClone(input));
   /** @type {string[]} */
   const problems = [];
@@ -65,7 +67,7 @@ export function validateConfig(input) {
   cfg.maxSessions ??= 10000;
   cfg.sideCallModel ??= 'haiku';
   cfg.pinOnModelChange ??= true;
-  if (cfg.stateFile === undefined) cfg.stateFile = `${homedir()}/.local/state/jev-router/sessions.jsonl`;
+  if (cfg.stateFile === undefined) cfg.stateFile = `${env.XDG_STATE_HOME || `${homedir()}/.local/state`}/jev-router/sessions.jsonl`;
   if (typeof cfg.stateFile === 'string') cfg.stateFile = cfg.stateFile.replace(/^~(?=\/)/, homedir());
   if (typeof cfg.logFile === 'string') cfg.logFile = cfg.logFile.replace(/^~(?=\/)/, homedir());
   need(Number.isInteger(cfg.port) && cfg.port > 0 && cfg.port < 65536, 'port must be an integer between 1 and 65535');

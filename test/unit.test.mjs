@@ -3,6 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { test } from 'node:test';
 import { validateConfig } from '../src/config.mjs';
 import { applyPolicy, buildQuestions, buildState, hardenState, tierProbabilities } from '../src/jev.mjs';
@@ -304,4 +305,14 @@ test('jev.stripCode: false sends code blocks as they are, still scrubbed and cli
   const unset = structuredClone(shipped);
   delete unset.jev.stripCode;
   assert.equal(validateConfig({ ...unset, stateFile: null }).jev.stripCode, true, 'stripping stays the default');
+});
+
+test('the default state file lives under XDG_STATE_HOME when it is set', () => {
+  const unset = structuredClone(shipped);
+  delete unset.stateFile;
+  assert.equal(validateConfig(unset, { XDG_STATE_HOME: '/var/state' }).stateFile, '/var/state/jev-router/sessions.jsonl');
+  const fallback = `${homedir()}/.local/state/jev-router/sessions.jsonl`;
+  assert.equal(validateConfig(unset, { XDG_STATE_HOME: '' }).stateFile, fallback, 'an empty XDG_STATE_HOME is unset');
+  assert.equal(validateConfig(unset, {}).stateFile, fallback);
+  assert.equal(validateConfig({ ...unset, stateFile: '/srv/s.jsonl' }, { XDG_STATE_HOME: '/var/state' }).stateFile, '/srv/s.jsonl');
 });
