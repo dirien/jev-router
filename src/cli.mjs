@@ -556,6 +556,10 @@ function claudeVars(env, url, token) {
   /** @type {Record<string, string>} */
   const vars = { ANTHROPIC_BASE_URL: url, CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1' };
   if (!env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) vars.CLAUDE_CODE_AUTO_COMPACT_WINDOW = COMPACT_WINDOW;
+  // Claude Code turns MCP tool search off for a base URL that isn't Anthropic's, and then sends every
+  // MCP tool's definition with every request: with a few MCP servers that is more than the compaction
+  // window, and Claude Code compacts on every turn. The router forwards tool_reference blocks as is.
+  if (!env.ENABLE_TOOL_SEARCH) vars.ENABLE_TOOL_SEARCH = 'true';
   if (token) vars.ANTHROPIC_CUSTOM_HEADERS = withHeader(env.ANTHROPIC_CUSTOM_HEADERS, TOKEN_HEADER, token);
   return vars;
 }

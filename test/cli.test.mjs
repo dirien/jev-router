@@ -325,7 +325,7 @@ test('env claude prints shell-safe exports, and env codex explains the profile',
   const plain = await run(['env', 'claude', '--port', '4555'], box.env);
   assert.equal(
     plain.stdout,
-    'export ANTHROPIC_BASE_URL=http://127.0.0.1:4555\nexport CLAUDE_CODE_GATEWAY_HINT_HEADERS=1\nexport CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000\n',
+    'export ANTHROPIC_BASE_URL=http://127.0.0.1:4555\nexport CLAUDE_CODE_GATEWAY_HINT_HEADERS=1\nexport CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000\nexport ENABLE_TOOL_SEARCH=true\n',
   );
   assert.equal(plain.stderr, 'jev-router: nothing answers at http://127.0.0.1:4555 yet. Start a router with: jev-router serve\n');
 
@@ -334,8 +334,10 @@ test('env claude prints shell-safe exports, and env codex explains the profile',
     JEV_ROUTER_TOKEN: `${TOKEN}$(touch pwned)`,
     ANTHROPIC_CUSTOM_HEADERS: 'x-team: blue\nX-Jev-Router-Token: stale',
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '90000',
+    ENABLE_TOOL_SEARCH: 'auto',
   });
   assert.ok(!withToken.stdout.includes('CLAUDE_CODE_AUTO_COMPACT_WINDOW'), "the user's own compaction window stays");
+  assert.ok(!withToken.stdout.includes('ENABLE_TOOL_SEARCH'), "the user's own tool search setting stays");
   // A real shell evaluates the exports: quotes, $ and newlines must survive, and nothing may run.
   const shell = spawnSync('/bin/sh', ['-c', `${withToken.stdout}printf '%s' "$ANTHROPIC_CUSTOM_HEADERS"`], {
     cwd: box.root,
@@ -683,7 +685,12 @@ test('launch claude starts a router for the session, hands the agent its args an
   const port = portOf(agent.env.ANTHROPIC_BASE_URL);
   assert.deepEqual(
     agent.env,
-    { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '160000' },
+    {
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+      CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1',
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '160000',
+      ENABLE_TOOL_SEARCH: 'true',
+    },
     'no API key, auth token or custom headers are set for the agent',
   );
   assert.equal(agent.health.version, VERSION);
