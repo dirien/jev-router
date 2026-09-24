@@ -2,7 +2,7 @@
 // Assertions count calls per test (call deltas), so a leftover call from an earlier test can't pass one.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { after, before, test } from 'node:test';
@@ -550,6 +550,15 @@ test('decisions survive a restart through the state file', async () => {
   assert.equal(d.jevA.length, 0);
   assert.equal(d.anthropic[0].body.model, 'claude-opus-5-5', 'the tool loop continues on the same model after a restart');
   assert.ok(!readFileSync(stateFile, 'utf8').includes('sharding'), 'the state file holds no prompt text');
+});
+
+test('an unusable state file is a warning, and sessions stay in memory (regression: a ReferenceError at startup)', async () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-router-`);
+  writeFileSync(`${dir}/not-a-dir`, '');
+  const { url, logs } = await startRouter({ cfg: testConfig({ stateFile: `${dir}/not-a-dir/sessions.jsonl` }) });
+  assert.ok(logs.some((e) => e.event === 'warning' && e.message.startsWith('session file: ')));
+  reset(plans.a, { option: 'routine', probability: 0.9 });
+  assert.equal((await post(url, '/v1/messages', cc('s-nofile', 'hi'), ccHeaders('s-nofile'))).status, 200);
 });
 
 test('/model in Claude Code pins the matching tier; /healthz reports the router state', async () => {

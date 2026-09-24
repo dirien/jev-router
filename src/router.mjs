@@ -75,18 +75,19 @@ export function createRouter(
 ) {
   let cfg = input;
   let jev = new JevClient(cfg.jev, env, { fetchImpl });
-  const sessions =
-    store ?? new SessionStore({ file: cfg.stateFile, max: cfg.maxSessions, onError: (err) => warn(`session file: ${err.message}`) });
-  const inflight = new Map();
+  // Defined before the session store: it loads the state file, and reports errors, while it is constructed.
   const warned = new Set();
-  const started = Date.now();
-  let active = 0;
   const warn = (message) => {
     if (!warned.has(message)) {
       warned.add(message);
       log({ ts: new Date().toISOString(), event: 'warning', message });
     }
   };
+  const sessions =
+    store ?? new SessionStore({ file: cfg.stateFile, max: cfg.maxSessions, onError: (err) => warn(`session file: ${err.message}`) });
+  const inflight = new Map();
+  const started = Date.now();
+  let active = 0;
   const token = env.JEV_ROUTER_TOKEN ?? cfg.token;
   const allowedHosts = () => {
     const port = server.address()?.port ?? cfg.port;
