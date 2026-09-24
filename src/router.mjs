@@ -353,16 +353,20 @@ export function createRouter(
     );
   }
 
-  Object.assign(server, {
-    sessions,
-    get active() {
-      return active;
-    },
-    reload(next) {
-      cfg = next;
-      jev = new JevClient(cfg.jev, env, { fetchImpl });
-    },
-  });
+  // Not Object.assign: it would read the `active` getter once and copy a 0 that never changes.
+  Object.defineProperties(
+    server,
+    Object.getOwnPropertyDescriptors({
+      sessions,
+      get active() {
+        return active;
+      },
+      reload(next) {
+        cfg = next;
+        jev = new JevClient(cfg.jev, env, { fetchImpl });
+      },
+    }),
+  );
   return server;
 }
 

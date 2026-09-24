@@ -582,6 +582,20 @@ test('a client that leaves during the Jev call costs no upstream request', async
   assert.equal(done().at(-1)?.client_aborted, true);
 });
 
+test('server.active counts requests in flight, so a shutdown can wait for them (regression: it stayed 0)', async () => {
+  reset(plans.a, { option: 'routine', probability: 0.9 });
+  const { url, server } = await startRouter();
+  assert.equal(server.active, 0);
+  const res = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: ccHeaders('s-active', { 'x-test-chunk-gap-ms': '50' }),
+    body: JSON.stringify(claudeCodeBody('s-active', 'Add a test for the parser')),
+  });
+  assert.equal(server.active, 1, 'the response is still streaming');
+  await res.arrayBuffer();
+  assert.equal(server.active, 0);
+});
+
 test('logs carry decisions but never keys or prompt text', () => {
   const text = JSON.stringify(allLogs);
   assert.ok(allLogs.length > 30);
