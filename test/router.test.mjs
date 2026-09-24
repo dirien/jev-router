@@ -721,6 +721,123 @@ test('server.active counts requests in flight, so a shutdown can wait for them (
   assert.equal(server.active, 0);
 });
 
+test("a target's omit list removes nested fields and keeps their siblings", async () => {
+  const { url } = await startRouter();
+  const body = {
+    ...cc('s-omit', 'Write a 5-word title', { model: 'claude-haiku-4-5' }),
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'high', format: 'text' },
+    context_management: { edits: [] },
+  };
+  const d = await delta(() => post(url, '/v1/messages', body, claudeCodeHeaders('s-omit')));
+  const sent = d.anthropic[0].body;
+  assert.equal(sent.model, 'claude-haiku-4-5');
+  assert.equal(sent.thinking, undefined);
+  assert.equal(sent.context_management, undefined);
+  assert.deepEqual(sent.output_config, { format: 'text' }, 'only output_config.effort goes');
+});
+
+test('the router answers its own errors in the shape of the client API', async () => {
+  const { url } = await startRouter();
+  const notFound = await fetch(`${url}/v1/models`);
+  assert.equal(notFound.status, 404);
+  assert.deepEqual(await notFound.json(), { type: 'error', error: { type: 'not_found_error', message: 'No route for GET /v1/models' } });
+  assert.equal(notFound.headers.get('x-should-retry'), 'false');
+  const plain = { 'content-type': 'application/json' };
+  const notJson = await post(url, '/v1/messages', '{"messages": [', plain);
+  assert.equal(notJson.status, 400);
+  assert.deepEqual(JSON.parse(notJson.text), {
+    type: 'error',
+    error: { type: 'invalid_request_error', message: 'Request body is not JSON' },
+  });
+  const openaiNotJson = await post(url, '/v1/responses', 'nope', plain);
+  assert.deepEqual(JSON.parse(openaiNotJson.text).error, {
+    message: 'Request body is not JSON',
+    type: 'invalid_request_error',
+    param: null,
+    code: null,
+  });
+});
+
+test('an upstream that cannot be reached is a 502 the client may retry', async () => {
+  const cfg = testConfig();
+  const gone = http.createServer();
+  const goneUrl = await listen(gone);
+  await close(gone);
+  for (const target of Object.values(cfg.surfaces.openai ?? {})) target.url = goneUrl;
+  const { url, logs } = await startRouter({ cfg });
+  reset(plans.a, { option: 'deep', probability: 0.9 });
+  const res = await post(url, '/v1/responses', codexBody('t-gone', 'Design the retry policy'), codexHeaders('t-gone'));
+  assert.equal(res.status, 502);
+  const { error } = JSON.parse(res.text);
+  assert.equal(error.type, 'api_error');
+  assert.match(error.message, /^Upstream request failed: /);
+  assert.equal(res.headers.get('x-should-retry'), null, 'no x-should-retry: false on a 5xx');
+  assert.equal(res.headers.get('x-jev-tier'), 'frontier', 'the decision headers are still shown');
+  assert.ok(logs.some((e) => e.event === 'error' && e.session));
+});
+
+test('reload switches new requests to the new config', async () => {
+  const { url, server } = await startRouter();
+  const next = testConfig();
+  const anthropicTargets = next.surfaces.anthropic;
+  assert.ok(anthropicTargets);
+  anthropicTargets.balanced.model = 'claude-sonnet-5-1';
+  server.reload(next);
+  reset(plans.a, { option: 'routine', probability: 0.9 });
+  const d = await delta(() => post(url, '/v1/messages', cc('s-reload', 'Add a test'), ccHeaders('s-reload')));
+  assert.equal(d.anthropic[0].body.model, 'claude-sonnet-5-1');
+  assert.equal(d.jevA.length, 1, 'the new config has its own Jev client');
+});
+
+test('without a Jev key every session gets the default tier, and the router says why once', async () => {
+  const { url, logs, routes } = await startRouter({ env: { TYPESAFE_API_KEY: '', OPENROUTER_API_KEY: '' } });
+  const first = cc('s-nojev', 'Design the cache');
+  const d1 = await delta(() => post(url, '/v1/messages', first, ccHeaders('s-nojev')));
+  assert.equal(d1.anthropic[0].body.model, 'claude-sonnet-5');
+  const second = cc('s-nojev', 'Now the eviction', { history: [...first.messages, { role: 'assistant', content: 'ok' }] });
+  const d2 = await delta(() => post(url, '/v1/messages', second, ccHeaders('s-nojev')));
+  assert.equal(d1.jevA.length + d1.jevB.length + d2.jevA.length + d2.jevB.length, 0);
+  assert.deepEqual(
+    routes().map((r) => r.reason),
+    ['no-jev', 'no-jev'],
+  );
+  assert.equal(logs.filter((e) => e.event === 'warning' && e.message.startsWith('No Jev channel has a key')).length, 1);
+});
+
+test("without a router key, only the client's own provider gets the client's credentials", async () => {
+  const { url } = await startRouter({ env: { ANTHROPIC_API_KEY: '', OLLAMA_API_KEY: '' } });
+  const login = { authorization: 'Bearer client-login' };
+  reset(plans.a, { option: 'deep', probability: 0.9 });
+  const d1 = await delta(() => post(url, '/v1/messages', cc('s-login', 'Design it'), ccHeaders('s-login', login)));
+  assert.equal(d1.anthropic[0].headers['x-api-key'], 'client-side-placeholder-key');
+  assert.equal(d1.anthropic[0].headers.authorization, 'Bearer client-login');
+  reset(plans.a, { option: 'mechanical', probability: 0.99 });
+  const d2 = await delta(() => post(url, '/v1/messages', cc('s-login-2', 'List the files'), ccHeaders('s-login-2', login)));
+  assert.equal(d2.ollama[0].headers.authorization, undefined, 'Ollama never sees the Anthropic login');
+  assert.equal(d2.ollama[0].headers['x-api-key'], undefined);
+});
+
+test('a client that leaves mid-stream is logged as gone, and the upstream stream is closed', async () => {
+  reset(plans.a, { option: 'routine', probability: 0.9 });
+  const { url, done } = await startRouter();
+  const controller = new AbortController();
+  const res = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: ccHeaders('s-leave', { 'x-test-chunk-gap-ms': '200' }),
+    body: JSON.stringify(claudeCodeBody('s-leave', 'Add a test for the parser')),
+    signal: controller.signal,
+  });
+  assert.ok(res.body);
+  await res.body.getReader().read();
+  controller.abort();
+  await sleep(300);
+  const entry = done().at(-1);
+  assert.ok(entry);
+  assert.equal(entry.status, 200);
+  assert.equal(entry.client_aborted, true);
+});
+
 test('logs carry decisions but never keys or prompt text', () => {
   const text = JSON.stringify(allLogs);
   assert.ok(allLogs.length > 30);
