@@ -284,3 +284,10 @@ test('report sums requests, spend, savings and Jev health from the log', () => {
   assert.equal(r.saved_usd, Math.round((0.0012 - 0.00032) * 1e4) / 1e4);
   assert.equal(r.models['glm-5.3-flash'].requests, 1);
 });
+
+test('report skips lines that are not log entries (regression: a `null` line threw)', () => {
+  const route = JSON.stringify({ event: 'route', session: 's1', jev: { ok: true, ms: 120, inputTokens: 600 } });
+  const r = report(['null', '"text"', '', 'jev-router 1.0.0 listening on http://127.0.0.1:4000', route]);
+  assert.equal(r.requests, 1);
+  assert.equal(r.jev.p50_ms, 120);
+});

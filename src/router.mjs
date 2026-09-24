@@ -494,6 +494,7 @@ export function report(lines) {
     } catch {
       continue;
     }
+    if (!e || typeof e !== 'object') continue; // a stray `null` line must not abort the report
     if (e.event === 'route') {
       requests += 1;
       sessions.add(e.session);
