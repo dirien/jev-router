@@ -74,13 +74,20 @@ async function send(label, body, hdrs) {
     usage: done?.usage,
     cost_usd: done?.cost_usd,
     capped_max_tokens: done?.capped_max_tokens,
+    folded_system: done?.folded_system,
     error: done?.error,
   });
 }
 const s1 = crypto.randomUUID();
+// Claude Code 2.1.281 puts system messages right after the prompt for the Claude 5 family.
+/** @param {Record<string, unknown>} body */
+const withSystem = (body) => ({
+  ...body,
+  messages: [.../** @type {unknown[]} */ (body.messages), { role: 'system', content: 'Answer in one sentence.' }],
+});
 await send(
-  '1 haiku, full Claude Code field set, max_tokens 128000',
-  opus(s1, 'What does ls -la print? One sentence.', { max_tokens: 128000 }),
+  '1 haiku, full Claude Code field set, max_tokens 128000, a system message after the prompt',
+  withSystem(opus(s1, 'What does ls -la print? One sentence.', { max_tokens: 128000 })),
   headers(s1),
 );
 const loop = {
@@ -94,7 +101,11 @@ const loop = {
 await send('2 haiku, tool-loop turn (sticky)', loop, headers(s1));
 plan.option = 'routine';
 const s2 = crypto.randomUUID();
-await send('3 sonnet 5, full field set', opus(s2, 'Add a unit test for the parser. Reply with one word.'), headers(s2));
+await send(
+  '3 sonnet 5, full field set, a system message after the prompt',
+  withSystem(opus(s2, 'Add a unit test for the parser. Reply with one word.')),
+  headers(s2),
+);
 console.log(JSON.stringify(results, null, 2));
 console.log('jev mock calls:', jev.calls.length, '(expect 2)');
 await close(server);

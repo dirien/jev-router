@@ -91,8 +91,15 @@ before(async () => {
   /** @type {MockHandler} */
   const messages = async (call, res) => {
     if (call.url.startsWith('/v1/messages/count_tokens')) return json(res, 200, { input_tokens: 42 });
-    // Like api.anthropic.com: Haiku 4.5 takes at most 64000 output tokens, the Claude 5 family 128000.
+    // Like api.anthropic.com: Haiku 4.5 takes at most 64000 output tokens, the Claude 5 family 128000,
+    // and only the Claude 5 family takes system messages inside `messages`.
     const model = String(call.body?.model ?? '');
+    const messageList = Array.isArray(call.body?.messages) ? call.body.messages : [];
+    if (/haiku-4-5/.test(model) && messageList.some((m) => m && typeof m === 'object' && !Array.isArray(m) && m.role === 'system'))
+      return json(res, 400, {
+        type: 'error',
+        error: { type: 'invalid_request_error', message: "role 'system' is not supported on this model" },
+      });
     const asked = Number(call.body?.max_tokens ?? 0);
     const limit = /haiku-4-5/.test(model) ? 64000 : 128000;
     if (asked > limit)
@@ -828,6 +835,47 @@ test("max_tokens is capped at the target model's output limit, and an upstream e
   assert.equal(refused.result.status, 400);
   for (let i = 0; i < 50 && custom.done().length < 2; i += 1) await sleep(10);
   assert.match(String(custom.done().at(-1)?.error), /^max_tokens: 128000 > 64000, which is the maximum allowed number of output tokens/);
+});
+
+test('mid-conversation system messages are folded for a model that rejects them, and kept for the Claude 5 family', async () => {
+  const { url, done } = await startRouter();
+  const toolTurn = claudeCodeToolTurn('s-fold', 'List the files.');
+  const system = { role: 'system', content: 'Answer in one word.' };
+  const body = {
+    ...toolTurn,
+    model: 'claude-haiku-4-5',
+    stream: false,
+    messages: [...toolTurn.messages, system, { role: 'system', content: [] }],
+  };
+  const haiku = await delta(() => post(url, '/v1/messages', body, claudeCodeHeaders('s-fold')));
+  assert.equal(haiku.result.status, 200, 'Haiku 4.5 gets no system messages');
+  /** @typedef {{ role: string, content: Array<{ type: string, text?: string }> }} SentMessage */
+  const sent = /** @type {SentMessage[]} */ (/** @type {unknown} */ (haiku.anthropic[0].body.messages));
+  assert.equal(sent.length, toolTurn.messages.length, 'the reminder joined the tool result message, the empty directive went');
+  const last = sent.at(-1);
+  assert.ok(last);
+  assert.equal(last.role, 'user');
+  assert.equal(last.content[0].type, 'tool_result', 'tool results stay first');
+  assert.deepEqual(last.content.at(-1), { type: 'text', text: '<system-reminder>\nAnswer in one word.\n</system-reminder>' });
+
+  const opus = await delta(() =>
+    post(
+      url,
+      '/v1/messages',
+      { ...cc('s-keep', 'Refactor the parser'), messages: [...cc('s-keep', 'Refactor the parser').messages, system] },
+      {
+        ...claudeCodeHeaders('s-keep'),
+        'x-jev-tier': 'frontier',
+      },
+    ),
+  );
+  const kept = /** @type {SentMessage[]} */ (/** @type {unknown} */ (opus.anthropic[0].body.messages));
+  assert.deepEqual(kept.at(-1), system, 'Opus 5.5 takes them as they are');
+  for (let i = 0; i < 50 && done().length < 2; i += 1) await sleep(10);
+  assert.deepEqual(
+    done().map((d) => d.folded_system),
+    [2, undefined],
+  );
 });
 
 test('the router answers its own errors in the shape of the client API', async () => {

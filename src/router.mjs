@@ -17,7 +17,7 @@ import { costOf, UsageTap } from './usage.mjs';
 
 /** @import { IncomingMessage, ServerResponse } from 'node:http' */
 /**
- * @import { Config, ConfigSummary, Decision, Env, Health, IncomingHttpHeaders, JevAnswer, JevFailure, JevInfo, JevOption, JevSuccess,
+ * @import { Config, ConfigSummary, ContentBlock, Decision, Env, Health, IncomingHttpHeaders, Item, JevAnswer, JevFailure, JevInfo, JevOption, JevSuccess,
  *   LogEntry, ModelTotals, Report, RequestBody, RouterOptions, RouterServer, SessionEntry, SessionKey, Surface, SurfaceTargets,
  *   Target, Turn, Usage } from './types.js'
  */
@@ -340,10 +340,10 @@ export function createRouter(
    * @param {IncomingMessage} req
    * @param {ServerResponse} res
    * @param {{ id: number, target: Target, surface: Surface, session: string, shown: Record<string, string>, signal: AbortSignal,
-   *   startedAt: number, body: RequestBody, redacted: number, capped?: number }} route
+   *   startedAt: number, body: RequestBody, redacted: number, capped?: number, folded?: number }} route
    * @returns {Promise<number | undefined>} the upstream's status, or undefined when the request failed
    */
-  async function relay(req, res, { id, target, surface, session, shown, signal, startedAt, body, redacted, capped }) {
+  async function relay(req, res, { id, target, surface, session, shown, signal, startedAt, body, redacted, capped, folded }) {
     try {
       const result = await forward(req, res, target, body, shown, signal, env);
       const cost = costOf(target.model, result.usage, cfg.prices);
@@ -360,6 +360,7 @@ export function createRouter(
         sha256: result.sha256,
         redacted: redacted || undefined,
         capped_max_tokens: capped,
+        folded_system: folded,
         error: result.error,
         client_aborted: result.aborted || undefined,
         usage: result.usage,
@@ -692,14 +693,60 @@ function capOutput(body, limit) {
 }
 
 /**
+ * The models that take `role: "system"` messages inside `messages`. Claude Code sends them to the
+ * Claude 5 family it believes it talks to; Haiku 4.5 answers "role 'system' is not supported on this
+ * model", so every other model gets them folded (measured on 2026-09-24).
+ */
+const NATIVE_SYSTEM_MESSAGES = /^claude-(sonnet-5|opus-5-5|fable-5-1)\b/;
+
+/** @param {string} text */
+const reminder = (text) => (text.includes('<system-reminder>') ? text : `<system-reminder>\n${text}\n</system-reminder>`);
+
+/**
+ * A message's content as a list of blocks.
+ * @param {Item['content']} content
+ * @returns {ContentBlock[]}
+ */
+const blocksOf = (content) => (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []);
+
+/**
+ * Folds each mid-conversation system message into the user message it follows, as `<system-reminder>`
+ * text at the end of that message: tool results have to stay first. A system message that doesn't
+ * follow a user message becomes one, and a directive with no content goes.
+ * @param {RequestBody} body
+ * @returns {{ body: RequestBody, folded?: number }}
+ */
+function foldSystemMessages(body) {
+  const messages = body.messages;
+  const count = Array.isArray(messages) ? messages.filter((m) => m?.role === 'system').length : 0;
+  if (!messages || count === 0) return { body };
+  /** @type {Item[]} */
+  const out = [];
+  for (const message of messages) {
+    if (message?.role !== 'system') {
+      out.push(message);
+      continue;
+    }
+    const blocks = blocksOf(message.content).map((b) =>
+      b.type === 'text' && typeof b.text === 'string' ? { ...b, text: reminder(b.text) } : b,
+    );
+    if (blocks.length === 0) continue;
+    const previous = out.at(-1);
+    if (previous?.role === 'user') out[out.length - 1] = { ...previous, content: [...blocksOf(previous.content), ...blocks] };
+    else out.push({ role: 'user', content: blocks });
+  }
+  return { body: { ...body, messages: out }, folded: count };
+}
+
+/**
  * The body a target gets: the model replaced, reasoning another provider signed dropped, secrets
- * redacted for an untrusted target, fields the target rejects left out, and the output capped at
- * what the model accepts.
+ * redacted for an untrusted target, fields the target rejects left out, the output capped at what
+ * the model accepts, and mid-conversation system messages folded for a model that rejects them.
  * @param {RequestBody} body
  * @param {string} text the body as received, for a quick check for secrets
  * @param {Target} target
  * @param {string | undefined} anchor where the current provider took over the conversation
- * @returns {{ body: RequestBody, redacted: number, capped?: number }} `redacted` counts the secrets replaced
+ * @returns {{ body: RequestBody, redacted: number, capped?: number, folded?: number }} `redacted` counts the secrets replaced
  */
 function prepareBody(body, text, target, anchor) {
   let outgoing = anchor ? stripForeignReasoning(body, anchor) : body;
@@ -707,7 +754,10 @@ function prepareBody(body, text, target, anchor) {
   if (!target.trusted && mayContainSecret(text)) ({ body: outgoing, count: redacted } = redactBody(outgoing));
   outgoing = omitFields({ ...outgoing, model: target.model }, target.omit);
   if (!target.trusted) delete outgoing.metadata;
-  return { ...capOutput(outgoing, outputLimit(target)), redacted };
+  const capped = capOutput(outgoing, outputLimit(target));
+  const fold = target.foldSystemMessages ?? !NATIVE_SYSTEM_MESSAGES.test(target.model);
+  const folded = fold ? foldSystemMessages(capped.body) : { body: capped.body };
+  return { body: folded.body, redacted, capped: capped.capped, folded: folded.folded };
 }
 
 /**

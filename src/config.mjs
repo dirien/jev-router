@@ -187,6 +187,10 @@ function checkTarget(target, where, need) {
     target.maxOutputTokens === undefined || (Number.isInteger(target.maxOutputTokens) && Number(target.maxOutputTokens) > 0),
     `${where}.maxOutputTokens must be a positive whole number`,
   );
+  need(
+    target.foldSystemMessages === undefined || typeof target.foldSystemMessages === 'boolean',
+    `${where}.foldSystemMessages must be true or false`,
+  );
 }
 
 /** @param {unknown} value */

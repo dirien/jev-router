@@ -43,6 +43,11 @@ export interface Target {
    * Defaults to the measured limit of known Claude models (64000 for Haiku 4.5, 128000 for the Claude 5 family).
    */
   maxOutputTokens?: number;
+  /**
+   * Fold `role: "system"` messages inside `messages` into the user message each follows. Defaults to true for
+   * every model but the Claude 5 family, which takes them as they are; Haiku 4.5 rejects them.
+   */
+  foldSystemMessages?: boolean;
 }
 
 /** One target per tier, plus `side` for background calls and `trusted` for sessions that carry secrets. */
@@ -395,6 +400,8 @@ export type DoneLog = {
   baseline_usd?: number;
   /** The output limit `max_tokens` was lowered to, when it was. */
   capped_max_tokens?: number;
+  /** How many mid-conversation system messages were folded into user messages. */
+  folded_system?: number;
   /** The upstream's error message, for a status of 400 or more. */
   error?: string;
 };
