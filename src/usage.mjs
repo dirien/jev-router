@@ -1,17 +1,39 @@
 // Reads token usage out of an upstream response as it streams past, without changing a byte.
 // Understands Anthropic Messages (SSE and JSON) and OpenAI Responses (SSE and JSON).
+
+/** @import { Price, RawUsage, Usage } from './types.js' */
+
+/**
+ * The parts of a response, or of one streamed event, that carry the model and its usage:
+ * Anthropic's message_start and message_delta, OpenAI's response.completed and response.incomplete.
+ * @typedef {object} UsageEvent
+ * @property {string} [type]
+ * @property {string} [model]
+ * @property {RawUsage} [usage]
+ * @property {{ model?: string, usage?: RawUsage }} [message]
+ * @property {{ model?: string, usage?: RawUsage }} [response]
+ */
+
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
 
+/** Collects the usage of one upstream response from the chunks the router relays. */
 export class UsageTap {
+  /** @param {string} [contentType] the response's content-type */
   constructor(contentType = '') {
     this.sse = contentType.includes('text/event-stream');
     this.decoder = new TextDecoder();
     this.pending = '';
     this.json = '';
+    /** @type {RawUsage} */
     this.raw = {};
+    /** @type {string | undefined} */
     this.model = undefined;
   }
 
+  /**
+   * Reads one chunk of the response body. Chunks may split lines and UTF-8 characters anywhere.
+   * @param {Uint8Array} chunk
+   */
   push(chunk) {
     const text = this.decoder.decode(chunk, { stream: true });
     if (!this.sse) {
@@ -19,20 +41,24 @@ export class UsageTap {
       return;
     }
     const lines = (this.pending + text).split('\n');
-    this.pending = lines.pop();
+    this.pending = lines.pop() ?? '';
     for (const line of lines) if (line.startsWith('data:')) this.#event(line.slice(5).trim());
   }
 
+  /** @param {string} data */
   #event(data) {
     if (!data || data === '[DONE]') return;
-    let event;
+    /** @type {unknown} */
+    let parsed;
     try {
-      event = JSON.parse(data);
+      parsed = JSON.parse(data);
     } catch {
       return;
     }
     // `data: null` must not throw: an exception here would cut the stream the client is reading.
-    if (!event || typeof event !== 'object') return;
+    if (!parsed || typeof parsed !== 'object') return;
+    /** @type {UsageEvent} */
+    const event = parsed;
     if (event.type === 'message_start') {
       this.model = event.message?.model;
       Object.assign(this.raw, event.message?.usage);
@@ -43,10 +69,14 @@ export class UsageTap {
     }
   }
 
-  // { input, cacheRead, cacheWrite, output }, with input counting uncached input tokens only.
+  /**
+   * The usage the response reported, with `input` counting uncached input tokens only.
+   * @returns {Usage | undefined} undefined when the response carried no usage
+   */
   result() {
     if (!this.sse && this.json) {
       try {
+        /** @type {UsageEvent} */
         const body = JSON.parse(this.json);
         this.model = body.model;
         Object.assign(this.raw, body.usage);
@@ -67,7 +97,13 @@ export class UsageTap {
   }
 }
 
-// Estimated USD for one request. Prices are per million tokens; unknown models return undefined.
+/**
+ * Estimated USD for one request. A dated model name ("-20251001") falls back to the undated price.
+ * @param {string} model
+ * @param {Usage | undefined} usage
+ * @param {Record<string, Price>} prices USD per million tokens, by model
+ * @returns {number | undefined} undefined for a model without a price, or a response without usage
+ */
 export function costOf(model, usage, prices) {
   if (!usage || !model) return undefined;
   const p = prices[model] ?? prices[model.replace(/-\d{8}$/, '')];
