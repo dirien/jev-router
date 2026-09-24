@@ -1,17 +1,20 @@
-// Unit tests for the pure parts: message analysis, secret handling, the tier policy, config
-// validation, usage accounting and the report.
+// Unit tests for the parts that need no router: message analysis, secret handling, the tier policy,
+// the Jev client (against a fake fetch), config validation, session state, usage accounting and the report.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { validateConfig } from '../src/config.mjs';
-import { applyPolicy, buildQuestions, buildState, hardenState, tierProbabilities } from '../src/jev.mjs';
-import { clip, describeCode, humanTurns, recentTools, stripWrappers, tierTag } from '../src/messages.mjs';
+import { loadConfig, validateConfig } from '../src/config.mjs';
+import { applyPolicy, buildQuestions, buildState, hardenState, JevClient, tierProbabilities } from '../src/jev.mjs';
+import { clip, describeCode, harness, header, humanTurns, recentTools, stripWrappers, tierTag } from '../src/messages.mjs';
 import { report, requestKind, sessionKey } from '../src/router.mjs';
 import { findSecrets, mayContainSecret, redactBody, scrub } from '../src/secrets.mjs';
+import { hashKey, SessionStore } from '../src/sessions.mjs';
 import { costOf, UsageTap } from '../src/usage.mjs';
-import { claudeCodeBody, claudeCodeToolTurn, codexBody } from './helpers.mjs';
+import { claudeCodeBody, claudeCodeToolTurn, codexBody, jevOptionsAnswer } from './helpers.mjs';
+
+/** @import { FetchLike, JevConfig, JevState, SessionEntry } from '../src/types.js' */
 
 // Fake credentials for the scanner tests, assembled at runtime so secret scanners don't flag this file.
 /** @param {...string} parts */
@@ -323,4 +326,404 @@ test('the default state file lives under XDG_STATE_HOME when it is set', () => {
   assert.equal(validateConfig(unset, { XDG_STATE_HOME: '' }).stateFile, fallback, 'an empty XDG_STATE_HOME is unset');
   assert.equal(validateConfig(unset, {}).stateFile, fallback);
   assert.equal(validateConfig({ ...unset, stateFile: '/srv/s.jsonl' }, { XDG_STATE_HOME: '/var/state' }).stateFile, '/srv/s.jsonl');
+});
+
+test('harness tells the clients apart, and header() reads one string value', () => {
+  assert.equal(harness({ 'user-agent': 'codex_exec/0.156.1' }), 'Codex CLI');
+  assert.equal(harness({ originator: 'codex_cli_rs' }), 'Codex CLI');
+  assert.equal(harness({ 'user-agent': 'curl/8.7.1' }), 'unknown');
+  assert.equal(header({ 'x-openai-subagent': 'review' }, 'x-openai-subagent'), 'review');
+  assert.equal(header({ 'set-cookie': ['a=1', 'b=2'] }, 'set-cookie'), undefined, 'only set-cookie is ever a list');
+  assert.equal(requestKind({ 'x-openai-subagent': 'review' }), 'subagent');
+});
+
+test('secret patterns: every kind is found and scrubbed, and references are not secrets', () => {
+  /** @type {Record<string, string>} */
+  const samples = {
+    'private-key': fake('-----BEGIN OPENSSH ', 'PRIVATE KEY-----\nb3BlbnNzaA\n'),
+    'anthropic-key': fake('sk-', 'ant-', 'api03-', 'A'.repeat(24)),
+    'openrouter-key': fake('sk-', 'or-', 'v1-', 'a1'.repeat(16)),
+    'openai-key': fake('sk-', 'svcacct-', 'b'.repeat(24)),
+    'aws-access-key': fake('ASIA', 'ZYXWVUTSRQPONMLK'),
+    'aws-secret-key': fake('aws_secret_', 'access_key = ', 'A'.repeat(40)),
+    'github-token': fake('gh', 'p_', 'c'.repeat(36)),
+    'gitlab-token': fake('gl', 'pat-', 'd'.repeat(20)),
+    'slack-token': fake('xo', 'xb-', '1234567890-abc'),
+    'stripe-key': fake('rk_', 'test_', 'e'.repeat(16)),
+    'google-api-key': fake('AI', 'za', 'f'.repeat(35)),
+    'pulumi-token': fake('pul-', 'a'.repeat(40)),
+    jwt: fake('ey', 'JhbGciOiJIUzI1', '.ey', 'JzdWIiOiIxMjM0', '.', 'signature12'),
+    'url-credentials': fake('https://deploy:', 's3cretpass', '@git.example.com/repo.git'),
+    assignment: fake('client_secret: "', 'q'.repeat(12), '"'),
+  };
+  for (const [kind, sample] of Object.entries(samples)) {
+    assert.ok(findSecrets(`before ${sample} after`).includes(kind), kind);
+    assert.ok(mayContainSecret(sample), `${kind}: the quick check agrees`);
+    assert.ok(scrub(sample).text.includes(`[REDACTED ${kind}]`), `${kind} is scrubbed`);
+  }
+  assert.ok(findSecrets(fake('github_', 'pat_', 'g'.repeat(40))).includes('github-token'));
+  assert.ok(findSecrets(fake('sk-', 'h'.repeat(40))).includes('openai-key'));
+  const references = [
+    'password = $DB_PASSWORD',
+    fake('password = $', '{DB_PASSWORD}'),
+    'api_key: <your-key-here>',
+    'auth_token: {{ secrets.TOKEN }}',
+    'secret = os.environ["APP_SECRET"]',
+    'password: ***hidden***',
+    'apiKey = env.API_KEY',
+    'pwd=short',
+  ];
+  for (const text of references) assert.deepEqual(findSecrets(text), [], text);
+  assert.deepEqual(scrub('nothing to see').count, 0);
+});
+
+test('loadConfig reads and validates a file, and names the file it cannot read', () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-config-`);
+  assert.throws(() => loadConfig(`${dir}/missing.json`), /^Error: Cannot read config .*missing\.json: ENOENT/);
+  writeFileSync(`${dir}/broken.json`, '{ "tiers": [');
+  assert.throws(() => loadConfig(`${dir}/broken.json`), /Cannot read config .*broken\.json: /);
+  writeFileSync(`${dir}/ok.json`, JSON.stringify({ ...shipped, stateFile: '~/state/s.jsonl', logFile: '~/logs/router.log' }));
+  const loaded = loadConfig(`${dir}/ok.json`, {});
+  assert.equal(loaded.stateFile, `${homedir()}/state/s.jsonl`, 'a leading ~ is the home directory');
+  assert.equal(loaded.logFile, `${homedir()}/logs/router.log`);
+  assert.equal(loadConfig(new URL(`file://${dir}/ok.json`)).port, 4000, 'a file URL works too');
+});
+
+test('config validation names each kind of problem', () => {
+  /** @type {Array<[(raw: typeof shipped) => void, RegExp]>} */
+  const cases = [
+    [(c) => (c.port = 0), /port must be an integer between 1 and 65535/],
+    [(c) => (c.allowedHosts = 'localhost:4000'), /allowedHosts must be an array/],
+    [(c) => (c.tiers = []), /tiers must list tier names/],
+    [(c) => (c.policy.mode = 'eager'), /policy\.mode must be "ratchet" or "sticky"/],
+    [(c) => (c.policy.accept.turbo = 0.5), /policy\.accept names unknown tier "turbo"/],
+    [(c) => (c.policy.claimGuard = 1.5), /policy\.claimGuard must be a probability/],
+    [(c) => (c.jev.channels = [{ baseUrl: 'https://jev.example' }]), /jev\.channels\[0\]\.name is required/],
+    [(c) => (c.jev.channels = [{ name: 'x', baseUrl: 'https://jev.example' }]), /jev\.channels\[0\]\.model is required/],
+    [(c) => (c.jev.channels = [{ name: 'x', baseUrl: 'https://jev.example', model: 'm' }]), /jev\.channels\[0\]\.keyEnv is required/],
+    [(c) => (c.jev.question = ''), /jev\.question is required/],
+    [(c) => (c.jev.options = { only: { tier: 'fast' } }), /jev\.options needs at least two options/],
+    [(c) => (c.jev.options.routine.tier = 'turbo'), /jev\.options\.routine\.tier must be one of tiers/],
+    [(c) => delete c.surfaces, /surfaces is required/],
+    [(c) => delete c.surfaces.anthropic.frontier, /surfaces\.anthropic has no target for tier "frontier"/],
+    [(c) => (c.surfaces.openai.frontier.url = 'not a url'), /surfaces\.openai\.frontier\.url must be an http\(s\) URL/],
+    [(c) => (c.surfaces.openai.frontier.model = ''), /surfaces\.openai\.frontier\.model is required/],
+    [(c) => delete c.surfaces.openai.frontier.keyEnv, /surfaces\.openai\.frontier needs keyEnv or clientAuth/],
+    [(c) => (c.surfaces.anthropic.side.omit = 'thinking'), /surfaces\.anthropic\.side\.omit must be a list of field paths/],
+    [(c) => (c.modelPins.opus = 'turbo'), /modelPins\.opus must be one of tiers/],
+  ];
+  for (const [change, message] of cases) {
+    const raw = structuredClone(shipped);
+    change(raw);
+    assert.throws(() => validateConfig({ ...raw, stateFile: null }), message, String(message));
+  }
+});
+
+/** @type {(request: string) => JevState} */
+const stateOf = (request) => ({ request, session: { harness: 'Claude Code', depth: 'new session' } });
+/** @type {JevConfig} */
+const JEV = {
+  ...cfg.jev,
+  deadlineMs: 2000,
+  channels: [
+    { name: 'one', baseUrl: 'http://one.invalid', model: 'jev-1.13.0', keyEnv: 'ONE_KEY', timeoutMs: 500 },
+    { name: 'two', baseUrl: 'http://two.invalid/', model: 'jev-1.13.0', keyEnv: 'TWO_KEY', timeoutMs: 500 },
+  ],
+};
+/**
+ * @param {number} status
+ * @param {unknown} body a string is sent as is
+ * @param {Record<string, string>} [headers]
+ */
+const reply = (status, body, headers = {}) =>
+  new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', ...headers },
+  });
+const good = () => reply(200, jevOptionsAnswer({ option: 'routine', probability: 0.9 }));
+
+/**
+ * A reply that never comes: it waits for the call's signal. The pending timer keeps the event loop
+ * alive meanwhile, which AbortSignal.timeout's own timer doesn't.
+ * @param {RequestInit} init
+ * @returns {Promise<Response>}
+ */
+const hang = (init) =>
+  new Promise((_, reject) => {
+    const alive = setTimeout(() => reject(new Error('the call was never aborted')), 5000);
+    init.signal?.addEventListener('abort', () => {
+      clearTimeout(alive);
+      reject(init.signal?.reason);
+    });
+  });
+
+/**
+ * A Jev client whose channels answer from a script: each host's replies are used up in order.
+ * @param {Record<string, Array<(init: RequestInit) => Response | Promise<Response>>>} script
+ * @param {{ env?: Record<string, string>, jev?: JevConfig }} [options]
+ */
+function scripted(script, { env = { ONE_KEY: 'key-one', TWO_KEY: 'key-two' }, jev = JEV } = {}) {
+  /** @type {Array<{ host: string, init: RequestInit }>} */
+  const calls = [];
+  /** @type {FetchLike} */
+  const fetchImpl = async (url, init) => {
+    const host = new URL(url).host;
+    calls.push({ host, init });
+    const next = script[host]?.shift();
+    if (!next) throw new Error(`no scripted reply for ${host}`);
+    return next(init);
+  };
+  return { client: new JevClient(jev, env, { fetchImpl }), calls };
+}
+
+test('Jev client: 401, 402 and a JSON 403 skip the channel for five minutes and move on', async () => {
+  for (const status of [401, 402, 403]) {
+    const { client, calls } = scripted({
+      'one.invalid': [() => reply(status, { error: { message: 'bad key' } })],
+      'two.invalid': [good, good],
+    });
+    const before = Date.now();
+    const answer = await client.decide(stateOf('Add a test'));
+    assert.ok(answer.ok && answer.channel === 'two', `${status}: the next channel answers`);
+    const one = client.health().one;
+    assert.equal(one.open, true);
+    assert.ok(one.openUntil >= before + 300000 && one.openUntil <= Date.now() + 300000, `${status}: open for five minutes`);
+    assert.equal(one.lastError, `HTTP ${status} bad key`);
+    await client.decide(stateOf('Add another test'));
+    assert.deepEqual(
+      calls.map((c) => c.host),
+      ['one.invalid', 'two.invalid', 'two.invalid'],
+      `${status}: the open channel gets no call`,
+    );
+  }
+});
+
+test('Jev client: a 422, a body that is not JSON and an answer without a tier fail over without the breaker', async () => {
+  const failures = [
+    [() => reply(422, { detail: 'state too large' }), 'HTTP 422 state too large'],
+    [() => reply(422, { detail: { message: 'bad state' } }), 'HTTP 422 bad state'],
+    [() => reply(400, 'plain text error', { 'content-type': 'text/plain' }), 'HTTP 400 plain text error'],
+    [() => reply(200, 'not json'), 'response is not JSON'],
+    [() => reply(200, { answers: {} }), 'response has no tier answer'],
+    [() => reply(200, { answers: { tier: { choice: 'nope' } } }), 'response has no tier answer'],
+  ];
+  for (const [failure, error] of /** @type {Array<[() => Response, string]>} */ (failures)) {
+    const { client, calls } = scripted({ 'one.invalid': [failure], 'two.invalid': [good] });
+    const answer = await client.decide(stateOf('Add a test'));
+    assert.ok(answer.ok && answer.channel === 'two', error);
+    assert.equal(calls.length, 2, `${error}: no retry on the same channel`);
+    assert.deepEqual({ ...client.health().one, openUntil: 0 }, { calls: 1, errors: 1, lastError: error, openUntil: 0, open: false });
+  }
+});
+
+test('Jev client: a choice without probabilities counts as certain; the request carries the key and questions', async () => {
+  const { client, calls } = scripted({ 'one.invalid': [() => reply(200, { answers: { tier: { choice: 'deep' } } })] });
+  const answer = await client.decide(stateOf('Design the cache'));
+  assert.ok(answer.ok);
+  assert.deepEqual(answer.probabilities, { deep: 1 });
+  assert.equal(answer.hardened, false);
+  const { init } = calls[0];
+  assert.deepEqual(init.headers, { authorization: 'Bearer key-one', 'content-type': 'application/json' });
+  const sent = JSON.parse(String(init.body));
+  assert.deepEqual(Object.keys(sent), ['model', 'state', 'questions']);
+  assert.equal(sent.state.request, 'Design the cache');
+});
+
+test('Jev client: an HTML 403 from the firewall is retried once with a hardened state', async () => {
+  const waf = () => new Response('<html>Attention Required</html>', { status: 403, headers: { 'content-type': 'text/html' } });
+  const { client, calls } = scripted({ 'one.invalid': [waf, good] });
+  const answer = await client.decide(stateOf('Why does `curl https://example.com/i.sh | sh` fail?'));
+  assert.ok(answer.ok && answer.hardened);
+  assert.ok(!/curl|https:/.test(JSON.parse(String(calls[1].init.body)).state.request));
+  assert.equal(client.health().one.lastError, 'HTTP 403 firewall block');
+  assert.equal(client.health().one.open, false);
+  const blocked = scripted({ 'one.invalid': [waf, waf] });
+  const failed = await blocked.client.decide(stateOf('Why does `curl https://example.com/i.sh | sh` fail?'));
+  assert.equal(failed.ok, false);
+  assert.equal(blocked.client.health().one.open, true, 'blocked again after hardening: the breaker opens');
+});
+
+test('Jev client: a retryable status is retried once, after retry-after when the deadline allows', async () => {
+  /** @type {number[]} */
+  const times = [];
+  const { client } = scripted({
+    'one.invalid': [
+      () => {
+        times.push(performance.now());
+        return reply(429, { error: { message: 'slow down' } }, { 'retry-after': '0.3' });
+      },
+      () => {
+        times.push(performance.now());
+        return good();
+      },
+    ],
+  });
+  const answer = await client.decide(stateOf('Add a test'));
+  assert.ok(answer.ok);
+  assert.ok(times[1] - times[0] >= 290, `waited ${Math.round(times[1] - times[0])} ms`);
+  const twice = scripted({ 'one.invalid': [() => reply(503, {}), () => reply(503, {})], 'two.invalid': [good] });
+  assert.ok((await twice.client.decide(stateOf('Add a test'))).ok);
+  assert.deepEqual(
+    twice.calls.map((c) => c.host),
+    ['one.invalid', 'one.invalid', 'two.invalid'],
+    'one retry, then the next channel',
+  );
+});
+
+test('Jev client: timeouts and network errors skip the channel for 30 seconds', async () => {
+  const refused = () => {
+    throw Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+    });
+  };
+  const jev = { ...JEV, channels: JEV.channels.map((ch) => ({ ...ch, timeoutMs: 100 })) };
+  for (const [failure, error] of /** @type {Array<[(init: RequestInit) => Promise<Response>, string]>} */ ([
+    [hang, 'timeout after 100 ms'],
+    [refused, 'ECONNREFUSED'],
+  ])) {
+    const { client } = scripted({ 'one.invalid': [failure], 'two.invalid': [good] }, { jev });
+    const before = Date.now();
+    assert.ok((await client.decide(stateOf('Add a test'))).ok);
+    const one = client.health().one;
+    assert.equal(one.lastError, error);
+    assert.ok(one.open && one.openUntil >= before + 30000 && one.openUntil <= Date.now() + 30000, `${error}: open for 30 s`);
+  }
+});
+
+test('Jev client: a client that goes away ends the decision without counting an error', async () => {
+  const controller = new AbortController();
+  const { client } = scripted({ 'one.invalid': [hang] });
+  setTimeout(() => controller.abort(), 50);
+  const answer = await client.decide(stateOf('Add a test'), { signal: controller.signal });
+  assert.equal(answer.ok, false);
+  assert.ok(!answer.ok && answer.aborted && answer.error === 'client went away');
+  assert.equal(client.health().one.errors, 0);
+});
+
+test('Jev client: JEV_BASE_URL and JEV_API_KEY add a channel in front; keyless channels are dropped', async () => {
+  const env = { JEV_BASE_URL: 'http://env.invalid', JEV_API_KEY: 'key-env', JEV_MODEL: 'jev-1.14.0' };
+  const { client, calls } = scripted({ 'env.invalid': [good] }, { env });
+  assert.deepEqual(Object.keys(client.health()), ['env'], 'config channels without a key are dropped');
+  assert.ok((await client.decide(stateOf('Add a test'))).ok);
+  assert.deepEqual(calls[0].init.headers, { authorization: 'Bearer key-env', 'content-type': 'application/json' });
+  assert.equal(JSON.parse(String(calls[0].init.body)).model, 'jev-1.14.0');
+  const none = new JevClient(JEV, {});
+  assert.equal(none.configured, false);
+  const nothing = await none.decide(stateOf('Add a test'));
+  assert.ok(!nothing.ok && nothing.error === 'no Jev channel is configured');
+});
+
+/**
+ * @param {string} tier
+ * @returns {SessionEntry}
+ */
+const entry = (tier) => ({ tier, trustedOnly: false, provisional: false, attempts: 0, freshNext: false });
+
+test('sessions: the state file survives a restart, is compacted on load, and drops expired sessions and a torn last line', () => {
+  const file = `${mkdtempSync(`${tmpdir()}/jev-sessions-`)}/nested/sessions.jsonl`;
+  const one = new SessionStore({ file });
+  one.set('alpha', entry('fast'));
+  one.set('beta', entry('balanced'));
+  one.set('alpha', entry('frontier'));
+  assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 3, 'every change is appended');
+  const old = { k: hashKey('old'), ...entry('fast'), updated: Date.now() - 8 * 24 * 3600 * 1000 };
+  appendFileSync(file, `${JSON.stringify(old)}\n{"k":"torn`);
+  /** @type {unknown[]} */
+  const errors = [];
+  const two = new SessionStore({ file, onError: (err) => errors.push(err) });
+  assert.deepEqual(errors, []);
+  assert.equal(two.size, 2, 'the expired session is dropped');
+  assert.equal(two.get('alpha')?.tier, 'frontier', 'the last line for a session wins');
+  assert.equal(two.get('beta')?.tier, 'balanced');
+  assert.equal(two.get('old'), undefined);
+  const beta = two.get('beta');
+  assert.equal(beta?.lastSeen, beta?.updated, 'a loaded session was last seen when it was stored');
+  const text = readFileSync(file, 'utf8');
+  assert.equal(text.trim().split('\n').length, 2, 'rewritten with one line per live session');
+  assert.ok(!text.includes('lastSeen') && !/alpha|beta/.test(text), 'only hashed keys, and no activity times');
+});
+
+test('sessions: the least recently used session goes first, in memory and when the file is loaded', () => {
+  const store = new SessionStore({ max: 2 });
+  store.set('a', entry('fast'));
+  store.set('b', entry('fast'));
+  assert.ok(store.get('a'), 'reading a makes it the most recently used');
+  store.set('c', entry('fast'));
+  assert.equal(store.get('b'), undefined);
+  assert.ok(store.get('a') && store.get('c'));
+  store.touch('a');
+  store.touch('missing');
+  assert.ok(store.get('a')?.lastSeen);
+  const file = `${mkdtempSync(`${tmpdir()}/jev-sessions-`)}/sessions.jsonl`;
+  const writer = new SessionStore({ file });
+  for (const key of ['x', 'y', 'z']) writer.set(key, entry('balanced'));
+  const reader = new SessionStore({ file, max: 2 });
+  assert.equal(reader.get('x'), undefined, 'the oldest line goes first');
+  assert.ok(reader.get('y') && reader.get('z'));
+});
+
+test('sessions: file errors go to onError, and the store keeps working in memory', () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-sessions-`);
+  mkdirSync(`${dir}/sessions.jsonl`); // a directory where the file should be
+  /** @type {unknown[]} */
+  const errors = [];
+  const store = new SessionStore({ file: `${dir}/sessions.jsonl`, onError: (err) => errors.push(err) });
+  store.set('a', entry('fast'));
+  assert.equal(errors.length, 2, 'the load and the append both failed');
+  assert.equal(store.get('a')?.tier, 'fast');
+  assert.doesNotThrow(() => new SessionStore({ file: `${dir}/sessions.jsonl` }).set('b', entry('fast')), 'without onError too');
+});
+
+test('the usage tap reads JSON bodies and skips junk; costOf falls back to undated prices', () => {
+  const anthropicJson = new UsageTap('application/json');
+  const body = JSON.stringify({
+    model: 'claude-haiku-4-5-20251001',
+    usage: { input_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 100, output_tokens: 10 },
+  });
+  for (const part of [body.slice(0, 20), body.slice(20)]) anthropicJson.push(Buffer.from(part));
+  const usage = anthropicJson.result();
+  assert.deepEqual(usage, { input: 100, cacheRead: 1000, cacheWrite: 100, output: 10 });
+  assert.equal(anthropicJson.model, 'claude-haiku-4-5-20251001');
+  assert.equal(costOf('claude-haiku-4-5-20251001', usage, cfg.prices), 0.000375, 'priced as claude-haiku-4-5');
+  const responsesJson = new UsageTap('application/json; charset=utf-8');
+  responsesJson.push(
+    Buffer.from(
+      JSON.stringify({
+        model: 'gpt-6-sol',
+        usage: { input_tokens: 1000, input_tokens_details: { cached_tokens: 600 }, output_tokens: 20 },
+      }),
+    ),
+  );
+  assert.deepEqual(responsesJson.result(), { input: 400, cacheRead: 600, cacheWrite: 0, output: 20 });
+  const cut = new UsageTap('application/json');
+  cut.push(Buffer.from('{"usage":{"input_tok'));
+  assert.equal(cut.result(), undefined, 'a cut-off body has no usage');
+  const noUsage = new UsageTap();
+  noUsage.push(Buffer.from('{"id":"x"}'));
+  assert.equal(noUsage.result(), undefined);
+  const junk = new UsageTap('text/event-stream');
+  junk.push(Buffer.from('data: [DONE]\n\ndata: {oops\n\ndata:\n\nevent: ping\n\n'));
+  junk.push(Buffer.from('data: {"type":"response.incomplete","response":{"model":"m","usage":{"input_tokens":5,"output_tokens":1}}}\n\n'));
+  assert.deepEqual(junk.result(), { input: 5, cacheRead: 0, cacheWrite: 0, output: 1 });
+  assert.equal(junk.model, 'm');
+  const flat = { input: 1e6, cacheRead: 0, cacheWrite: 1e6, output: 0 };
+  assert.equal(costOf('glm-5.3-flash', flat, cfg.prices), 0.3, 'a missing cacheWrite price is the input price');
+  assert.equal(costOf('', usage, cfg.prices), undefined);
+  assert.equal(costOf('glm-5.3-flash', undefined, cfg.prices), undefined);
+});
+
+test('report counts unpriced responses and uses the cost as baseline when there is none', () => {
+  const r = report(
+    [
+      { event: 'done', session: 's', model: 'mystery-model', usage: { input: 5, cacheRead: 0, cacheWrite: 0, output: 1 } },
+      { event: 'done', session: 's', model: 'glm-5.3-flash', cost_usd: 0.001 },
+      { event: 'done', session: 's', status: 499, client_aborted: true },
+      { event: 'warning', message: 'no Jev key' },
+    ].map((e) => JSON.stringify(e)),
+  );
+  assert.equal(r.unpriced_responses, 1);
+  assert.equal(r.baseline_usd, 0.001);
+  assert.equal(r.saved_usd, 0);
+  assert.deepEqual(r.models['mystery-model'], { requests: 1, cost_usd: 0, input: 5, cache_read: 0, output: 1 });
+  assert.deepEqual(r.jev, { calls: 0, fallbacks: 0, fallback_rate: 0, p50_ms: null, p95_ms: null, cost_usd: 0 });
 });
