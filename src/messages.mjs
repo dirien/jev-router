@@ -2,6 +2,8 @@
 // assistant said last, which tools are in use, and which client sent it. Handles Anthropic Messages
 // bodies (Claude Code) and OpenAI Responses bodies (Codex CLI).
 
+/** @import { ContentBlock, IncomingHttpHeaders, Item, RequestBody, Turn } from './types.js' */
+
 // Harness text wrapped around or instead of a prompt: reminders, shell-mode input and output, slash
 // commands, hook output, notifications. None of it is the user's request.
 // Tags seen in Claude Code 2.1.281 and Codex CLI 0.156.1.
@@ -31,14 +33,47 @@ const WRAPPERS = new RegExp(`<(${WRAPPER_TAGS.join('|')})>[\\s\\S]*?</\\1>`, 'g'
 const AGENTS_MD = /# AGENTS\.md instructions[\s\S]*?<\/INSTRUCTIONS>/g;
 const CODE_FENCE = /```[\s\S]*?(```|$)/g;
 
+/**
+ * The conversation: Anthropic messages, or Responses input items. A string input is one user message.
+ * @param {RequestBody} body
+ * @returns {Item[]}
+ */
 export const items = (body) =>
   body.messages ?? (typeof body.input === 'string' ? [{ role: 'user', content: body.input }] : (body.input ?? []));
+
+/**
+ * A message's content as a list of blocks: a string is one text block.
+ * @param {Item['content']} content
+ * @returns {ContentBlock[]}
+ */
 const blocks = (content) => (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []);
+
+/**
+ * Removes harness text from what a user typed.
+ * @param {string} text
+ * @returns {string}
+ */
 export const stripWrappers = (text) => text.replace(WRAPPERS, '').replace(AGENTS_MD, '').trim();
 
-// Messages a human wrote: user messages with prose or images and no tool results. `index` points into
-// the body's message (or input item) list.
+/**
+ * One request header as a string. Node joins a repeated header into one string; only `set-cookie`
+ * stays a list, and it is never read here.
+ * @param {IncomingHttpHeaders} headers
+ * @param {string} name
+ * @returns {string | undefined}
+ */
+export function header(headers, name) {
+  const value = headers[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Messages a human wrote: user messages with prose or images and no tool results.
+ * @param {RequestBody} body
+ * @returns {Turn[]} in conversation order; `index` points into the body's message (or input item) list
+ */
 export function humanTurns(body) {
+  /** @type {Turn[]} */
   const turns = [];
   for (const [index, item] of items(body).entries()) {
     if (item?.role !== 'user' || (item.type && item.type !== 'message')) continue;
@@ -56,7 +91,11 @@ export function humanTurns(body) {
   return turns;
 }
 
-// The assistant's last prose, without thinking or tool calls.
+/**
+ * The assistant's last prose, without thinking or tool calls.
+ * @param {RequestBody} body
+ * @returns {string} empty when the assistant hasn't written any
+ */
 export function lastAssistantText(body) {
   for (const item of items(body).toReversed()) {
     if (item?.role !== 'assistant') continue;
@@ -70,13 +109,20 @@ export function lastAssistantText(body) {
   return '';
 }
 
-// "Bash 6 times, Edit 3 times" over the most recent tool calls.
+/**
+ * "Bash 6 times, Edit 3 times" over the most recent tool calls.
+ * @param {RequestBody} body
+ * @param {number} [last] how many of the latest calls to count
+ * @returns {string} empty when no tool was called
+ */
 export function recentTools(body, last = 20) {
+  /** @type {Array<string | undefined>} */
   const names = [];
   for (const item of items(body)) {
     if (item?.type === 'function_call' || item?.type === 'custom_tool_call') names.push(item.name);
     else if (item?.role === 'assistant') for (const part of blocks(item.content)) if (part?.type === 'tool_use') names.push(part.name);
   }
+  /** @type {Map<string | undefined, number>} */
   const counts = new Map();
   for (const name of names.slice(-last)) counts.set(name, (counts.get(name) ?? 0) + 1);
   return [...counts]
@@ -85,15 +131,25 @@ export function recentTools(body, last = 20) {
     .join(', ');
 }
 
+/**
+ * Which coding agent sent a request.
+ * @param {IncomingHttpHeaders} headers
+ * @returns {'Claude Code' | 'Codex CLI' | 'unknown'}
+ */
 export function harness(headers) {
   const agent = headers['user-agent'] ?? '';
   if (agent.startsWith('claude-cli') || headers['x-claude-code-session-id']) return 'Claude Code';
-  if (headers.originator?.startsWith('codex') || /codex/i.test(agent)) return 'Codex CLI';
+  if (header(headers, 'originator')?.startsWith('codex') || /codex/i.test(agent)) return 'Codex CLI';
   return 'unknown';
 }
 
-// A tier tag counts only as the first or last word of the typed text, outside code blocks, so a
-// "#fast" inside a pasted script or log can't switch tiers.
+/**
+ * A tier tag such as "#frontier" in what the user typed. It counts only as the first or last word,
+ * outside code blocks, so a "#fast" inside a pasted script or log can't switch tiers.
+ * @param {string} text
+ * @param {string[]} tiers
+ * @returns {string | undefined} the tagged tier
+ */
 export function tierTag(text, tiers) {
   const typed = text.replace(CODE_FENCE, ' ').trim();
   const names = tiers.map((t) => t.replace(/[^\w-]/g, '')).join('|');
@@ -101,8 +157,12 @@ export function tierTag(text, tiers) {
   return match?.[1];
 }
 
-// Code blocks become a one-line description: Jev judges the request, not the pasted code, and shell
-// snippets in code blocks are what TypeSafe's firewall blocks.
+/**
+ * Replaces each code block with a one-line description: Jev judges the request, not the pasted
+ * code, and shell snippets in code blocks are what TypeSafe's firewall blocks.
+ * @param {string} text
+ * @returns {string}
+ */
 export const describeCode = (text) =>
   text.replace(CODE_FENCE, (block) => {
     const lang = block.match(/^```([\w+-]*)/)?.[1];
@@ -110,7 +170,13 @@ export const describeCode = (text) =>
     return `[code block${lang ? ` (${lang})` : ''}, ${Math.max(lines, 1)} lines]`;
   });
 
-// Keeps the start and the end of a long text. The question usually comes after the pasted material.
+/**
+ * Shortens a text to about `max` characters, keeping its start and its end: the question usually
+ * comes after the pasted material.
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
 export function clip(text, max) {
   if (text.length <= max) return text;
   const head = Math.floor(max * 0.25);
