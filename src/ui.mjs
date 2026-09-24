@@ -1,6 +1,7 @@
-// jev-router ui: a live view of a router log in the browser. It follows the log file and streams
-// each new line to the page as a server-sent event. It only reads the log, which holds no prompt
-// text and no keys, and it listens on loopback only.
+// The live view: a page that shows routing as it happens, and a stream of the router's log entries
+// for it as server-sent events. `jev-router serve --ui` feeds it in-process; `jev-router ui` feeds it
+// by following a log file. It only shows log entries, which hold no prompt text and no keys, and it
+// listens on loopback unless it is given another address.
 
 import { open, readFile, stat } from 'node:fs/promises';
 import http from 'node:http';
@@ -37,7 +38,10 @@ const HEADERS = {
   'cross-origin-resource-policy': 'same-origin',
   'cache-control': 'no-store',
 };
-const HOST = '127.0.0.1';
+const LOOPBACK = '127.0.0.1';
+/** Host names that always mean this machine. */
+const LOOPBACK_NAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const WILDCARDS = new Set(['0.0.0.0', '::']);
 /** The longest line kept. The router's own lines are far shorter. */
 const MAX_LINE = 64 * 1024;
 /** The most read from the log in one poll; a larger backlog is read over several polls. */
@@ -203,17 +207,45 @@ export class LogTail {
   }
 }
 
+/** @param {string} host */
+const bracketed = (host) => (host.includes(':') ? `[${host}]` : host);
+
 /**
- * Why a request is refused, if it is. Only a page this server served may read it (no other Host,
- * which stops DNS rebinding, and no other Origin), and only with GET or HEAD.
+ * The host names a view listening on `host` answers to. Loopback names always work: a port
+ * forwarded to the view (`sbx ports`) arrives addressed to 127.0.0.1 or localhost. A specific
+ * address works too; a wildcard adds nothing, so a DNS-rebinding page can't reach the view.
+ * @param {string} host the address the view listens on
+ * @returns {ReadonlySet<string>}
+ */
+export function hostNamesFor(host) {
+  return WILDCARDS.has(host) ? LOOPBACK_NAMES : new Set([...LOOPBACK_NAMES, bracketed(host).toLowerCase()]);
+}
+
+/**
+ * The host name in a Host header, without its port: `[::1]:4100` gives `[::1]`.
+ * @param {string} host
+ * @returns {string | undefined} undefined when the header isn't a host
+ */
+function hostName(host) {
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Why a request is refused, if it is. The Host must name an address the view answers to, on any
+ * port, since a forwarded port keeps the host's port. An Origin, when there is one, must be the
+ * page's own. Only GET and HEAD are served.
  * @param {IncomingMessage} req
- * @param {number} port
+ * @param {ReadonlySet<string>} names
  * @returns {{ status: number, message: string } | undefined}
  */
-function refusal(req, port) {
+function refusal(req, names) {
   const host = req.headers.host ?? '';
-  if (!['127.0.0.1', 'localhost', '[::1]'].some((name) => host === `${name}:${port}`))
-    return { status: 403, message: `Host "${host}" is not allowed` };
+  const name = hostName(host);
+  if (name === undefined || !names.has(name)) return { status: 403, message: `Host "${host}" is not allowed` };
   if (req.headers.origin !== undefined && req.headers.origin !== `http://${host}`)
     return { status: 403, message: 'Cross-origin requests are not allowed' };
   if (req.method !== 'GET' && req.method !== 'HEAD') return { status: 405, message: `${req.method} is not allowed` };
@@ -248,18 +280,21 @@ async function sendAsset(res, path, headOnly) {
 }
 
 /**
- * Creates the live view: the page, and a stream of the router log's events for it at `/events`.
- * A page that connects gets the recent events as one `snapshot` event, then each new one as a message.
- * @param {UiOptions} options
+ * Creates the live view: the page, and a stream of log entries for it at `/events`. Entries come
+ * from `publish`, and from `file` when one is given. A page that connects gets the recent entries as
+ * one `snapshot` event, then each new one as a message.
+ * @param {UiOptions} [options]
  * @returns {UiServer}
  */
-export function createUiServer({ file, pollMs, backlogBytes, history = 2000, heartbeatMs = 15000, assets = ASSET_DIR }) {
+export function createUiServer({ file, pollMs, backlogBytes, history = 2000, heartbeatMs = 15000, assets = ASSET_DIR } = {}) {
   /** @type {UiEvent[]} */
   const recent = [];
   /** @type {Set<ServerResponse>} */
   const clients = new Set();
   /** @type {NodeJS.Timeout | undefined} */
   let heartbeat;
+  /** @type {ReadonlySet<string>} the host names the Host header may carry; set by `listen` */
+  let names = LOOPBACK_NAMES;
 
   /** @param {string} chunk */
   const send = (chunk) => {
@@ -271,19 +306,24 @@ export function createUiServer({ file, pollMs, backlogBytes, history = 2000, hea
     }
   };
 
-  const tail = new LogTail(file, {
-    pollMs,
-    backlogBytes,
-    onLines: (lines) => {
-      for (const line of lines) {
-        const event = parseLogLine(line);
-        if (!event) continue;
-        recent.push(event);
-        send(`data: ${JSON.stringify(event)}\n\n`);
-      }
-      if (recent.length > history) recent.splice(0, recent.length - history);
-    },
-  });
+  /** @param {unknown} entry */
+  const publish = (entry) => {
+    if (!isEvent(entry)) return;
+    recent.push(entry);
+    if (recent.length > history) recent.splice(0, recent.length - history);
+    send(`data: ${JSON.stringify(entry)}\n\n`);
+  };
+
+  const tail =
+    file === undefined
+      ? undefined
+      : new LogTail(file, {
+          pollMs,
+          backlogBytes,
+          onLines: (lines) => {
+            for (const line of lines) publish(parseLogLine(line));
+          },
+        });
 
   const port = () => {
     const address = server.address();
@@ -300,13 +340,15 @@ export function createUiServer({ file, pollMs, backlogBytes, history = 2000, hea
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
     });
-    res.write(`retry: 2000\n\nevent: snapshot\ndata: ${JSON.stringify({ file: basename(file), events: recent })}\n\n`);
+    res.write(
+      `retry: 2000\n\nevent: snapshot\ndata: ${JSON.stringify({ file: file === undefined ? '' : basename(file), events: recent })}\n\n`,
+    );
     clients.add(res);
     res.on('close', () => clients.delete(res));
   };
 
   const server = http.createServer((req, res) => {
-    const refused = refusal(req, port());
+    const refused = refusal(req, names);
     if (refused) return reply(res, refused.status, refused.message);
     const path = (req.url ?? '/').split('?')[0];
     if (path === '/events') return req.method === 'GET' ? subscribe(res) : reply(res, 405, 'Use GET for /events');
@@ -316,25 +358,27 @@ export function createUiServer({ file, pollMs, backlogBytes, history = 2000, hea
   });
 
   return {
-    async listen(wanted) {
-      await tail.start();
+    publish,
+    async listen(wanted, host = LOOPBACK) {
+      names = hostNamesFor(host);
+      await tail?.start();
       try {
         await new Promise((done, fail) => {
           server.once('error', fail);
-          server.listen(wanted, HOST, () => {
+          server.listen(wanted, host, () => {
             server.off('error', fail);
             done(undefined);
           });
         });
       } catch (err) {
-        tail.stop();
+        tail?.stop();
         throw err;
       }
       heartbeat = setInterval(() => send(': keep-alive\n\n'), heartbeatMs).unref();
-      return `http://${HOST}:${port()}/`;
+      return `http://${WILDCARDS.has(host) ? LOOPBACK : bracketed(host)}:${port()}/`;
     },
     async close() {
-      tail.stop();
+      tail?.stop();
       clearInterval(heartbeat);
       for (const res of clients) res.end();
       clients.clear();

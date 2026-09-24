@@ -25,7 +25,7 @@ import { JevClient } from './jev.mjs';
 import { createRouter, describeConfig, report, VERSION } from './router.mjs';
 import { createUiServer } from './ui.mjs';
 
-/** @import { Config, Health, RouterServer } from './types.js' */
+/** @import { Config, Health, RouterServer, UiServer } from './types.js' */
 
 /**
  * @typedef {'ok' | 'warn' | 'FAIL' | 'hint' | 'info'} Status
@@ -48,7 +48,7 @@ const COMPACT_WINDOW = '160000';
 const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or Codex turn with Jev.
 
 Usage:
-  jev-router [serve] [--config <file>] [--host <h>] [--port <n>]
+  jev-router [serve] [--config <file>] [--host <h>] [--port <n>] [--ui [<host>:]<port>]
   jev-router launch claude [--config <file>] [--port <n>] [--] [claude args…]
   jev-router launch codex  [--config <file>] [--port <n>] [--force] [--] [codex args…]
   jev-router env claude|codex [--config <file>] [--port <n>]
@@ -58,17 +58,18 @@ Usage:
   jev-router ui [<log.jsonl>] [--port <n>]
   jev-router version | help
 
-  serve    run the router in the foreground (the default command)
+  serve    run the router in the foreground (the default command); --ui also serves the live view
   launch   run Claude Code or Codex through the router on the configured port, starting one if none runs
   env      print shell exports for a running router: eval "$(jev-router env claude)"
   doctor   check the config, the keys and a running router; --live makes one Jev call (~$0.00003)
   init     write the user config; --anthropic-only sends every Claude Code tier to Anthropic
   report   sum up requests, spend and savings from a router log
-  ui       watch routing live in the browser, from a router log (http://127.0.0.1:4100)
+  ui       serve the live view for a router log another process writes (http://127.0.0.1:4100)
 
 Config: --config, else $JEV_ROUTER_CONFIG, else $XDG_CONFIG_HOME/jev-router/config.json
 (~/.config by default) if it exists, else the packaged default. JEV_ROUTER_HOST and
 JEV_ROUTER_PORT override the config's host and port; the flags override both.
+JEV_ROUTER_UI works like --ui.
 `;
 
 /**
@@ -269,39 +270,53 @@ function listen(server, port, host) {
  * @returns {Promise<undefined>}
  */
 async function serve(args, env) {
-  const { values, rest } = parseArgs(args, { '--config': 'value', '--host': 'value', '--port': 'value' });
+  const { values, rest } = parseArgs(args, { '--config': 'value', '--host': 'value', '--port': 'value', '--ui': 'value' });
   if (rest.length) throw new Error(`serve takes no arguments, got "${rest.join(' ')}"`);
   const { cfg: loaded, path, host, port, token } = settings(values, env);
   if (!isLoopback(host) && !token) throw new Error(`Refusing to listen on ${host} without a token: set JEV_ROUTER_TOKEN.`);
+  const uiAddress = parseUiAddress(values.ui ?? envValue(env, 'JEV_ROUTER_UI'));
   let cfg = { ...loaded, host, port };
   let stdoutBroken = false;
   process.stdout.on('error', () => {
     stdoutBroken = true; // a closed log pipe must not crash the router
   });
-  const log = logger(
+  const view = uiAddress ? createUiServer() : undefined;
+  const toLog = logger(
     () => [cfg.logFile],
     (line) => {
       if (!stdoutBroken) process.stdout.write(line);
     },
   );
+  /** @param {Record<string, unknown>} entry */
+  const log = (entry) => {
+    toLog(entry);
+    view?.publish(entry);
+  };
+  /** @param {string} text a message for people: stderr, and a notice in the live view */
+  const say = (text) => {
+    console.error(text);
+    view?.publish({ ts: new Date().toISOString(), event: 'text', text });
+  };
   const server = createRouter(cfg, { log });
   const bound = await listen(server, port, host).catch((err) => {
     throw new Error(`cannot listen on ${urlHost(host)}:${port}: ${errorMessage(err)}`);
   });
   console.error(`jev-router ${VERSION} listening on http://${urlHost(host)}:${bound}`);
   logConfig(log, cfg);
+  if (view && uiAddress) await startView(view, uiAddress);
   process.on('SIGHUP', () => {
     try {
       cfg = { ...loadConfig(path), host, port };
       server.reload(cfg);
       logConfig(log, cfg);
-      console.error('jev-router: config reloaded');
+      say('jev-router: config reloaded');
     } catch (err) {
-      console.error(`jev-router: reload failed, keeping the old config\n${errorMessage(err)}`);
+      say(`jev-router: reload failed, keeping the old config\n${errorMessage(err)}`);
     }
   });
   const shutdown = () => {
     console.error(`jev-router: shutting down, waiting for ${server.active} request(s)`);
+    void view?.close();
     server.close();
     const deadline = Date.now() + 30000;
     const wait = setInterval(() => {
@@ -314,6 +329,38 @@ async function serve(args, env) {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
   return undefined;
+}
+
+/**
+ * The address for `serve --ui` and JEV_ROUTER_UI: a port, or host:port ([::]:4100 for IPv6).
+ * @param {string | undefined} value
+ * @returns {{ host: string, port: number } | undefined} undefined when no view is wanted
+ */
+function parseUiAddress(value) {
+  if (value === undefined) return undefined;
+  if (/^\d+$/.test(value)) return { host: LOOPBACK, port: parsePort(value) };
+  const match = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d+)$/.exec(value);
+  if (!match) throw new Error(`--ui takes a port or host:port, got "${value}"`);
+  return { host: match[1] ?? match[2], port: parsePort(match[3]) };
+}
+
+/**
+ * Starts the live view of `serve --ui`. A view that can't listen is reported, and routing goes on
+ * without it: the view must never take the router down.
+ * @param {UiServer} view
+ * @param {{ host: string, port: number }} address
+ */
+async function startView(view, { host, port }) {
+  try {
+    const url = await view.listen(port, host);
+    console.error(`jev-router: live view on ${url}`);
+    if (!isLoopback(host))
+      console.error(
+        `jev-router: the live view listens on ${urlHost(host)}, so anyone who can reach that address can watch routing decisions (models, tiers, costs; never prompts or keys).`,
+      );
+  } catch (err) {
+    console.error(`jev-router: the live view can't listen on ${urlHost(host)}:${port}: ${errorMessage(err)}. Routing goes on without it.`);
+  }
 }
 
 /** @type {Record<string, { bin: string, override: string, spec: Record<string, 'value' | 'flag'> }>} */

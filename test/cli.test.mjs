@@ -599,6 +599,52 @@ test('ui serves the live view of a log that may not exist yet, and stops on SIGT
   assert.match(badPort.stderr, /port must be a number/);
 });
 
+test("serve --ui shows the router's own entries live, and a view that cannot listen never stops routing", async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const config = writeConfig(join(box.root, 'ui.json'), {}, { upstream: upstream.url });
+  const serving = start(['serve', '--config', config, '--port', '0', '--ui', '127.0.0.1:0'], box.env);
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router');
+  const view = await waitFor(() => /live view on (http:\/\/127\.0\.0\.1:\d+\/)\n/.exec(serving.out.stderr)?.[1], 'the view');
+  const page = await fetch(`${view}events`);
+  assert.equal(page.headers.get('content-type'), 'text/event-stream; charset=utf-8');
+  const reader = /** @type {ReadableStream<Uint8Array>} */ (page.body).getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  void (async () => {
+    for (;;) {
+      const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true }));
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  })();
+  await waitFor(() => text.includes('event: snapshot') && text.includes('"event":"config"'), 'the config in the snapshot');
+  assert.equal((await ask(url)).status, 200);
+  await waitFor(() => text.includes('"event":"route"') && text.includes('"event":"done"'), 'the request in the view');
+  serving.child.kill('SIGHUP');
+  await waitFor(() => text.includes('jev-router: config reloaded'), 'the reload notice in the view');
+  assert.doesNotMatch(serving.out.stderr, /listens on/, 'a loopback view needs no warning');
+  await reader.cancel();
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
+
+  const holder = http.createServer();
+  const taken = await new Promise((done) =>
+    holder.listen(0, '127.0.0.1', () => done(/** @type {import('node:net').AddressInfo} */ (holder.address()).port)),
+  );
+  const busy = start(['serve', '--config', config, '--port', '0'], { ...box.env, JEV_ROUTER_UI: String(taken) });
+  const busyUrl = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(busy.out.stderr)?.[1], 'the second router');
+  await waitFor(() => busy.out.stderr.includes("the live view can't listen"), 'the view error');
+  assert.equal((await ask(busyUrl)).status, 200, 'routing goes on without the view');
+  busy.child.kill('SIGTERM');
+  assert.equal((await busy.done).code, 0);
+  holder.close();
+
+  const bad = await run(['serve', '--config', config, '--port', '0', '--ui', 'somewhere'], box.env);
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /--ui takes a port or host:port, got "somewhere"/);
+});
+
 test('serve refuses to listen on a network address without a token, or on a taken port', async () => {
   const box = sandbox();
   const open = await run(['serve', '--host', '0.0.0.0', '--port', '0'], box.env);

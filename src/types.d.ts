@@ -424,8 +424,8 @@ export type UiEvent = LogEntry | { ts: string; event: 'text'; text: string } | (
 
 /** Options of `createUiServer`. */
 export interface UiOptions {
-  /** The router log to follow. It may not exist yet. */
-  file: string;
+  /** A router log to follow; it may not exist yet. Without one, entries come from `publish` only. */
+  file?: string;
   /** How often to look for new lines. Defaults to 250 ms. */
   pollMs?: number;
   /** How much of the existing log to replay to a new page. Defaults to 512 KiB. */
@@ -440,8 +440,13 @@ export interface UiOptions {
 
 /** The live view's server; see `createUiServer`. */
 export interface UiServer {
-  /** Replays the log's end, starts following it, and listens on 127.0.0.1. Resolves to the page URL. */
-  listen(port: number): Promise<string>;
+  /**
+   * Replays the log's end, starts following it, and listens on `host` (127.0.0.1 by default).
+   * Resolves to the page URL.
+   */
+  listen(port: number, host?: string): Promise<string>;
+  /** Shows a log entry: `serve --ui` passes each one the router logs. Anything without an `event` is ignored. */
+  publish(entry: unknown): void;
   /** Ends every open page stream, stops following the log, and closes the server. */
   close(): Promise<void>;
   /** Open page streams. */

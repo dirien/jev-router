@@ -6,7 +6,7 @@ import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { createUiServer, LogTail, parseLogLine } from '../src/ui.mjs';
+import { createUiServer, hostNamesFor, LogTail, parseLogLine } from '../src/ui.mjs';
 import { sleep } from './helpers.mjs';
 
 const dir = mkdtempSync(join(tmpdir(), 'jev-router-ui-'));
@@ -238,6 +238,42 @@ test('a page gets the recent events as a snapshot, then each new line as it is w
   await view.close();
   await until(() => page.state.ended, 'close to end the open stream');
   assert.equal(view.clients, 0);
+});
+
+test('a view without a log shows what is published, and answers a port forwarded under another number', async () => {
+  const view = createUiServer({ heartbeatMs: 1000 });
+  view.publish({ ts: 't1', event: 'config', tiers: ['fast', 'frontier'] });
+  view.publish({ no: 'event' });
+  view.publish('jev-router: plain text is not an entry');
+  const port = Number(new URL(await view.listen(0)).port);
+  const page = await subscribe(port);
+  await until(() => page.state.text.includes('event: snapshot'), 'the snapshot');
+  const snapshot = /** @type {{ file: string, events: Array<Record<string, unknown>> }} */ (messages(page.state.text)[0].data);
+  assert.equal(snapshot.file, '', 'no log file to name');
+  assert.deepEqual(
+    snapshot.events.map((e) => e.event),
+    ['config'],
+    'only entries are shown',
+  );
+  view.publish({ ts: 't2', event: 'route', req: 1, tier: 'fast' });
+  await until(() => messages(page.state.text).length === 2, 'the published route');
+  assert.equal(
+    (await request(port, '/', { host: 'localhost:5100', origin: 'http://localhost:5100' })).status,
+    200,
+    'sbx ports 5100:<port>',
+  );
+  assert.equal((await request(port, '/', { host: `10.1.2.3:${port}` })).status, 403, 'an address the view does not listen on');
+  assert.equal((await request(port, '/', { host: 'bad host' })).status, 403, 'a Host that is not a host');
+  page.close();
+  await view.close();
+});
+
+test('hostNamesFor: loopback names always, the listening address too, and nothing more for a wildcard', () => {
+  assert.deepEqual([...hostNamesFor('0.0.0.0')], ['127.0.0.1', 'localhost', '[::1]']);
+  assert.deepEqual([...hostNamesFor('::')], ['127.0.0.1', 'localhost', '[::1]']);
+  assert.deepEqual([...hostNamesFor('127.0.0.1')], ['127.0.0.1', 'localhost', '[::1]']);
+  assert.ok(hostNamesFor('192.168.1.5').has('192.168.1.5'));
+  assert.ok(hostNamesFor('FE80::1').has('[fe80::1]'), 'IPv6 in brackets, lower case, as URL gives it');
 });
 
 test('listen fails cleanly on a taken port', async () => {
