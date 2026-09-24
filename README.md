@@ -188,6 +188,9 @@ Then, for every request, the router:
 1. **Redacts.** For an untrusted target it redacts secrets anywhere in the body, tool output included.
 1. **Drops unsupported fields.** It removes the fields the target lists in `omit`, for example the adaptive
    `thinking`, `output_config.effort` and `context_management` that Haiku 4.5 rejects.
+1. **Caps the output.** It lowers `max_tokens` to what the target's model accepts. Claude Code asks for 128,000
+   output tokens because it believes it talks to Opus 5.5, and Haiku 4.5 refuses anything above 64,000. The limits
+   of the Claude models in the shipped configs are built in, and a target's `maxOutputTokens` overrides them.
 1. **Trims identifiers.** An untrusted target gets a minimal set of headers and no `metadata`.
 1. **Forwards.** It streams the response back with back-pressure, and cancels the upstream request when the client
    goes away.
@@ -249,7 +252,8 @@ None of these can move a session that contained a secret to an untrusted upstrea
   agent's terminal stays clean), also appended to `logFile` when it's set. Each request writes a `route` line
   (session hash, request kind, tier, reason, model, upstream, and the Jev channel, model version, request ID,
   probabilities, guard values and latency) and a `done` line (status, bytes, the SHA-256 of the streamed bytes, token
-  usage, `cost_usd`, and `baseline_usd`: the same usage priced on `baselineModel`). A `req` number pairs each `route`
+  usage, `cost_usd`, `baseline_usd`: the same usage priced on `baselineModel`, and for a failed request the
+  upstream's error message). A `req` number pairs each `route`
   line with its `done` line. A `deciding` line marks each Jev call before its answer arrives, and a `config` line at
   startup and after every reload lists the tiers, Jev's options and each target's model and host, never keys.
 - **Report.** `jev-router report [<log.jsonl>]` summarizes a log: requests and sessions, spend per model, cost
@@ -310,7 +314,7 @@ documents every key, its default and its validation.
 | `jev.channels` | Ordered System One channels, each with `baseUrl`, `model` (pin a version such as `jev-1.13.0`), `keyEnv` and `timeoutMs` |
 | `jev.deadlineMs`, `jev.requestChars` | The total Jev budget per decision, and the size cap for the latest message |
 | `jev.question`, `jev.options` | The rubric: one choice question with `what`, `examples` and `not_for` per option, and each option's `tier` |
-| `surfaces.<anthropic\|openai>.<tier\|side\|trusted>` | Targets: `url`, `model`, `auth` (`x-api-key` or `bearer`), `keyEnv`, `clientAuth`, `trusted`, `countTokens`, `omit` |
+| `surfaces.<anthropic\|openai>.<tier\|side\|trusted>` | Targets: `url`, `model`, `auth` (`x-api-key` or `bearer`), `keyEnv`, `clientAuth`, `trusted`, `countTokens`, `omit`, `maxOutputTokens` |
 | `prices`, `baselineModel` | USD per million tokens for the cost ledger, and the model savings are measured against |
 | `sideCallModel`, `pinOnModelChange`, `modelPins` | Background-call detection, and model family to tier for `/model` switches |
 | `host`, `port`, `token`, `allowedHosts`, `allowedOrigins`, `maxBodyBytes`, `stateFile`, `logFile` | Server settings |
@@ -386,10 +390,10 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 
 ## Status
 
-The current release is 1.2.0. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
+The current release is 1.2.1. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
 A live check on 2026-09-24 sent Claude Code's full request shape through the router to Anthropic, with Jev mocked:
-Haiku 4.5 (with its `omit` list) and Sonnet 5 both answered 200, the streams were byte-exact, and the router made one
-Jev call per human message.
+Haiku 4.5 (with its `omit` list, and `max_tokens` lowered from Claude Code's 128,000 to 64,000) and Sonnet 5 both
+answered 200, the streams were byte-exact, and the router made one Jev call per human message.
 
 Not verified yet, because it needs keys: real Jev answers (so the thresholds are untuned), Ollama Cloud and OpenAI
 as live upstreams, and full Claude Code and Codex sessions, especially Codex's file edits on Ollama models.

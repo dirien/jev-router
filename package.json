@@ -1,6 +1,6 @@
 {
   "name": "@dirien/jev-router",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Pass-through model router for Claude Code and Codex CLI that picks a model tier per human turn with Jev, TypeSafe AI's decision model",
   "keywords": [
     "claude-code",

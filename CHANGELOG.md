@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-24
+
+### Fixed
+
+- Claude Code turns routed to Haiku 4.5 failed with a 400: Claude Code asks for `max_tokens: 128000`, sized for the
+  Opus 5.5 it believes it talks to, and Haiku 4.5 accepts at most 64000. The router now lowers `max_tokens` (and
+  `max_output_tokens`) to what the target's model accepts, keeps a thinking budget below it, and says so in the
+  `x-jev-max-tokens` header and the `capped_max_tokens` field of the `done` line. The limits of Haiku 4.5 and the
+  Claude 5 family are built in; a target's new `maxOutputTokens` overrides them.
+
+### Added
+
+- The `done` line carries the upstream's error message for a failed request, and the live view shows it.
+
 ## [1.2.0] - 2026-09-24
 
 ### Added
@@ -71,7 +85,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/dirien/jev-router/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dirien/jev-router/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dirien/jev-router/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dirien/jev-router/releases/tag/v1.0.0

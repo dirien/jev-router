@@ -27,7 +27,7 @@ No build step and no bundler: TypeScript only type-checks the JSDoc.
 | Client examples | `examples/claude-code.env`, `examples/codex/jev.config.toml`, `examples/codex/jev-models.json` (carries Codex's Apache-2.0 system prompt, credited in `NOTICE`) |
 | Sandbox kit | `sbx/jev-router-kit/spec.yaml` |
 | Docs | `README.md` (users), `docs/activation.md`, `docs/configuration.md`, `docs/design.md` (why), `docs/evaluation.md`, `docs/sandbox.md`, `CHANGELOG.md` |
-| Version | `1.2.0`, in `package.json` and in `VERSION` (`src/router.mjs`) |
+| Version | `1.2.1`, in `package.json` and in `VERSION` (`src/router.mjs`) |
 
 ## Commands (verified 2026-09-24)
 
