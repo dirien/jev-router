@@ -410,6 +410,7 @@ test('config validation names each kind of problem', () => {
     [(c) => (c.surfaces.openai.frontier.model = ''), /surfaces\.openai\.frontier\.model is required/],
     [(c) => delete c.surfaces.openai.frontier.keyEnv, /surfaces\.openai\.frontier needs keyEnv or clientAuth/],
     [(c) => (c.surfaces.anthropic.side.omit = 'thinking'), /surfaces\.anthropic\.side\.omit must be a list of field paths/],
+    [(c) => (c.surfaces.anthropic.side.maxOutputTokens = 0), /surfaces\.anthropic\.side\.maxOutputTokens must be a positive whole number/],
     [(c) => (c.modelPins.opus = 'turbo'), /modelPins\.opus must be one of tiers/],
   ];
   for (const [change, message] of cases) {

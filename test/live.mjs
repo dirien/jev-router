@@ -1,4 +1,6 @@
-// Live check against api.anthropic.com with Jev mocked. Three requests with max_tokens 32.
+// Live check against api.anthropic.com with Jev mocked. Three requests, small answers. The first
+// asks for 128000 output tokens, as Claude Code does for Opus 5.5, so it checks that the router caps
+// it at Haiku 4.5's 64000.
 // Run: npm run test:live   (needs Anthropic credentials: ANTHROPIC_API_KEY, or a proxy that injects them)
 
 import { readFileSync } from 'node:fs';
@@ -71,11 +73,16 @@ async function send(label, body, hdrs) {
     sha_match: done?.sha256 === sha256(bytes),
     usage: done?.usage,
     cost_usd: done?.cost_usd,
-    error: res.status >= 400 ? bytes.toString().slice(0, 160) : undefined,
+    capped_max_tokens: done?.capped_max_tokens,
+    error: done?.error,
   });
 }
 const s1 = crypto.randomUUID();
-await send('1 haiku, full Claude Code field set', opus(s1, 'What does ls -la print? One sentence.'), headers(s1));
+await send(
+  '1 haiku, full Claude Code field set, max_tokens 128000',
+  opus(s1, 'What does ls -la print? One sentence.', { max_tokens: 128000 }),
+  headers(s1),
+);
 const loop = {
   ...claudeCodeToolTurn(s1, 'What does ls -la print? One sentence.'),
   model: 'claude-opus-5-5',

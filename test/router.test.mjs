@@ -91,6 +91,18 @@ before(async () => {
   /** @type {MockHandler} */
   const messages = async (call, res) => {
     if (call.url.startsWith('/v1/messages/count_tokens')) return json(res, 200, { input_tokens: 42 });
+    // Like api.anthropic.com: Haiku 4.5 takes at most 64000 output tokens, the Claude 5 family 128000.
+    const model = String(call.body?.model ?? '');
+    const asked = Number(call.body?.max_tokens ?? 0);
+    const limit = /haiku-4-5/.test(model) ? 64000 : 128000;
+    if (asked > limit)
+      return json(res, 400, {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: `max_tokens: ${asked} > ${limit}, which is the maximum allowed number of output tokens for ${model}`,
+        },
+      });
     if (!call.body.stream)
       return json(res, 200, {
         id: 'msg',
@@ -753,6 +765,69 @@ test("a target's omit list removes nested fields and keeps their siblings", asyn
   assert.equal(sent.thinking, undefined);
   assert.equal(sent.context_management, undefined);
   assert.deepEqual(sent.output_config, { format: 'text' }, 'only output_config.effort goes');
+});
+
+test("max_tokens is capped at the target model's output limit, and an upstream error's message is logged", async () => {
+  // Claude Code sizes max_tokens for the model it thinks it talks to: 128000 for Opus 5.5.
+  const { url, done } = await startRouter();
+  const haiku = await delta(() =>
+    post(
+      url,
+      '/v1/messages',
+      cc('s-cap', 'Write a 5-word title', { model: 'claude-haiku-4-5', maxTokens: 128000 }),
+      claudeCodeHeaders('s-cap'),
+    ),
+  );
+  assert.equal(haiku.result.status, 200);
+  assert.equal(haiku.anthropic[0].body.max_tokens, 64000, 'Haiku 4.5 takes at most 64000');
+  assert.equal(haiku.result.headers.get('x-jev-max-tokens'), '64000');
+  const opus = await delta(() =>
+    post(url, '/v1/messages', cc('s-cap-opus', 'Refactor the parser', { maxTokens: 128000 }), {
+      ...claudeCodeHeaders('s-cap-opus'),
+      'x-jev-tier': 'frontier',
+    }),
+  );
+  assert.equal(opus.anthropic[0].body.max_tokens, 128000, 'Opus 5.5 takes all of it');
+  assert.equal(opus.result.headers.get('x-jev-max-tokens'), null);
+  for (let i = 0; i < 50 && done().length < 2; i += 1) await sleep(10);
+  assert.deepEqual(
+    done().map((d) => d.capped_max_tokens),
+    [64000, undefined],
+  );
+
+  // A target's own limit wins, and a thinking budget stays below it.
+  const cfg = testConfig();
+  const targets = cfg.surfaces.anthropic;
+  assert.ok(targets);
+  targets.frontier.maxOutputTokens = 2048;
+  targets.side.maxOutputTokens = 200000;
+  const custom = await startRouter({ cfg });
+  const budget = await delta(() =>
+    post(
+      custom.url,
+      '/v1/messages',
+      { ...cc('s-budget', 'Plan the migration', { maxTokens: 8000 }), thinking: { type: 'enabled', budget_tokens: 4096 } },
+      {
+        ...claudeCodeHeaders('s-budget'),
+        'x-jev-tier': 'frontier',
+      },
+    ),
+  );
+  assert.equal(budget.anthropic[0].body.max_tokens, 2048);
+  assert.deepEqual(budget.anthropic[0].body.thinking, { type: 'enabled', budget_tokens: 2047 });
+
+  // Too generous a limit lets the upstream refuse; its message lands in the done line.
+  const refused = await delta(() =>
+    post(
+      custom.url,
+      '/v1/messages',
+      cc('s-refused', 'Title', { model: 'claude-haiku-4-5', maxTokens: 128000 }),
+      claudeCodeHeaders('s-refused'),
+    ),
+  );
+  assert.equal(refused.result.status, 400);
+  for (let i = 0; i < 50 && custom.done().length < 2; i += 1) await sleep(10);
+  assert.match(String(custom.done().at(-1)?.error), /^max_tokens: 128000 > 64000, which is the maximum allowed number of output tokens/);
 });
 
 test('the router answers its own errors in the shape of the client API', async () => {

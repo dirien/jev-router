@@ -329,6 +329,7 @@ export function createRouter(
 
     const outgoing = prepareBody(body, request.text, target, !countOnly && main ? entry?.anchor : undefined);
     if (outgoing.redacted) shown['x-jev-redacted'] = String(outgoing.redacted);
+    if (outgoing.capped) shown['x-jev-max-tokens'] = String(outgoing.capped);
     const status = await relay(req, res, { id, target, surface, session, shown, signal, startedAt, ...outgoing });
     if (main && status !== undefined && status < 300 && decision.tier !== 'side' && !countOnly && entry && entry.lastHost !== host)
       sessions.set(decision.key.id, { ...entry, lastHost: host });
@@ -339,10 +340,10 @@ export function createRouter(
    * @param {IncomingMessage} req
    * @param {ServerResponse} res
    * @param {{ id: number, target: Target, surface: Surface, session: string, shown: Record<string, string>, signal: AbortSignal,
-   *   startedAt: number, body: RequestBody, redacted: number }} route
+   *   startedAt: number, body: RequestBody, redacted: number, capped?: number }} route
    * @returns {Promise<number | undefined>} the upstream's status, or undefined when the request failed
    */
-  async function relay(req, res, { id, target, surface, session, shown, signal, startedAt, body, redacted }) {
+  async function relay(req, res, { id, target, surface, session, shown, signal, startedAt, body, redacted, capped }) {
     try {
       const result = await forward(req, res, target, body, shown, signal, env);
       const cost = costOf(target.model, result.usage, cfg.prices);
@@ -358,6 +359,8 @@ export function createRouter(
         bytes: result.bytes,
         sha256: result.sha256,
         redacted: redacted || undefined,
+        capped_max_tokens: capped,
+        error: result.error,
         client_aborted: result.aborted || undefined,
         usage: result.usage,
         cost_usd: cost,
@@ -648,13 +651,55 @@ function storeDecision(sessions, decision, { host, main, countOnly }) {
 }
 
 /**
- * The body as the target gets it: another provider's reasoning dropped, secrets redacted for an
- * untrusted target, the target's model, and without the fields the target rejects.
+ * The output limits of the Claude models the shipped configs use, measured on 2026-09-24. A client
+ * sizes `max_tokens` for the model it thinks it talks to: Claude Code asks Opus 5.5 for 128000, which
+ * Haiku 4.5 rejects above 64000. A target's `maxOutputTokens` overrides this table.
+ * @type {Array<[RegExp, number]>}
+ */
+const OUTPUT_LIMITS = [
+  [/^claude-haiku-4-5\b/, 64000],
+  [/^claude-(sonnet-5|opus-5-5|fable-5-1)\b/, 128000],
+];
+
+/**
+ * The most output tokens a target's model accepts, when known.
+ * @param {Target} target
+ * @returns {number | undefined}
+ */
+function outputLimit(target) {
+  return target.maxOutputTokens ?? OUTPUT_LIMITS.find(([pattern]) => pattern.test(target.model))?.[1];
+}
+
+/**
+ * Lowers a requested output larger than `limit` to it, and keeps a thinking budget below it.
+ * @param {RequestBody} body
+ * @param {number | undefined} limit
+ * @returns {{ body: RequestBody, capped?: number }}
+ */
+function capOutput(body, limit) {
+  if (limit === undefined) return { body };
+  for (const field of ['max_tokens', 'max_output_tokens']) {
+    const asked = body[field];
+    if (typeof asked !== 'number' || asked <= limit) continue;
+    /** @type {RequestBody} */
+    const capped = { ...body, [field]: limit };
+    const thinking = /** @type {{ budget_tokens?: unknown } | undefined} */ (capped.thinking);
+    if (typeof thinking?.budget_tokens === 'number' && thinking.budget_tokens >= limit)
+      capped.thinking = { ...thinking, budget_tokens: limit - 1 };
+    return { body: capped, capped: limit };
+  }
+  return { body };
+}
+
+/**
+ * The body a target gets: the model replaced, reasoning another provider signed dropped, secrets
+ * redacted for an untrusted target, fields the target rejects left out, and the output capped at
+ * what the model accepts.
  * @param {RequestBody} body
  * @param {string} text the body as received, for a quick check for secrets
  * @param {Target} target
  * @param {string | undefined} anchor where the current provider took over the conversation
- * @returns {{ body: RequestBody, redacted: number }} `redacted` counts the secrets replaced
+ * @returns {{ body: RequestBody, redacted: number, capped?: number }} `redacted` counts the secrets replaced
  */
 function prepareBody(body, text, target, anchor) {
   let outgoing = anchor ? stripForeignReasoning(body, anchor) : body;
@@ -662,7 +707,7 @@ function prepareBody(body, text, target, anchor) {
   if (!target.trusted && mayContainSecret(text)) ({ body: outgoing, count: redacted } = redactBody(outgoing));
   outgoing = omitFields({ ...outgoing, model: target.model }, target.omit);
   if (!target.trusted) delete outgoing.metadata;
-  return { body: outgoing, redacted };
+  return { ...capOutput(outgoing, outputLimit(target)), redacted };
 }
 
 /**
@@ -742,7 +787,7 @@ function isJsonObject(value) {
  * @param {Record<string, string>} shown the x-jev-* headers for the client
  * @param {AbortSignal} signal
  * @param {Env} env
- * @returns {Promise<{ status: number, bytes: number, sha256: string, usage: Usage | undefined, aborted: boolean }>}
+ * @returns {Promise<{ status: number, bytes: number, sha256: string, usage: Usage | undefined, aborted: boolean, error?: string }>}
  */
 async function forward(req, res, target, body, shown, signal, env) {
   const upstream = await fetch(target.url + req.url, {
@@ -756,10 +801,14 @@ async function forward(req, res, target, body, shown, signal, env) {
   const hash = createHash('sha256');
   const tap = new UsageTap(upstream.headers.get('content-type') ?? '');
   let bytes = 0;
+  // The start of an error body, for its message in the log.
+  /** @type {Buffer[]} */
+  const errorHead = [];
   try {
     for await (const chunk of upstream.body ?? []) {
       hash.update(chunk);
       tap.push(chunk);
+      if (upstream.status >= 400 && bytes < ERROR_HEAD_BYTES) errorHead.push(chunk);
       bytes += chunk.length;
       if (!res.write(chunk)) await Promise.race([once(res, 'drain'), once(res, 'close')]);
       if (res.destroyed) break;
@@ -768,7 +817,27 @@ async function forward(req, res, target, body, shown, signal, env) {
     if (!signal.aborted) throw err;
   }
   res.end();
-  return { status: upstream.status, bytes, sha256: hash.digest('hex'), usage: tap.result(), aborted: signal.aborted };
+  const error = upstream.status >= 400 ? errorMessage(Buffer.concat(errorHead).subarray(0, ERROR_HEAD_BYTES).toString()) : undefined;
+  return { status: upstream.status, bytes, sha256: hash.digest('hex'), usage: tap.result(), aborted: signal.aborted, error };
+}
+
+/** How much of an error body is read for its message. */
+const ERROR_HEAD_BYTES = 4096;
+
+/**
+ * The message of an upstream error body: `error.message` in Anthropic's and OpenAI's shape, else the
+ * start of the body. Error messages name fields and limits, not prompt text.
+ * @param {string} text
+ * @returns {string}
+ */
+function errorMessage(text) {
+  try {
+    const message = JSON.parse(text)?.error?.message;
+    if (typeof message === 'string') return message.slice(0, 300);
+  } catch {
+    // not JSON: the start of the body below
+  }
+  return text.replace(/\s+/g, ' ').trim().slice(0, 200);
 }
 
 /**

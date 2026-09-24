@@ -183,6 +183,10 @@ function checkTarget(target, where, need) {
     target.omit === undefined || (Array.isArray(target.omit) && target.omit.every((f) => typeof f === 'string')),
     `${where}.omit must be a list of field paths`,
   );
+  need(
+    target.maxOutputTokens === undefined || (Number.isInteger(target.maxOutputTokens) && Number(target.maxOutputTokens) > 0),
+    `${where}.maxOutputTokens must be a positive whole number`,
+  );
 }
 
 /** @param {unknown} value */

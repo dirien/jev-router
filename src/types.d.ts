@@ -38,6 +38,11 @@ export interface Target {
   countTokens?: boolean;
   /** Fields the upstream rejects, as dotted paths such as `output_config.effort`. */
   omit?: string[];
+  /**
+   * The most output tokens the model accepts; a larger `max_tokens` or `max_output_tokens` is lowered to it.
+   * Defaults to the measured limit of known Claude models (64000 for Haiku 4.5, 128000 for the Claude 5 family).
+   */
+  maxOutputTokens?: number;
 }
 
 /** One target per tier, plus `side` for background calls and `trusted` for sessions that carry secrets. */
@@ -388,6 +393,10 @@ export type DoneLog = {
   usage?: Usage;
   cost_usd?: number;
   baseline_usd?: number;
+  /** The output limit `max_tokens` was lowered to, when it was. */
+  capped_max_tokens?: number;
+  /** The upstream's error message, for a status of 400 or more. */
+  error?: string;
 };
 
 export type WarningLog = { ts: string; event: 'warning'; message: string };

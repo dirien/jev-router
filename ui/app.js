@@ -31,7 +31,7 @@ const MONO_FONT = `11px ${MONO}`;
  *   reason: string, model: string, upstream: string, trustedOnly: boolean, jev: Jev | undefined }} RouteEvent
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite: number }} Usage
  * @typedef {{ event: 'done', ts: number, req: number | undefined, session: string, status: number, model: string,
- *   ms: number | undefined, usage: Usage | undefined, cost: number | undefined, baseline: number | undefined }} DoneEvent
+ *   ms: number | undefined, usage: Usage | undefined, cost: number | undefined, baseline: number | undefined, error: string }} DoneEvent
  * @typedef {{ event: 'deciding', ts: number, session: string, turn: number | undefined }} DecidingEvent
  * @typedef {{ model: string, upstream: string, trusted: boolean }} Target
  * @typedef {{ event: 'config', ts: number, version: string, mode: string, tiers: string[], defaultTier: string,
@@ -294,6 +294,7 @@ function normDone(raw, ts) {
     },
     cost: num(raw.cost_usd),
     baseline: num(raw.baseline_usd),
+    error: str(raw.error),
   };
 }
 
@@ -1207,6 +1208,14 @@ function fillResult(rec) {
     return;
   }
   const ok = done.status >= 200 && done.status < 300;
+  if (!ok && done.error) {
+    // The upstream's own words, such as a limit the request went past.
+    cell.replaceChildren(
+      h('span', 'bad', `${done.status || '?'} · ${done.error.length > 60 ? `${done.error.slice(0, 59)}…` : done.error}`),
+    );
+    cell.title = done.error;
+    return;
+  }
   /** @type {Array<string | HTMLElement>} */
   const parts = ok ? [dur(done.ms)] : [h('span', 'bad', String(done.status || '?')), ` · ${dur(done.ms)}`];
   const u = done.usage;
