@@ -92,14 +92,16 @@ Otherwise the router spends a failed attempt on it every five minutes.
 Node's built-in `fetch` uses the sandbox proxy only when `NODE_USE_ENV_PROXY=1`. Without it, requests bypass the
 proxy, no key gets injected, and every upstream answers 401.
 
-To watch the routing live, run the view on the host. `router.log` lands in the shared workspace folder, so the host
-sees every line as the router writes it:
+To watch the routing live, start the router with its view on the sandbox's network interface instead:
+`jev-router serve --ui 0.0.0.0:4100 2>&1 | tee -a router.log`. Then forward the port on the host and open
+`http://127.0.0.1:4100`:
 
 ```bash
-cd "$WS" && npm run ui -- router.log                                  # then open http://127.0.0.1:4100
+sbx ports jev-router --publish 4100:4100
 ```
 
-It needs Node 22 or newer on the host, and no `npm ci`: the router has no runtime dependencies.
+The view shows models, tiers and costs, never prompts or keys, and only the router's own port handles model
+requests.
 
 ## 3. Sandbox shell 2: smoke test and health
 

@@ -18,7 +18,7 @@ No build step and no bundler: TypeScript only type-checks the JSDoc.
 | --- | --- |
 | Entry point | `bin/jev-router.mjs` calls `main(argv)` in `src/cli.mjs` |
 | Server | `createRouter`, `describeConfig`, `report` and `VERSION` in `src/router.mjs` |
-| Live view | `jev-router ui`: `LogTail` and `createUiServer` in `src/ui.mjs` follow a router log and serve `ui/` (`index.html`, `app.css`, `app.js`) with server-sent events on `127.0.0.1:4100`. `ui/tsconfig.json` type-checks the browser code |
+| Live view | `serve --ui [<host>:]<port>` feeds `createUiServer` (`src/ui.mjs`) in-process through `publish`; `jev-router ui [log]` feeds it with `LogTail` from a log file. It serves `ui/` (`index.html`, `app.css`, `app.js`) plus server-sent events, on `127.0.0.1:4100` by default. `ui/tsconfig.json` type-checks the browser code |
 | Modules | `src/config.mjs` defaults and validation; `src/jev.mjs` state, questions, channels, policy; `src/messages.mjs` human turns, wrapper tags, tier tags; `src/secrets.mjs` scanner and redaction; `src/sessions.mjs` persistent store; `src/usage.mjs` usage tap and prices; `src/ui.mjs` live view server |
 | Configs | `config/default.json`, `config/anthropic-only.json`. Lookup: `--config`, `JEV_ROUTER_CONFIG`, `$XDG_CONFIG_HOME/jev-router/config.json`, then `config/default.json` |
 | Endpoints | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `GET /healthz`; `127.0.0.1:4000` by default |
@@ -27,7 +27,7 @@ No build step and no bundler: TypeScript only type-checks the JSDoc.
 | Client examples | `examples/claude-code.env`, `examples/codex/jev.config.toml`, `examples/codex/jev-models.json` (carries Codex's Apache-2.0 system prompt, credited in `NOTICE`) |
 | Sandbox kit | `sbx/jev-router-kit/spec.yaml` |
 | Docs | `README.md` (users), `docs/activation.md`, `docs/configuration.md`, `docs/design.md` (why), `docs/evaluation.md`, `docs/sandbox.md`, `CHANGELOG.md` |
-| Version | `1.1.0`, in `package.json` and in `VERSION` (`src/router.mjs`) |
+| Version | `1.2.0`, in `package.json` and in `VERSION` (`src/router.mjs`) |
 
 ## Commands (verified 2026-09-24)
 
@@ -50,6 +50,7 @@ No build step and no bundler: TypeScript only type-checks the JSDoc.
 | Live check: 3 Anthropic calls, Jev mocked | `npm run test:live` | ~5s |
 | Jev evaluation, live or mocked | `npm run eval` / `npm run eval:mock` | ~30s / ~1s |
 | Run the router | `npm start` | n/a |
+| Run the router with its live view | `npm start -- --ui 4100` | n/a |
 | Live view of a router log | `npm run ui -- router.log` | n/a |
 <!-- AGENTS-GENERATED:END commands -->
 

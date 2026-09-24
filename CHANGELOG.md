@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-24
+
+### Added
+
+- `jev-router serve --ui [<host>:]<port>` (or `JEV_ROUTER_UI`): the router serves its live view itself, on its own
+  port, and feeds it every log entry in-process, so no log file is needed. Config reloads show up in the view.
+  Listening on `0.0.0.0` lets a forwarded port (`sbx ports`) reach it from outside a Docker Sandbox, with a warning
+  on stderr. A view that can't listen is reported, and routing goes on without it.
+
+### Changed
+
+- The live view checks only the host name of the `Host` header, not its port, so a port forwarded under another
+  number works. It still answers only loopback names and the address it listens on.
+
 ## [1.1.0] - 2026-09-24
 
 ### Added
@@ -57,6 +71,7 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/dirien/jev-router/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dirien/jev-router/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dirien/jev-router/releases/tag/v1.0.0

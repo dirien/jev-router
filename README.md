@@ -132,7 +132,7 @@ To set the profile up by hand, see [Codex profile by hand](docs/activation.md#co
 
 ## Watch routing live
 
-`jev-router ui` shows every decision as it happens, in a browser next to the terminal where Claude Code runs:
+The live view shows every decision as it happens, in a browser next to the terminal where Claude Code runs:
 
 ![The live view with a Claude-only config: a quick question went to Haiku 4.5, then a harder message moved the
 session up to Opus 5.5, whose tool steps, subagent and background calls follow without asking Jev](docs/live-view.png)
@@ -146,13 +146,20 @@ session up to Opus 5.5, whose tool steps, subagent and background calls follow w
 - **Totals.** Spend against the baseline model, Jev's latency and its fallbacks.
 
 ```bash
-jev-router ui router.log      # or, in a clone: npm run ui -- router.log
-open http://127.0.0.1:4100
+jev-router serve --ui 4100    # the router, plus its live view on http://127.0.0.1:4100
 ```
 
-It only reads the router's log, so it runs wherever that file is readable, for example on your Mac while the router
-runs in a Docker Sandbox whose workspace folder the Mac shares. Without an argument it follows `logFile` from the
-config, else the log that `launch` writes. `--port` picks another port.
+`--ui` (or `JEV_ROUTER_UI`) takes a port or `host:port`. The router hands the view every log entry in-process, so it
+needs no log file. The view listens on loopback unless you give it an address. In a Docker Sandbox, let it listen on
+the sandbox's network interface and forward the port from the host:
+
+```bash
+jev-router serve --ui 0.0.0.0:4100 2>&1 | tee -a router.log   # in the sandbox
+sbx ports jev-router --publish 4100:4100                       # on the host, then open http://127.0.0.1:4100
+```
+
+For a router in another process, `jev-router ui [<log.jsonl>] [--port <n>]` serves the same view by following its
+log: the one given, else `logFile` from the config, else the log that `launch` writes.
 
 ## How routing works
 
@@ -223,9 +230,12 @@ None of these can move a session that contained a secret to an untrusted upstrea
 - **What's stored.** The state file (`~/.local/state/jev-router/sessions.jsonl`, mode 0600) holds hashed session
   keys, tiers, trust flags, the last upstream host, and a hash of the message where the provider changed. It holds
   no prompt text. The log holds decisions, token usage and cost, never prompt text or keys.
-- **The live view.** `jev-router ui` is a separate process that only reads the log. It listens on `127.0.0.1`,
-  serves nothing but its own page and the log's events, refuses other `Host` and `Origin` headers, and sends a
-  Content Security Policy that allows no scripts or connections beyond its own origin.
+- **The live view.** It has its own port and only shows log entries. It listens on `127.0.0.1` unless `--ui` names
+  another address, and says so when it does: anyone who can reach that address sees models, tiers and costs, never
+  prompts or keys. It answers only a `Host` that names loopback or the address it listens on (a wildcard address
+  adds nothing, so DNS rebinding can't reach it), refuses a foreign `Origin`, serves nothing but its page and the
+  event stream, and sends a Content Security Policy that allows only its own origin. The router's own port still
+  refuses every browser request.
 - **Where prompts go.** A session's requests go to the upstream its tier maps to, and Jev's small state goes to the
   first Jev channel that answers (TypeSafe, then OpenRouter). Check each provider's retention terms before you use
   the router on sensitive code. TypeSafe says Jev isn't trained on customer requests
@@ -264,7 +274,7 @@ kill -HUP <pid>        # reload its config
 ## CLI
 
 ```text
-jev-router [serve] [--config <file>] [--host <h>] [--port <n>]
+jev-router [serve] [--config <file>] [--host <h>] [--port <n>] [--ui [<host>:]<port>]
 jev-router launch claude [--config <file>] [--port <n>] [--] [claude args…]
 jev-router launch codex  [--config <file>] [--port <n>] [--] [codex args…]
 jev-router env claude|codex [--config <file>] [--port <n>]   # eval "$(jev-router env claude)"
@@ -376,7 +386,7 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 
 ## Status
 
-The current release is 1.1.0. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
+The current release is 1.2.0. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
 A live check on 2026-09-24 sent Claude Code's full request shape through the router to Anthropic, with Jev mocked:
 Haiku 4.5 (with its `omit` list) and Sonnet 5 both answered 200, the streams were byte-exact, and the router made one
 Jev call per human message.
