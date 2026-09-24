@@ -52,7 +52,7 @@ import { costOf, UsageTap } from './usage.mjs';
  */
 
 /** The router's version, as /healthz and `jev-router version` report it. */
-export const VERSION = '1.2.1';
+export const VERSION = '1.3.0';
 /** @type {Partial<Record<string, Surface>>} */
 const SURFACES = { '/v1/messages': 'anthropic', '/v1/messages/count_tokens': 'anthropic', '/v1/responses': 'openai' };
 const HOP = [

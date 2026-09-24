@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-24
+
+### Added
+
+- Click a request in the live view (or focus it and press Enter) to inspect it: the decision panel shows its Jev
+  answer, reason and route, and the flow streams its path, from the client through the router, Jev's category and
+  the tier to the model, in its tier's color while the rest of the graph dims. A tool step, subagent or background
+  call shows the prompt whose decision it runs on. Escape or **Back to live** returns to the traffic; the button
+  counts the requests that arrived meanwhile. While following live, the flow streams the newest request's route,
+  faster while it is in flight.
+
 ## [1.2.1] - 2026-09-24
 
 ### Fixed
@@ -85,7 +96,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/dirien/jev-router/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/dirien/jev-router/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dirien/jev-router/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dirien/jev-router/compare/v1.0.0...v1.1.0

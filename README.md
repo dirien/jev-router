@@ -134,8 +134,8 @@ To set the profile up by hand, see [Codex profile by hand](docs/activation.md#co
 
 The live view shows every decision as it happens, in a browser next to the terminal where Claude Code runs:
 
-![The live view with a Claude-only config: a quick question went to Haiku 4.5, then a harder message moved the
-session up to Opus 5.5, whose tool steps, subagent and background calls follow without asking Jev](docs/live-view.png)
+![The live view with a request selected: Jev rated it mechanical at 86%, and its route through the router, the
+category and the fast tier to Haiku 4.5 streams across the flow while the rest of the graph dims](docs/live-view.png)
 
 - **Latest decision.** Jev's category for the message you just sent, its probabilities against each tier's
   threshold, the guards, and the tier and model the router picked, with the reason in plain words.
@@ -144,6 +144,10 @@ session up to Opus 5.5, whose tool steps, subagent and background calls follow w
 - **Timeline and sessions.** Each request with its status, tokens and cost, grouped under the message that started
   it, and each session's tier per human message, so the ratchet shows.
 - **Totals.** Spend against the baseline model, Jev's latency and its fallbacks.
+- **Any request, on a click.** Click a request in the timeline, or focus it and press Enter, and the decision panel
+  and the flow switch to it: its route streams across the graph in its tier's color. A tool step, subagent or
+  background call shows the prompt whose decision it runs on. Escape, or **Back to live**, follows the traffic
+  again; while following, the flow streams the newest request's route.
 
 ```bash
 jev-router serve --ui 4100    # the router, plus its live view on http://127.0.0.1:4100
@@ -390,7 +394,7 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 
 ## Status
 
-The current release is 1.2.1. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
+The current release is 1.3.0. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
 A live check on 2026-09-24 sent Claude Code's full request shape through the router to Anthropic, with Jev mocked:
 Haiku 4.5 (with its `omit` list, and `max_tokens` lowered from Claude Code's 128,000 to 64,000) and Sonnet 5 both
 answered 200, the streams were byte-exact, and the router made one Jev call per human message.
