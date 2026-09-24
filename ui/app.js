@@ -877,7 +877,7 @@ function explain(rec) {
   const target = `${route.tier} → ${shortModel(route.model)}`;
   const p = jev?.ok ? jev.probabilities[jev.choice] : undefined;
   const cfg = state.config;
-  const up = route.reason.startsWith('upgrade:') ? 'Moved up: the router never moves down mid-session. ' : '';
+  const up = route.reason.startsWith('upgrade:') ? 'The session moved up a tier. ' : '';
   if (base.startsWith('client-model:')) return `You switched to ${base.slice(13)} with /model, which pins ${target}.`;
   switch (base) {
     case 'jev':
@@ -1121,8 +1121,8 @@ function renderDecision(rec) {
   paint(dom.hero, route.tier);
   if (jev?.ok) {
     dom.catName.textContent = cap(jev.choice || '?');
-    const from = inherited ? ` · decided by the prompt at ${clock(source.route.ts)}` : '';
-    dom.catConf.textContent = `${pct(jev.probabilities[jev.choice])} sure · maps to ${optionTier(jev.choice) ?? '?'}${from}`;
+    dom.catConf.replaceChildren(...verdict(source, jev));
+    if (inherited) dom.catConf.append(` · decided by the prompt at ${clock(source.route.ts)}`);
   } else {
     dom.catName.textContent = jev ? 'No answer' : manualLabel(route);
     dom.catConf.textContent = jev ? `Jev failed: ${jev.error || 'unknown error'}` : 'Jev was not asked';
@@ -1148,6 +1148,43 @@ function renderDecision(rec) {
     rec.flashed = true;
     restartClass(dom.hero, 'flash', 1200);
   }
+}
+
+/**
+ * Why the router passed over the tier Jev's choice maps to.
+ * @param {RouteRec} source the prompt that asked Jev
+ * @param {number | undefined} p the probability of Jev's tier
+ * @param {number | undefined} bar that tier's accept threshold
+ */
+function passedReason(source, p, bar) {
+  const base = baseReason(source.route.reason);
+  if (base === 'jev-escalated') return `${pct(p)} is under its ${pct(bar)} bar`;
+  if (base === 'jev-keep') return 'the session never moves down';
+  if (base === 'risk-override') return 'a sensitive change';
+  if (base === 'claim-guard') return 'a routing claim';
+  return explainReason(source.route.reason).toLowerCase();
+}
+
+/**
+ * The tier Jev's choice maps to, next to the tier the prompt got: accepted, or passed over and why.
+ * "82% sure · fast" must never read as the destination when the router went elsewhere.
+ * @param {RouteRec} source the prompt that asked Jev
+ * @param {Jev} jev its answer
+ * @returns {Array<string | HTMLElement>}
+ */
+function verdict(source, jev) {
+  const picked = optionTier(jev.choice) ?? '';
+  const final = source.route.tier;
+  const p = jev.tiers[picked] ?? jev.probabilities[jev.choice];
+  const bar = state.config?.accept[picked];
+  /** @type {Array<string | HTMLElement>} */
+  const parts = [`${pct(jev.probabilities[jev.choice])} sure · Jev's tier `, chip(picked || '?', picked)];
+  if (picked === final) {
+    if (bar !== undefined) parts.push(h('span', 'ok', ` ✓ ${pct(p)} ≥ ${pct(bar)}`));
+    return parts;
+  }
+  parts.push(h('span', 'why', ` ✗ ${passedReason(source, p, bar)} → `), chip(final, final));
+  return parts;
 }
 
 function newestPending() {
@@ -1950,7 +1987,8 @@ function nodeEl(n, g) {
 }
 
 function buildGraph() {
-  const width = Math.max(300, Math.floor(dom.flowWrap.clientWidth));
+  // clientWidth rounds, and can round up past a fractional container: that scrolls by a pixel.
+  const width = Math.max(300, Math.floor(dom.flowWrap.getBoundingClientRect().width));
   graphWidth = width;
   clearParticles();
   const g = layoutGraph(graphModel(), width);
@@ -2033,16 +2071,34 @@ function setModel(n, latest) {
   n.g?.classList.toggle('active', latest?.route.model === n.key);
 }
 
+/**
+ * Marks the tier Jev picked when the router passed it over, with why in place of its threshold.
+ * @param {GNode} n a tier node
+ * @param {RouteRec | undefined} source the prompt whose decision passed it over, if one did
+ * @param {number | undefined} p
+ */
+function markPassed(n, source, p) {
+  n.g?.classList.toggle('passed', source !== undefined);
+  if (!n.subEl) return;
+  const bar = state.config?.accept[n.key];
+  const escalated = source !== undefined && baseReason(source.route.reason) === 'jev-escalated' && bar !== undefined;
+  n.subEl.textContent = !source ? n.sub : escalated ? `${pct(p)}<${pct(bar)}` : `${pct(p)} ✗`;
+}
+
 function renderGraphState() {
   if (!graph) return;
   const focus = focusRec();
   const source = focus ? decisionOf(focus) : undefined;
   const jev = source?.route.jev?.ok ? source.route.jev : undefined;
   const asked = focus?.route.jev?.ok === true;
+  const picked = jev ? optionTier(jev.choice) : undefined;
+  const passedOver = picked !== undefined && source !== undefined && picked !== source.route.tier ? picked : undefined;
   for (const n of graph.nodes.values()) {
     if (n.kind === 'option') setHeat(n, jev?.probabilities[n.key], asked && jev?.choice === n.key);
-    else if (n.kind === 'tier') setHeat(n, jev?.tiers[n.key], focus?.route.tier === n.key);
-    else if (n.kind === 'model') setModel(n, focus);
+    else if (n.kind === 'tier') {
+      setHeat(n, jev?.tiers[n.key], focus?.route.tier === n.key);
+      markPassed(n, n.key === passedOver && source ? source : undefined, jev?.tiers[n.key]);
+    } else if (n.kind === 'model') setModel(n, focus);
     else if (n.kind === 'client') n.g?.classList.toggle('dim', state.seenSurfaces.size > 0 && !state.seenSurfaces.has(n.key));
   }
   graph.jevBox?.classList.toggle('thinking', state.pending.size > 0);
@@ -2308,7 +2364,8 @@ function tick() {
 
 function init() {
   const resize = new ResizeObserver(() => {
-    if (Math.abs(Math.floor(dom.flowWrap.clientWidth) - graphWidth) > 8) schedule('layout');
+    const width = Math.floor(dom.flowWrap.getBoundingClientRect().width);
+    if (width < graphWidth || width - graphWidth > 8) schedule('layout');
   });
   resize.observe(dom.flowWrap);
   setInterval(tick, 1000);

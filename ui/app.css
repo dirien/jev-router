@@ -432,9 +432,21 @@ h2 {
 }
 
 .cat-conf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
   margin-top: 6px;
   font: 13px var(--mono);
   color: var(--ink-2);
+}
+
+.cat-conf .ok {
+  color: var(--ok);
+}
+
+.cat-conf .why {
+  color: var(--warn);
 }
 
 .hero-route {
@@ -1009,6 +1021,21 @@ h2 {
 .node.on-path .box {
   stroke-opacity: 1;
   stroke-width: 2;
+}
+
+/* The tier Jev picked, when the router passed it over. */
+.node.passed .box {
+  stroke: var(--warn);
+  stroke-opacity: 0.95;
+  stroke-dasharray: 4 3;
+}
+
+.node.passed .sub {
+  fill: var(--warn);
+}
+
+.flow-svg.focused .node.passed {
+  opacity: 1;
 }
 
 .node.hit .box {
