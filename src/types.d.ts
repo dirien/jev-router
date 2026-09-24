@@ -393,6 +393,36 @@ export type ErrorLog = { ts: string; event: 'error'; session?: string; path?: st
 /** One line of the router's JSONL log. */
 export type LogEntry = RouteLog | DoneLog | WarningLog | ErrorLog;
 
+/** Totals of one model in a report. */
+export interface ModelTotals {
+  requests: number;
+  cost_usd: number;
+  input: number;
+  cache_read: number;
+  output: number;
+}
+
+/** What `jev-router report` prints: traffic, spend, savings against the baseline, and Jev health. */
+export interface Report {
+  requests: number;
+  sessions: number;
+  models: Record<string, ModelTotals>;
+  cost_usd: number;
+  baseline_usd: number;
+  saved_usd: number;
+  /** Responses with usage but no price for their model. */
+  unpriced_responses: number;
+  jev: {
+    calls: number;
+    fallbacks: number;
+    fallback_rate: number;
+    p50_ms: number | null;
+    p95_ms: number | null;
+    /** Estimated at $0.042 per million input tokens. */
+    cost_usd: number;
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // The router
 
