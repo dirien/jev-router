@@ -210,6 +210,12 @@ test('config validation fails fast and lists every problem', () => {
   assert.equal(filled.policy.sensitiveOverride, 0.7);
 });
 
+test('config validation rejects a maxSessions the session store cannot honor (regression: -1 hung the router)', () => {
+  for (const maxSessions of [-1, 0, 'many'])
+    assert.throws(() => validateConfig({ ...shipped, stateFile: null, maxSessions }), /maxSessions must be a positive integer/);
+  assert.equal(validateConfig({ ...shipped, stateFile: null, maxSessions: 5 }).maxSessions, 5);
+});
+
 test('usage tap reads Anthropic and Responses usage from the stream; costOf prices it', () => {
   const tap = new UsageTap('text/event-stream');
   const sse =

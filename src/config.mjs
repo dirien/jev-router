@@ -37,6 +37,8 @@ export function validateConfig(input) {
   if (typeof cfg.logFile === 'string') cfg.logFile = cfg.logFile.replace(/^~(?=\/)/, homedir());
   need(Number.isInteger(cfg.port) && cfg.port > 0 && cfg.port < 65536, 'port must be an integer between 1 and 65535');
   need(Array.isArray(cfg.allowedHosts), 'allowedHosts must be an array of host[:port] strings');
+  // The session store evicts while it holds more than maxSessions, so a negative limit loops forever.
+  need(Number.isInteger(cfg.maxSessions) && cfg.maxSessions > 0, 'maxSessions must be a positive integer');
 
   need(
     Array.isArray(cfg.tiers) && cfg.tiers.length > 0 && cfg.tiers.every((t) => typeof t === 'string'),
