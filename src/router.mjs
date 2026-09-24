@@ -227,6 +227,7 @@ export function createRouter(
     const path = req.url.split('?')[0];
     const surface = SURFACES[path];
     if (req.method !== 'POST' || !surface) return fail(res, 404, `No route for ${req.method} ${path}`);
+    if (!cfg.surfaces[surface]) return fail(res, 404, `No route for ${path}: the config has no ${surface} surface`, surface);
     if (!(req.headers['content-type'] ?? '').includes('application/json'))
       return fail(res, 415, 'Content-Type must be application/json', surface);
     if (token && !safeEqual(req.headers['x-jev-router-token'] ?? '', token))

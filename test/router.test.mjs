@@ -520,6 +520,17 @@ test("malformed requests get an error in the client's shape and the router keeps
   assert.equal((await post(url, '/v1/messages', cc('s-after', 'hi'), ccHeaders('s-after'))).status, 200);
 });
 
+test('a surface the config leaves out is a 404 that costs no Jev call (regression: Jev was asked, then a 500)', async () => {
+  const cfg = testConfig();
+  delete cfg.surfaces.openai;
+  const { url } = await startRouter({ cfg });
+  reset(plans.a, { option: 'routine', probability: 0.9 });
+  const d = await delta(() => post(url, '/v1/responses', codexBody('t-none', 'Rename foo to bar'), codexHeaders('t-none')));
+  assert.equal(d.result.status, 404);
+  assert.equal(JSON.parse(d.result.text).error.type, 'not_found_error', 'in the OpenAI error shape');
+  assert.equal(d.jevA.length + d.jevB.length + d.ollama.length + d.openai.length, 0);
+});
+
 test('decisions survive a restart through the state file', async () => {
   const stateFile = `${mkdtempSync(`${tmpdir()}/jev-router-`)}/sessions.jsonl`;
   reset(plans.a, { option: 'deep', probability: 0.95 });
