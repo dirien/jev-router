@@ -1,4 +1,5 @@
 # ~/.codex/jev.config.toml. Start Codex with: codex --profile jev
+# `jev-router launch codex` writes this file with the paths filled in, then starts Codex with it.
 # Codex shapes every request (tool types, shell type, parallel tool calls) from the model's
 # catalog entry, so it talks to one virtual model, "jev-auto", whose metadata every routed
 # model can handle. The router picks the real model behind it.
