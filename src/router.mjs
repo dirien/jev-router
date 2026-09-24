@@ -52,7 +52,7 @@ import { costOf, UsageTap } from './usage.mjs';
  */
 
 /** The router's version, as /healthz and `jev-router version` report it. */
-export const VERSION = '1.3.2';
+export const VERSION = '1.3.3';
 /** @type {Partial<Record<string, Surface>>} */
 const SURFACES = { '/v1/messages': 'anthropic', '/v1/messages/count_tokens': 'anthropic', '/v1/responses': 'openai' };
 const HOP = [
@@ -710,9 +710,49 @@ const reminder = (text) => (text.includes('<system-reminder>') ? text : `<system
 const blocksOf = (content) => (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []);
 
 /**
+ * Applies a system message's tool addition to the request's tools, for a model that can't take tool
+ * changes mid-conversation: a definition joins `tools`, and a reference to a deferred tool loads it.
+ * Claude Code writes these as `{ type: 'tool_addition', tool: { type: 'tool_definition', definition } }`
+ * or `{ type: 'tool_addition', tool: { type: 'tool_reference', name } }`.
+ * @param {unknown[]} tools
+ * @param {ContentBlock} block
+ * @returns {unknown[]}
+ */
+function addTool(tools, block) {
+  const tool = isRecord(block.tool) ? block.tool : undefined;
+  const definition = tool?.type === 'tool_definition' && isRecord(tool.definition) ? tool.definition : undefined;
+  if (definition) return tools.some((t) => isRecord(t) && t.name === definition.name) ? tools : [...tools, definition];
+  if (tool?.type !== 'tool_reference') return tools;
+  return tools.map((t) =>
+    isRecord(t) && t.name === tool.name && t.defer_loading
+      ? Object.fromEntries(Object.entries(t).filter(([k]) => k !== 'defer_loading'))
+      : t,
+  );
+}
+
+/**
+ * The blocks of a system message that can live in a user message: its text, as `<system-reminder>`.
+ * Tool additions go to `tools` instead; tool removals and other system-only blocks have no place
+ * outside a system message, and a removed tool simply stays available.
+ * @param {ContentBlock[]} content
+ * @param {{ tools: unknown[] }} acc collects the tool additions
+ * @returns {ContentBlock[]}
+ */
+function foldableBlocks(content, acc) {
+  /** @type {ContentBlock[]} */
+  const blocks = [];
+  for (const b of content) {
+    if ((b.type === 'text' || b.type === 'connector_text') && typeof b.text === 'string')
+      blocks.push({ ...b, type: 'text', text: reminder(b.text) });
+    else if (b.type === 'tool_addition') acc.tools = addTool(acc.tools, b);
+  }
+  return blocks;
+}
+
+/**
  * Folds each mid-conversation system message into the user message it follows, as `<system-reminder>`
  * text at the end of that message: tool results have to stay first. A system message that doesn't
- * follow a user message becomes one, and a directive with no content goes.
+ * follow a user message becomes one, a directive with no content goes, and tool additions join `tools`.
  * @param {RequestBody} body
  * @returns {{ body: RequestBody, folded?: number }}
  */
@@ -720,6 +760,8 @@ function foldSystemMessages(body) {
   const messages = body.messages;
   const count = Array.isArray(messages) ? messages.filter((m) => m?.role === 'system').length : 0;
   if (!messages || count === 0) return { body };
+  const acc = { tools: Array.isArray(body.tools) ? body.tools : [] };
+  const before = acc.tools;
   /** @type {Item[]} */
   const out = [];
   for (const message of messages) {
@@ -727,16 +769,32 @@ function foldSystemMessages(body) {
       out.push(message);
       continue;
     }
-    const blocks = blocksOf(message.content).map((b) =>
-      b.type === 'text' && typeof b.text === 'string' ? { ...b, text: reminder(b.text) } : b,
-    );
+    const blocks = foldableBlocks(blocksOf(message.content), acc);
     if (blocks.length === 0) continue;
     const previous = out.at(-1);
     if (previous?.role === 'user') out[out.length - 1] = { ...previous, content: [...blocksOf(previous.content), ...blocks] };
     else out.push({ role: 'user', content: blocks });
   }
-  return { body: { ...body, messages: out }, folded: count };
+  /** @type {RequestBody} */
+  const folded = { ...body, messages: out };
+  if (acc.tools !== before) folded.tools = acc.tools;
+  return { body: folded, folded: count };
 }
+
+/**
+ * Beta flags a model rejects, though a client asks for them for the model it thinks it talks to:
+ * Claude Code sends the 1M-context beta once its model has a 1M window, and Haiku 4.5 answers "The
+ * long context beta is not yet available for this subscription" (measured on 2026-09-24). A
+ * target's `omitBetas` overrides this table.
+ * @type {Array<[RegExp, string[]]>}
+ */
+const REJECTED_BETAS = [[/^claude-haiku-4-5\b/, ['context-1m-2025-08-07']]];
+
+/**
+ * @param {Target} target
+ * @returns {string[]}
+ */
+const rejectedBetas = (target) => target.omitBetas ?? REJECTED_BETAS.find(([pattern]) => pattern.test(target.model))?.[1] ?? [];
 
 /**
  * The body a target gets: the model replaced, reasoning another provider signed dropped, secrets
@@ -907,6 +965,15 @@ function upstreamHeaders(req, target, env) {
     headers[name] = value;
   }
   headers['accept-encoding'] = 'identity'; // relay upstream bytes as they are
+  const drop = rejectedBetas(target);
+  if (drop.length > 0 && headers['anthropic-beta'] !== undefined) {
+    const kept = String(headers['anthropic-beta'])
+      .split(',')
+      .map((beta) => beta.trim())
+      .filter((beta) => beta && !drop.includes(beta));
+    if (kept.length > 0) headers['anthropic-beta'] = kept.join(',');
+    else delete headers['anthropic-beta'];
+  }
   const key = target.keyEnv ? env[target.keyEnv] : undefined;
   if (key && target.auth === 'bearer') headers.authorization = `Bearer ${key}`;
   else if (key) headers['x-api-key'] = key;

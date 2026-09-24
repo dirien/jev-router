@@ -48,6 +48,11 @@ export interface Target {
    * every model but the Claude 5 family, which takes them as they are; Haiku 4.5 rejects them.
    */
   foldSystemMessages?: boolean;
+  /**
+   * Beta flags to drop from `anthropic-beta`, because the model rejects them. Defaults to the 1M-context beta for
+   * Haiku 4.5, which Claude Code asks for once its own model has a 1M window.
+   */
+  omitBetas?: string[];
 }
 
 /** One target per tier, plus `side` for background calls and `trusted` for sessions that carry secrets. */

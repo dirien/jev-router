@@ -85,10 +85,20 @@ const withSystem = (body) => ({
   ...body,
   messages: [.../** @type {unknown[]} */ (body.messages), { role: 'system', content: 'Answer in one sentence.' }],
 });
+const beta1m = { ...headers(s1), 'anthropic-beta': `${headers(s1)['anthropic-beta']},context-1m-2025-08-07` };
+const first = withSystem(opus(s1, 'What does ls -la print? One sentence.', { max_tokens: 128000 }));
+const lookup = { name: 'Lookup', description: 'Look a thing up', input_schema: { type: 'object', properties: {} } };
+const addition = {
+  role: 'system',
+  content: [
+    { type: 'text', text: 'A tool was added.' },
+    { type: 'tool_addition', tool: { type: 'tool_definition', definition: lookup } },
+  ],
+};
 await send(
-  '1 haiku, full Claude Code field set, max_tokens 128000, a system message after the prompt',
-  withSystem(opus(s1, 'What does ls -la print? One sentence.', { max_tokens: 128000 })),
-  headers(s1),
+  '1 haiku, full Claude Code field set, max_tokens 128000, the 1M beta, system messages with a tool addition',
+  { ...first, messages: [.../** @type {unknown[]} */ (first.messages), addition] },
+  beta1m,
 );
 const loop = {
   ...claudeCodeToolTurn(s1, 'What does ls -la print? One sentence.'),

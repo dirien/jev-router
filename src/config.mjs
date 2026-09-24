@@ -191,6 +191,10 @@ function checkTarget(target, where, need) {
     target.foldSystemMessages === undefined || typeof target.foldSystemMessages === 'boolean',
     `${where}.foldSystemMessages must be true or false`,
   );
+  need(
+    target.omitBetas === undefined || (Array.isArray(target.omitBetas) && target.omitBetas.every((b) => typeof b === 'string')),
+    `${where}.omitBetas must be a list of beta names`,
+  );
 }
 
 /** @param {unknown} value */

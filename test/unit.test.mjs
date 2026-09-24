@@ -412,6 +412,7 @@ test('config validation names each kind of problem', () => {
     [(c) => (c.surfaces.anthropic.side.omit = 'thinking'), /surfaces\.anthropic\.side\.omit must be a list of field paths/],
     [(c) => (c.surfaces.anthropic.side.maxOutputTokens = 0), /surfaces\.anthropic\.side\.maxOutputTokens must be a positive whole number/],
     [(c) => (c.surfaces.anthropic.side.foldSystemMessages = 'yes'), /surfaces\.anthropic\.side\.foldSystemMessages must be true or false/],
+    [(c) => (c.surfaces.anthropic.side.omitBetas = 'context-1m'), /surfaces\.anthropic\.side\.omitBetas must be a list of beta names/],
     [(c) => (c.modelPins.opus = 'turbo'), /modelPins\.opus must be one of tiers/],
   ];
   for (const [change, message] of cases) {

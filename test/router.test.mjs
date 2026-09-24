@@ -85,31 +85,39 @@ function jevMock(plan) {
   });
 }
 
+/**
+ * What api.anthropic.com refuses, as measured on 2026-09-24: more output tokens than the model
+ * allows (64000 for Haiku 4.5, 128000 for the Claude 5 family), and for Haiku 4.5, system messages
+ * inside `messages`, the 1M-context beta, and tool changes outside a system message.
+ * @param {MockCall} call
+ * @returns {string | undefined} the error message, or undefined when the API would accept the request
+ */
+function apiRefusal(call) {
+  const model = String(call.body?.model ?? '');
+  const haiku = /haiku-4-5/.test(model);
+  const messageList = Array.isArray(call.body?.messages) ? call.body.messages : [];
+  /** @param {unknown} m */
+  const isSystem = (m) =>
+    Boolean(m) && typeof m === 'object' && !Array.isArray(m) && /** @type {{ role?: unknown }} */ (m).role === 'system';
+  if (haiku && messageList.some(isSystem)) return "role 'system' is not supported on this model";
+  if (haiku && String(call.headers['anthropic-beta'] ?? '').includes('context-1m-2025-08-07'))
+    return 'The long context beta is not yet available for this subscription.';
+  if (/"type":"tool_(addition|removal)"/.test(JSON.stringify(messageList.filter((m) => !isSystem(m)))))
+    return "'tool_addition'/'tool_removal' blocks are only permitted within `role: \"system\"` messages";
+  const asked = Number(call.body?.max_tokens ?? 0);
+  const limit = haiku ? 64000 : 128000;
+  if (asked > limit) return `max_tokens: ${asked} > ${limit}, which is the maximum allowed number of output tokens for ${model}`;
+  return undefined;
+}
+
 before(async () => {
   jevA = await jevMock(plans.a);
   jevB = await jevMock(plans.b);
   /** @type {MockHandler} */
   const messages = async (call, res) => {
     if (call.url.startsWith('/v1/messages/count_tokens')) return json(res, 200, { input_tokens: 42 });
-    // Like api.anthropic.com: Haiku 4.5 takes at most 64000 output tokens, the Claude 5 family 128000,
-    // and only the Claude 5 family takes system messages inside `messages`.
-    const model = String(call.body?.model ?? '');
-    const messageList = Array.isArray(call.body?.messages) ? call.body.messages : [];
-    if (/haiku-4-5/.test(model) && messageList.some((m) => m && typeof m === 'object' && !Array.isArray(m) && m.role === 'system'))
-      return json(res, 400, {
-        type: 'error',
-        error: { type: 'invalid_request_error', message: "role 'system' is not supported on this model" },
-      });
-    const asked = Number(call.body?.max_tokens ?? 0);
-    const limit = /haiku-4-5/.test(model) ? 64000 : 128000;
-    if (asked > limit)
-      return json(res, 400, {
-        type: 'error',
-        error: {
-          type: 'invalid_request_error',
-          message: `max_tokens: ${asked} > ${limit}, which is the maximum allowed number of output tokens for ${model}`,
-        },
-      });
+    const refusal = apiRefusal(call);
+    if (refusal) return json(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: refusal } });
     if (!call.body.stream)
       return json(res, 200, {
         id: 'msg',
@@ -876,6 +884,56 @@ test('mid-conversation system messages are folded for a model that rejects them,
     done().map((d) => d.folded_system),
     [2, undefined],
   );
+});
+
+test("Haiku 4.5 gets no 1M-context beta, and a folded system message's tool additions join the tools", async () => {
+  const { url } = await startRouter();
+  const lookup = { name: 'Lookup', description: 'Look a thing up', input_schema: { type: 'object', properties: {} } };
+  const deferred = {
+    name: 'Deferred',
+    description: 'Loaded on demand',
+    input_schema: { type: 'object', properties: {} },
+    defer_loading: true,
+  };
+  const prompt = cc('s-tools', 'Say ok.', { model: 'claude-haiku-4-5' });
+  const system = {
+    role: 'system',
+    content: [
+      { type: 'text', text: 'Two tools changed.' },
+      { type: 'tool_removal', tool: { type: 'tool_reference', name: 'Bash' } },
+      { type: 'tool_addition', tool: { type: 'tool_definition', definition: lookup } },
+      { type: 'tool_addition', tool: { type: 'tool_reference', name: 'Deferred' } },
+    ],
+  };
+  const body = { ...prompt, tools: [.../** @type {unknown[]} */ (prompt.tools ?? []), deferred], messages: [...prompt.messages, system] };
+  const headers = { ...claudeCodeHeaders('s-tools'), 'anthropic-beta': 'claude-code-20250219,context-1m-2025-08-07,oauth-2025-04-20' };
+  const haiku = await delta(() => post(url, '/v1/messages', body, headers));
+  assert.equal(haiku.result.status, 200);
+  assert.equal(haiku.anthropic[0].headers['anthropic-beta'], 'claude-code-20250219,oauth-2025-04-20', 'only the 1M beta goes');
+  const sent = /** @type {{ tools: Array<Record<string, unknown>>, messages: Array<{ role: string, content: unknown }> }} */ (
+    /** @type {unknown} */ (haiku.anthropic[0].body)
+  );
+  assert.deepEqual(
+    sent.tools.map((t) => [t.name, t.defer_loading]),
+    [
+      ['Bash', undefined],
+      ['Deferred', undefined],
+      ['Lookup', undefined],
+    ],
+    'the definition joined the tools, the deferred tool is loaded, the removed one stays',
+  );
+  assert.doesNotMatch(JSON.stringify(sent.messages), /tool_addition|tool_removal|"role":"system"/);
+  assert.match(JSON.stringify(sent.messages.at(-1)), /<system-reminder>\\nTwo tools changed\.\\n<\/system-reminder>/);
+
+  const opus = await delta(() =>
+    post(url, '/v1/messages', { ...body, model: 'claude-opus-5-5' }, { ...headers, 'x-jev-tier': 'frontier' }),
+  );
+  assert.equal(
+    opus.anthropic[0].headers['anthropic-beta'],
+    'claude-code-20250219,context-1m-2025-08-07,oauth-2025-04-20',
+    'Opus 5.5 keeps it',
+  );
+  assert.deepEqual(/** @type {Array<unknown>} */ (/** @type {unknown} */ (opus.anthropic[0].body.messages)).at(-1), system);
 });
 
 test('the router answers its own errors in the shape of the client API', async () => {
