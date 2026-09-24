@@ -605,6 +605,12 @@ function storeDecision(sessions, decision, { host, main, countOnly }) {
   const stored = sessions.get(decision.key.id);
   let entry = decision.remember ? { ...stored, ...decision.remember } : stored;
   let changed = Boolean(decision.remember);
+  // A secret in a human turn keeps the session on trusted upstreams for good, whichever rule
+  // decided this request: the secret stays in the history that every later request carries.
+  if (decision.trustedOnly && entry && !entry.trustedOnly) {
+    entry = { ...entry, trustedOnly: true };
+    changed = true;
+  }
   if (main && !countOnly && decision.tier !== 'side' && entry?.lastHost && entry.lastHost !== host && decision.latestText !== undefined) {
     const anchor = sha(decision.latestText).slice(0, 16);
     if (entry.anchor !== anchor) {

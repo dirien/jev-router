@@ -291,6 +291,34 @@ test('secrets in a human turn keep the session on trusted upstreams; tags and pi
   assert.ok(!JSON.stringify(allLogs).includes(AWS_KEY), 'the secret never reaches the log');
 });
 
+test('a secret keeps the session trusted even when sticky mode or a Jev failure decides the turn (regression)', async () => {
+  const cases = [
+    { name: 'sticky', cfg: testConfig({ policy: { mode: 'sticky' } }), jevDown: false },
+    { name: 'jev-down', cfg: testConfig(), jevDown: true },
+  ];
+  for (const { name, cfg, jevDown } of cases) {
+    const { url } = await startRouter({ cfg });
+    const s = `s-trust-${name}`;
+    reset(plans.a, { option: 'mechanical', probability: 0.99 });
+    const first = cc(s, 'List the files');
+    const d1 = await delta(() => post(url, '/v1/messages', first, ccHeaders(s)));
+    assert.equal(d1.ollama.length, 1, `${name}: turn 1 goes to the fast tier`);
+    if (jevDown) {
+      reset(plans.a, { status: 500 });
+      reset(plans.b, { status: 500 });
+    }
+    const second = cc(s, `Deploy it with ${AWS_KEY}`, { history: [...first.messages, { role: 'assistant', content: 'ok' }] });
+    const d2 = await delta(() => post(url, '/v1/messages', second, ccHeaders(s)));
+    assert.equal(d2.ollama.length, 0, `${name}: the turn with the secret stays trusted`);
+    const third = cc(s, 'Now list the files again', { history: [...second.messages, { role: 'assistant', content: 'done' }] });
+    const d3 = await delta(() => post(url, '/v1/messages', third, ccHeaders(s)));
+    assert.equal(d3.ollama.length, 0, `${name}: a clean turn after the secret stays trusted`);
+    assert.equal(d3.anthropic[0].body.model, 'claude-sonnet-5');
+  }
+  reset(plans.a);
+  reset(plans.b);
+});
+
 test('secrets in tool output are redacted before an untrusted upstream sees them', async () => {
   const { url } = await startRouter();
   reset(plans.a, { option: 'mechanical', probability: 0.95 });
