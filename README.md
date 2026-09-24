@@ -121,8 +121,9 @@ among the tiers.
 jev-router launch codex [-- codex args]
 ```
 
-`launch codex` writes a `jev` profile to `~/.codex/jev.config.toml` if the file doesn't exist yet (`--force`
-rewrites it) and runs `codex --profile jev`. The profile talks to one virtual model, `jev-auto`, from
+`launch codex` writes a `jev` profile to `~/.codex/jev.config.toml` and runs `codex --profile jev`. A profile it
+wrote is refreshed when the router's port or token changes; a profile you edited is kept (`--force` replaces it).
+The profile talks to one virtual model, `jev-auto`, from
 [`examples/codex/jev-models.json`](examples/codex/jev-models.json). Codex shapes every request from the model's
 catalog entry (tool types, shell type, parallel tool calls), so the entry uses settings every routed model can handle.
 It also carries Codex's own system prompt: an empty prompt there would silently drop Codex's instructions.
@@ -207,13 +208,15 @@ None of these can move a session that contained a secret to an untrusted upstrea
 
 ## Operations
 
-- **Logs.** JSON lines on stdout, also appended to `logFile` when it's set. Each request writes a `route` line
+- **Logs.** JSON lines on stdout under `serve` (under `launch`, in `~/.local/state/jev-router/router.log`, so the
+  agent's terminal stays clean), also appended to `logFile` when it's set. Each request writes a `route` line
   (session hash, request kind, tier, reason, model, upstream, and the Jev channel, model version, request ID,
   probabilities, guard values and latency) and a `done` line (status, bytes, the SHA-256 of the streamed bytes, token
   usage, `cost_usd`, and `baseline_usd`: the same usage priced on `baselineModel`).
 - **Report.** `jev-router report [<log.jsonl>]` summarizes a log: requests and sessions, spend per model, cost
   against the baseline and the savings, and Jev's call count, fallback rate, p50 and p95 latency and cost. Without an
-  argument it reads `logFile` from the config. Lines that aren't JSON are skipped, so a mixed service log works.
+  argument it reads `logFile` from the config, or, when that isn't set, the log that `launch` writes
+  (`~/.local/state/jev-router/router.log`). Lines that aren't JSON are skipped, so a mixed service log works.
 - **Health.** `GET /healthz` returns the version, uptime, the session count, active requests, and each Jev channel's
   calls, errors, last error and circuit state. It needs no token.
 - **State.** Decisions persist in `stateFile`, so a restart doesn't move live sessions to another model. Entries

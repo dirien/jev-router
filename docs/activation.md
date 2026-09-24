@@ -93,13 +93,13 @@ jq 'del(.env.ANTHROPIC_BASE_URL, .env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, .env.CLA
 ### Codex launch
 
 ```bash
-jev-router launch codex             # writes ~/.codex/jev.config.toml once, then runs codex --profile jev
+jev-router launch codex             # writes or refreshes ~/.codex/jev.config.toml, then runs codex --profile jev
 jev-router launch codex --force     # rewrites the profile first
 ```
 
-`launch codex` writes the `jev` profile only when `~/.codex/jev.config.toml` doesn't exist, so your edits survive;
-`--force` rewrites it. The profile holds the router's address, so rewrite it with `--force` after you change the
-port. Arguments after `--` go to `codex`, and `JEV_ROUTER_CODEX_BIN` runs a specific binary. Profile files need
+`launch codex` writes the `jev` profile to `~/.codex/jev.config.toml`. A profile it wrote and nobody edited is
+refreshed whenever the router's port or token changes; a profile you edited is kept, with a note, and `--force`
+replaces it. Arguments after `--` go to `codex`, and `JEV_ROUTER_CODEX_BIN` runs a specific binary. Profile files need
 Codex 0.134.0 or newer.
 
 ### Codex profile by hand
