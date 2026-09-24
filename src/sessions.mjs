@@ -6,22 +6,45 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+/** @import { SessionEntry } from './types.js' */
+
+/**
+ * @typedef {object} SessionStoreOptions
+ * @property {string | null} [file] the JSONL state file; without one, sessions live in memory only
+ * @property {number} [max] most sessions kept; the least recently used go first
+ * @property {number} [ttlMs] loading the file drops sessions not updated for this long
+ * @property {(err: unknown) => void} [onError] receives file errors, so that they never stop routing
+ */
+
+/**
+ * The stored form of a session key, so the state file never holds a client's session id.
+ * @param {string} key
+ * @returns {string}
+ */
 export const hashKey = (key) => createHash('sha256').update(String(key)).digest('hex').slice(0, 32);
 
+/** Session entries by key, least recently used first. */
 export class SessionStore {
-  constructor({ file = null, max = 10000, ttlMs = 7 * 24 * 3600 * 1000, onError = () => {} } = {}) {
+  /** @param {SessionStoreOptions} [options] */
+  constructor({ file = null, max = 10000, ttlMs = 7 * 24 * 3600 * 1000, onError = () => undefined } = {}) {
     this.file = file;
     this.max = max;
     this.ttlMs = ttlMs;
     this.onError = onError;
+    /** @type {Map<string, SessionEntry>} */
     this.map = new Map();
-    if (file) this.#load();
+    if (file) this.#load(file);
   }
 
   get size() {
     return this.map.size;
   }
 
+  /**
+   * A session's entry. Reading it makes the session the most recently used.
+   * @param {string} key
+   * @returns {SessionEntry | undefined}
+   */
   get(key) {
     const k = hashKey(key);
     const entry = this.map.get(k);
@@ -31,12 +54,18 @@ export class SessionStore {
     return entry;
   }
 
+  /**
+   * Stores a session's entry, stamped with the time, and appends it to the file.
+   * @param {string} key
+   * @param {SessionEntry} entry
+   * @returns {SessionEntry} the stored entry
+   */
   set(key, entry) {
     const k = hashKey(key);
     const value = { ...entry, updated: Date.now() };
     this.map.delete(k);
     this.map.set(k, value);
-    while (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
+    this.#trim();
     if (this.file) {
       const { lastSeen, ...persisted } = value;
       try {
@@ -48,20 +77,33 @@ export class SessionStore {
     return value;
   }
 
-  // Marks activity without writing to disk.
+  /**
+   * Marks activity without writing to disk.
+   * @param {string} key
+   */
   touch(key) {
     const entry = this.map.get(hashKey(key));
     if (entry) entry.lastSeen = Date.now();
   }
 
-  #load() {
+  // Drops the least recently used sessions beyond `max`.
+  #trim() {
+    for (const k of this.map.keys()) {
+      if (this.map.size <= this.max) break;
+      this.map.delete(k);
+    }
+  }
+
+  /** @param {string} file */
+  #load(file) {
     try {
-      mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-      if (!existsSync(this.file)) return;
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      if (!existsSync(file)) return;
       const now = Date.now();
-      for (const line of readFileSync(this.file, 'utf8').split('\n')) {
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (!line) continue;
         try {
+          /** @type {{ k: string } & SessionEntry} */
           const { k, ...entry } = JSON.parse(line);
           this.map.delete(k);
           if (now - (entry.updated ?? 0) < this.ttlMs) this.map.set(k, { ...entry, lastSeen: entry.updated });
@@ -69,11 +111,11 @@ export class SessionStore {
           /* a torn last line after a crash */
         }
       }
-      while (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
+      this.#trim();
       // Rewrite one line per live session so the file doesn't grow forever.
-      const tmp = `${this.file}.tmp`;
+      const tmp = `${file}.tmp`;
       writeFileSync(tmp, [...this.map].map(([k, { lastSeen, ...e }]) => `${JSON.stringify({ k, ...e })}\n`).join(''), { mode: 0o600 });
-      renameSync(tmp, this.file);
+      renameSync(tmp, file);
     } catch (err) {
       this.onError(err);
     }
