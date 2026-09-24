@@ -101,7 +101,7 @@ human message, up to `maxProvisional` attempts (`reason: fallback:default`). An 
 | --- | --- | --- | --- |
 | `jev.deadlineMs` | `2500` | none | The total time for one decision, across channels and retries |
 | `jev.requestChars` | `4000` | none | Size cap for the latest human message in Jev's state. Longer text keeps a quarter of the cap from its start and the rest from its end, where the question usually is |
-| `jev.stripCode` | `true` | none | Accepted, but 1.0.0 doesn't read it: code blocks are always replaced by a one-line summary |
+| `jev.stripCode` | `true` | none | Accepted, but the router doesn't read it yet: code blocks are always replaced by a one-line summary |
 | `jev.guards` | `true` | none | Ask the two guard questions, `alters_sensitive_state` and `routing_claim_present`, in the same request as the tier question |
 | `jev.channels` | `[]` | Must be an array. Each channel needs a `name`, an http(s) `baseUrl`, a `model` and a `keyEnv` | System One channels, tried in order |
 | `jev.channels[].timeoutMs` | `1200` | none | Timeout for one attempt on this channel |

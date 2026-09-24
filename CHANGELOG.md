@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-24
+
+### Added
+
+- `jev-router ui [<log.jsonl>] [--port <n>]`: a live, animated view of routing in the browser on
+  `http://127.0.0.1:4100`. It shows Jev's category and probabilities for each human message, the tier and model the
+  router picked and why, every request's path from the client through Jev to the model, a timeline with tokens and
+  cost, each session's tier history, and spend against the baseline. It follows the log by polling, so it also works
+  across a Docker Sandbox's shared workspace folder, and `?demo` plays a scripted session.
+- Log lines for the view: `req` pairs each `route` line with its `done` line, `deciding` marks a Jev call before its
+  answer, and `config` lists the tiers, Jev's options and each target's model and host (never keys) at startup and
+  after every reload.
+
 ## [1.0.0] - 2026-09-24
 
 First release.
@@ -44,5 +57,6 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/dirien/jev-router/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dirien/jev-router/releases/tag/v1.0.0

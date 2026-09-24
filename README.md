@@ -130,6 +130,31 @@ It also carries Codex's own system prompt: an empty prompt there would silently 
 
 To set the profile up by hand, see [Codex profile by hand](docs/activation.md#codex-profile-by-hand).
 
+## Watch routing live
+
+`jev-router ui` shows every decision as it happens, in a browser next to the terminal where Claude Code runs:
+
+![The live view: Jev's category and probabilities for the latest message, the routing flow from Claude Code through
+Jev's categories and the tiers to the models, and the session's requests](docs/live-view.png)
+
+- **Latest decision.** Jev's category for the message you just sent, its probabilities against each tier's
+  threshold, the guards, and the tier and model the router picked, with the reason in plain words.
+- **Flow.** An animated graph from Claude Code or Codex through Jev's categories and the tiers to the models. Every
+  request travels it as a dot; tool-loop steps, subagents and background calls skip Jev.
+- **Timeline and sessions.** Each request with its status, tokens and cost, grouped under the message that started
+  it, and each session's tier per human message, so the ratchet shows.
+- **Totals.** Spend against the baseline model, Jev's latency and its fallbacks.
+
+```bash
+jev-router ui router.log      # or, in a clone: npm run ui -- router.log
+open http://127.0.0.1:4100
+```
+
+It only reads the router's log, so it runs wherever that file is readable, for example on your Mac while the router
+runs in a Docker Sandbox whose workspace folder the Mac shares. Without an argument it follows `logFile` from the
+config, else the log that `launch` writes. `--port` picks another port, and `http://127.0.0.1:4100/?demo` plays a
+scripted session without a router.
+
 ## How routing works
 
 The router tracks each conversation as a **session**. It takes the session ID from Claude Code's
@@ -199,6 +224,9 @@ None of these can move a session that contained a secret to an untrusted upstrea
 - **What's stored.** The state file (`~/.local/state/jev-router/sessions.jsonl`, mode 0600) holds hashed session
   keys, tiers, trust flags, the last upstream host, and a hash of the message where the provider changed. It holds
   no prompt text. The log holds decisions, token usage and cost, never prompt text or keys.
+- **The live view.** `jev-router ui` is a separate process that only reads the log. It listens on `127.0.0.1`,
+  serves nothing but its own page and the log's events, refuses other `Host` and `Origin` headers, and sends a
+  Content Security Policy that allows no scripts or connections beyond its own origin.
 - **Where prompts go.** A session's requests go to the upstream its tier maps to, and Jev's small state goes to the
   first Jev channel that answers (TypeSafe, then OpenRouter). Check each provider's retention terms before you use
   the router on sensitive code. TypeSafe says Jev isn't trained on customer requests
@@ -212,7 +240,9 @@ None of these can move a session that contained a secret to an untrusted upstrea
   agent's terminal stays clean), also appended to `logFile` when it's set. Each request writes a `route` line
   (session hash, request kind, tier, reason, model, upstream, and the Jev channel, model version, request ID,
   probabilities, guard values and latency) and a `done` line (status, bytes, the SHA-256 of the streamed bytes, token
-  usage, `cost_usd`, and `baseline_usd`: the same usage priced on `baselineModel`).
+  usage, `cost_usd`, and `baseline_usd`: the same usage priced on `baselineModel`). A `req` number pairs each `route`
+  line with its `done` line. A `deciding` line marks each Jev call before its answer arrives, and a `config` line at
+  startup and after every reload lists the tiers, Jev's options and each target's model and host, never keys.
 - **Report.** `jev-router report [<log.jsonl>]` summarizes a log: requests and sessions, spend per model, cost
   against the baseline and the savings, and Jev's call count, fallback rate, p50 and p95 latency and cost. Without an
   argument it reads `logFile` from the config, or, when that isn't set, the log that `launch` writes
@@ -242,6 +272,7 @@ jev-router env claude|codex [--config <file>] [--port <n>]   # eval "$(jev-route
 jev-router doctor [--config <file>] [--live]                  # --live makes one Jev call (~$0.00003)
 jev-router init [--anthropic-only] [--force]                  # writes ~/.config/jev-router/config.json
 jev-router report [<log.jsonl>]
+jev-router ui [<log.jsonl>] [--port <n>]                      # live view on http://127.0.0.1:4100
 jev-router version | help
 ```
 
@@ -335,6 +366,7 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 | `src/secrets.mjs` | The secret scanner and redaction |
 | `src/sessions.mjs` | The persistent session store |
 | `src/usage.mjs` | The usage tap and prices |
+| `src/ui.mjs`, `ui/` | The live view: the log follower and server, and the page |
 | `config/` | The packaged configs |
 | `examples/` | Claude Code environment file, Codex profile and model catalog |
 | `eval/` | The evaluation harness and labeled prompts |
@@ -345,7 +377,7 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 
 ## Status
 
-The current release is 1.0.0. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
+The current release is 1.1.0. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
 A live check on 2026-09-24 sent Claude Code's full request shape through the router to Anthropic, with Jev mocked:
 Haiku 4.5 (with its `omit` list) and Sonnet 5 both answered 200, the streams were byte-exact, and the router made one
 Jev call per human message.

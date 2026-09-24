@@ -92,6 +92,15 @@ Otherwise the router spends a failed attempt on it every five minutes.
 Node's built-in `fetch` uses the sandbox proxy only when `NODE_USE_ENV_PROXY=1`. Without it, requests bypass the
 proxy, no key gets injected, and every upstream answers 401.
 
+To watch the routing live, run the view on the host. `router.log` lands in the shared workspace folder, so the host
+sees every line as the router writes it:
+
+```bash
+cd "$WS" && npm run ui -- router.log                                  # then open http://127.0.0.1:4100
+```
+
+It needs Node 22 or newer on the host, and no `npm ci`: the router has no runtime dependencies.
+
 ## 3. Sandbox shell 2: smoke test and health
 
 ```bash
