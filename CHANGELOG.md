@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-24
+
+### Fixed
+
+- Every Claude Code turn routed to Haiku 4.5 failed once with "role 'system' is not supported on this model", and
+  Claude Code retried it. Claude Code puts `role: "system"` messages inside the conversation for the Claude 5
+  family; the router now folds them into the user message each follows, as `<system-reminder>` text after its tool
+  results, for any other model. The `done` line counts them in `folded_system`, and a target's new
+  `foldSystemMessages` overrides the default.
+- Claude Code compacted on every message behind the router: it turns MCP tool search off for a base URL that isn't
+  Anthropic's and sends every MCP tool's definition with every request, which with a few MCP servers exceeds the
+  compaction window by itself. `launch claude`, `env claude` and `examples/claude-code.env` now set
+  `ENABLE_TOOL_SEARCH=true`, unless it's already set; the router forwards tool search as is.
+- The live view now spells out when the router passes over the tier Jev's choice maps to: the line under the
+  category reads, for example, "82% sure · Jev's tier fast ✗ 82% is under its 85% bar → balanced", and the flow
+  marks that tier. The flow no longer scrolls by a pixel on a container of fractional width.
+
 ## [1.3.0] - 2026-09-24
 
 ### Added
@@ -96,7 +113,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/dirien/jev-router/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/dirien/jev-router/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/dirien/jev-router/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dirien/jev-router/compare/v1.1.0...v1.2.0

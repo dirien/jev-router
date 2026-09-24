@@ -10,6 +10,7 @@ All three Claude Code setups set the same variables:
 | --- | --- | --- |
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:4000` | Sends Claude Code's API traffic to the router instead of Anthropic |
 | `CLAUDE_CODE_GATEWAY_HINT_HEADERS` | `1` | Labels each request as main loop, subagent, compaction, workflow or background work (Claude Code 2.1.273 and later), so only a person's messages decide the tier |
+| `ENABLE_TOOL_SEARCH` | `true` | Claude Code turns MCP tool search off when `ANTHROPIC_BASE_URL` isn't Anthropic's, and then sends every MCP tool's definition with every request. With a few MCP servers that fills most of the context window, and Claude Code compacts on every message. The router forwards tool search as is |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `160000` | Claude Code can't learn the routed model's context window through a gateway. 160,000 tokens compacts before the smallest window among the tiers |
 | `ANTHROPIC_CUSTOM_HEADERS` | `x-jev-router-token: <token>` | Only when the router has a token (`JEV_ROUTER_TOKEN`) |
 
@@ -50,7 +51,7 @@ as the router uses, so the address and the token match. Every `claude` you start
 the router. To stop, open a new shell or unset the variables:
 
 ```bash
-unset ANTHROPIC_BASE_URL CLAUDE_CODE_GATEWAY_HINT_HEADERS CLAUDE_CODE_AUTO_COMPACT_WINDOW ANTHROPIC_CUSTOM_HEADERS
+unset ANTHROPIC_BASE_URL CLAUDE_CODE_GATEWAY_HINT_HEADERS CLAUDE_CODE_AUTO_COMPACT_WINDOW ENABLE_TOOL_SEARCH ANTHROPIC_CUSTOM_HEADERS
 ```
 
 [`examples/claude-code.env`](../examples/claude-code.env) holds the same settings as a file you can `source`, plus a
@@ -66,7 +67,8 @@ keys the file already has:
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
     "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
-    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000"
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000",
+    "ENABLE_TOOL_SEARCH": "true"
   }
 }
 ```
@@ -83,7 +85,7 @@ doesn't bypass it.
 To undo it, delete those keys from the `env` block and restart Claude Code. With `jq`:
 
 ```bash
-jq 'del(.env.ANTHROPIC_BASE_URL, .env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, .env.CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+jq 'del(.env.ANTHROPIC_BASE_URL, .env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, .env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, .env.ENABLE_TOOL_SEARCH,
   .env.ANTHROPIC_CUSTOM_HEADERS)' ~/.claude/settings.json > ~/.claude/settings.json.new \
   && mv ~/.claude/settings.json.new ~/.claude/settings.json
 ```

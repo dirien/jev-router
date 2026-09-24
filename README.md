@@ -91,7 +91,8 @@ There are three ways to point Claude Code at the router. [docs/activation.md](do
 
 1. **One shot.** `jev-router launch claude [-- claude args]` reuses a router that already answers on the port, or
    starts one inside its own process that logs to `~/.local/state/jev-router/router.log`. It runs `claude` with
-   `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` and `CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000`, plus the
+   `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000` and
+   `ENABLE_TOOL_SEARCH=true`, plus the
    `x-jev-router-token` header through `ANTHROPIC_CUSTOM_HEADERS` when a token is set. It never sets an API key,
    and it exits with Claude Code's exit code.
 1. **This shell.** Run the router in another terminal (`jev-router serve`) or as a service, then
@@ -105,7 +106,8 @@ There are three ways to point Claude Code at the router. [docs/activation.md](do
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
     "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
-    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000"
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "160000",
+    "ENABLE_TOOL_SEARCH": "true"
   }
 }
 ```
@@ -113,7 +115,9 @@ There are three ways to point Claude Code at the router. [docs/activation.md](do
 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` labels each request as main loop, subagent, compaction, workflow or background
 work, so only a person's messages decide the tier. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is there because Claude Code
 can't learn the routed model's context window through a gateway: 160,000 tokens compacts before the smallest window
-among the tiers.
+among the tiers. `ENABLE_TOOL_SEARCH=true` matters as much: behind any gateway Claude Code turns MCP tool search off
+and sends every MCP tool's definition with every request, which with a few MCP servers exceeds that window by itself,
+so Claude Code compacts on every message.
 
 ## Use it with Codex
 
@@ -195,6 +199,9 @@ Then, for every request, the router:
 1. **Caps the output.** It lowers `max_tokens` to what the target's model accepts. Claude Code asks for 128,000
    output tokens because it believes it talks to Opus 5.5, and Haiku 4.5 refuses anything above 64,000. The limits
    of the Claude models in the shipped configs are built in, and a target's `maxOutputTokens` overrides them.
+1. **Folds system messages.** Claude Code puts `role: "system"` messages inside the conversation for the Claude 5
+   family. Haiku 4.5 rejects them, so for any other model the router folds each into the user message it follows,
+   as `<system-reminder>` text after that message's tool results. A target's `foldSystemMessages` overrides it.
 1. **Trims identifiers.** An untrusted target gets a minimal set of headers and no `metadata`.
 1. **Forwards.** It streams the response back with back-pressure, and cancels the upstream request when the client
    goes away.
@@ -318,7 +325,7 @@ documents every key, its default and its validation.
 | `jev.channels` | Ordered System One channels, each with `baseUrl`, `model` (pin a version such as `jev-1.13.0`), `keyEnv` and `timeoutMs` |
 | `jev.deadlineMs`, `jev.requestChars` | The total Jev budget per decision, and the size cap for the latest message |
 | `jev.question`, `jev.options` | The rubric: one choice question with `what`, `examples` and `not_for` per option, and each option's `tier` |
-| `surfaces.<anthropic\|openai>.<tier\|side\|trusted>` | Targets: `url`, `model`, `auth` (`x-api-key` or `bearer`), `keyEnv`, `clientAuth`, `trusted`, `countTokens`, `omit`, `maxOutputTokens` |
+| `surfaces.<anthropic\|openai>.<tier\|side\|trusted>` | Targets: `url`, `model`, `auth` (`x-api-key` or `bearer`), `keyEnv`, `clientAuth`, `trusted`, `countTokens`, `omit`, `maxOutputTokens`, `foldSystemMessages` |
 | `prices`, `baselineModel` | USD per million tokens for the cost ledger, and the model savings are measured against |
 | `sideCallModel`, `pinOnModelChange`, `modelPins` | Background-call detection, and model family to tier for `/model` switches |
 | `host`, `port`, `token`, `allowedHosts`, `allowedOrigins`, `maxBodyBytes`, `stateFile`, `logFile` | Server settings |
@@ -394,7 +401,7 @@ CI runs `npm ci` and `npm run check` on Node.js 22 and 24, and lints the workflo
 
 ## Status
 
-The current release is 1.3.0. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
+The current release is 1.3.1. The offline suite covers the routing pipeline against mock upstreams and a mock Jev.
 A live check on 2026-09-24 sent Claude Code's full request shape through the router to Anthropic, with Jev mocked:
 Haiku 4.5 (with its `omit` list, and `max_tokens` lowered from Claude Code's 128,000 to 64,000) and Sonnet 5 both
 answered 200, the streams were byte-exact, and the router made one Jev call per human message.

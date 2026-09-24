@@ -127,7 +127,8 @@ On the host:
 sbx run --name jev-router \
   -e ANTHROPIC_BASE_URL=http://127.0.0.1:4000 \
   -e CLAUDE_CODE_GATEWAY_HINT_HEADERS=1 \
-  -e CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000
+  -e CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000 \
+  -e ENABLE_TOOL_SEARCH=true
 ```
 
 `-e` on a re-attach applies to that session only (verified), so a plain `sbx run --name jev-router` still talks to
@@ -211,6 +212,7 @@ thresholds, grow `eval/prompts.jsonl` as [evaluation.md](evaluation.md) describe
 | `reason: fallback:default` and a `jev.error` | Jev didn't answer. Check the channel errors in `/healthz`, then run `sbx policy log jev-router` on the host. A 402 means OpenRouter has no credits; a 401 means the key isn't injected. |
 | `reason: no-jev` | No channel has a key in the router's environment, so the kit isn't attached. Run `sbx kit add jev-router "$WS/sbx/jev-router-kit"` on the host; this recreates the container. |
 | Every upstream answers 401, but the `curl` probes in step 2 pass | `NODE_USE_ENV_PROXY` isn't `1` in the router's shell, so Node's `fetch` bypasses the proxy. |
+| Claude Code compacts on every message | `ENABLE_TOOL_SEARCH=true` is missing: behind the router Claude Code turns MCP tool search off and sends every MCP tool's definition with every request. The `done` lines show it as a `cacheRead` near 200,000 tokens. |
 | A warning about "no request class" | Claude Code runs without `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, so background calls can't be told apart reliably. |
 | 400 from Anthropic about `thinking`, `effort` or `context_management` on Haiku | The target is missing its `omit` list. Compare it with `surfaces.anthropic.side`. |
 | 401 from Ollama | The `ollama-cloud` key isn't injected. See step 2's probe. |
