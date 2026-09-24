@@ -98,8 +98,9 @@ jev-router launch codex --force     # rewrites the profile first
 ```
 
 `launch codex` writes the `jev` profile only when `~/.codex/jev.config.toml` doesn't exist, so your edits survive;
-`--force` rewrites it. Arguments after `--` go to `codex`, and `JEV_ROUTER_CODEX_BIN` runs a specific binary.
-Profile files need Codex 0.134.0 or newer.
+`--force` rewrites it. The profile holds the router's address, so rewrite it with `--force` after you change the
+port. Arguments after `--` go to `codex`, and `JEV_ROUTER_CODEX_BIN` runs a specific binary. Profile files need
+Codex 0.134.0 or newer.
 
 ### Codex profile by hand
 
@@ -142,9 +143,9 @@ the same table.
 
 ## Running the router as a service
 
-A service keeps one router running for every client, survives logouts of your terminal, and restarts it if it
-crashes. Session state persists in `~/.local/state/jev-router/sessions.jsonl`, so a restart doesn't move live
-sessions to another model.
+A service keeps one router running for all your clients, independent of any terminal, and restarts it if it crashes.
+Session state persists in `~/.local/state/jev-router/sessions.jsonl`, so a restart doesn't move live sessions to
+another model.
 
 The `jev-router` command starts with `#!/usr/bin/env node`, so the service needs `node` on its `PATH`. Neither
 launchd nor systemd reads your shell profile, and launchd doesn't expand `~` or variables. Find the absolute paths
@@ -187,7 +188,7 @@ exec "$@"
 
 ```bash
 chmod 700 ~/.config/jev-router/with-keys.sh
-~/.config/jev-router/with-keys.sh jev-router doctor   # the keys should show up as present
+~/.config/jev-router/with-keys.sh jev-router doctor   # checks the setup with the keychain keys loaded
 ```
 
 If macOS asks whether `security` may use the item, choose **Always Allow**.
