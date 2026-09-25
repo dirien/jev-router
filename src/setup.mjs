@@ -209,7 +209,7 @@ async function chooseConfig(options, env, prompter) {
     return { cfg: loadConfig(found.path), configPath: found.path };
   }
   const models = options.models ?? (prompter ? await askModels(prompter) : 'claude');
-  if (!prompter) say(`Models: ${MODELS[models].what}.\n\n`);
+  say(prompter && !options.models ? '\n' : `Models: ${MODELS[models].what}.\n\n`);
   return { cfg: loadConfig(MODELS[models].file), configPath: userConfigPath(env), configFrom: MODELS[models].file };
 }
 
@@ -329,7 +329,7 @@ async function workingJevKey(context) {
     const answer = await client.decide(SAMPLE_STATE, { signal });
     if (signal.aborted) throw new PromptAbort('interrupted', 130);
     if (answer.ok) {
-      say(`it works (${answer.channel} answered in ${answer.ms} ms).\n\n`);
+      say(`it works (${answer.channel} answered in ${answer.ms} ms).\n`);
       return jev;
     }
     say(`it didn't work: ${answer.error}\n`);
@@ -412,6 +412,7 @@ async function planService(plan, manager, options, env, prompter) {
   const question = options.claudeSettings
     ? 'Start jev-router in the background when you log in, and send every Claude Code session through it?'
     : 'Start jev-router in the background when you log in?';
+  if (prompter) say('\n');
   if (prompter && !(await prompter.confirm(question, true))) return { why: 'you chose to start it yourself' };
   const file = serviceFile(manager, env);
   const busy = existsSync(file) ? undefined : await portProblem(plan.host, plan.port);
@@ -773,8 +774,8 @@ function codexHint(plan, run, service) {
     say(`Codex: ${run} launch codex\n`);
     return;
   }
-  const restart = service ? `, run ${run} setup again to restart the router with ${missing.length > 1 ? 'them' : 'it'},` : '';
-  say(`Codex: put ${inWords(missing)} in ${plan.envFile}${restart} then run: ${run} launch codex\n`);
+  const restart = service ? `, run ${run} setup again to restart the router with ${missing.length > 1 ? 'them' : 'it'}` : '';
+  say(`Codex: put ${inWords(missing)} in ${plan.envFile}${restart}, then run: ${run} launch codex\n`);
 }
 
 /**
@@ -848,7 +849,7 @@ function undoSettings(manifest, env) {
   const values = manifest?.claude ? recordedValues(manifest.claude, block) : guessedValues(block, env);
   const changes = changeSettingsEnv(read.data, values);
   if (!changes.length) {
-    say(`Claude Code's settings (${file}) have nothing from setup.\n`);
+    say(`Nothing from setup in Claude Code's settings (${file}).\n`);
     return true;
   }
   if (manifest?.claude?.created && !Object.keys(read.data).length) {

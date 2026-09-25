@@ -117,6 +117,7 @@ test('setup asks for the models and a Jev key, checks the key, runs the router a
   ])
     assert.ok(result.stderr.includes(text), text);
   assert.ok(!result.stderr.includes(GOOD), 'the key is never printed');
+  assert.doesNotMatch(result.stderr, /\n\n\n/, 'one blank line between parts');
   assert.equal(jev.calls.length, calls + 1, 'one Jev call');
   assert.equal(jev.calls.at(-1)?.headers.authorization, `Bearer ${GOOD}`);
 
@@ -313,6 +314,8 @@ test('without a service manager, setup saves the keys and says to start sessions
   assert.match(result.stderr, /\nDone\. There's no background service: /);
   assert.match(result.stderr, /Start Claude Code through the router with: jev-router launch claude\n/);
   assert.match(result.stderr, /Watch it live at http:\/\/127\.0\.0\.1:4100 with: jev-router launch claude --ui 4100\n/);
+  assert.ok(result.stderr.endsWith(`Codex: put OLLAMA_API_KEY and OPENAI_API_KEY in ${bare.envFile}, then run: jev-router launch codex\n`));
+  assert.doesNotMatch(result.stderr, /\n\n\n/);
   assert.ok(existsSync(bare.envFile) && !existsSync(bare.settings), "the keys are saved, and Claude Code's settings aren't touched");
   assert.deepEqual(bare.calls(), []);
 
@@ -461,7 +464,10 @@ test('uninstall stops the service and takes back what setup changed, restoring w
 
   const again = await run(['uninstall'], box.env);
   assert.equal(again.code, 0, again.stderr);
-  assert.match(again.stderr, /have nothing from setup\.\nNo background service is installed\.\n/);
+  assert.match(
+    again.stderr,
+    /^Nothing from setup in Claude Code's settings \(.*settings\.json\)\.\nNo background service is installed\.\n/,
+  );
 
   const fresh = await setupBox();
   const created = await setup(fresh, ['--yes', '--service', 'launchd'], { env: { TYPESAFE_API_KEY: GOOD } });
