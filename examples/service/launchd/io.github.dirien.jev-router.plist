@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  jev-router as a macOS LaunchAgent. It runs "jev-router serve" with the live view on port 4100 and
+  the keys from ~/.config/jev-router/env (the arguments are in ProgramArguments below), starts when
+  you log in, and restarts the router when it fails. The router listens on http://127.0.0.1:4000
+  and its live view on http://127.0.0.1:4100.
+
+  launchd doesn't expand ~ or $HOME, and a LaunchAgent doesn't get your shell's PATH, while
+  jev-router starts with "#!/usr/bin/env node". So the install commands fill in two placeholders
+  from your shell: @HOME@, your home directory, and @PATH@, the directories that hold jev-router and
+  node on your PATH. A "bash -lc" wrapper would expand ~ but still miss node for many setups:
+  macOS's login shell is zsh, and nvm and similar version managers set up PATH only in interactive
+  shells. Run the install commands again after you reinstall jev-router under another Node.js.
+
+  Install, after "npm install -g github:dirien/jev-router#semver:^1":
+
+    command -v jev-router node                   (both must print a path)
+    mkdir -p ~/.config/jev-router ~/Library/Logs/jev-router ~/Library/LaunchAgents
+    touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
+    (put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, ...)
+    plist="$(npm root -g)/@dirien/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
+    path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/bin:/bin"
+    sed -e "s|@HOME@|$HOME|g" -e "s|@PATH@|$path|g" "$plist" > ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
+    plutil -lint ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
+
+  Use:
+
+    launchctl print gui/$(id -u)/io.github.dirien.jev-router | head    (state and PID)
+    launchctl kill HUP gui/$(id -u)/io.github.dirien.jev-router        (re-read the config)
+    launchctl kickstart -k gui/$(id -u)/io.github.dirien.jev-router    (restart after an upgrade)
+    tail -f ~/Library/Logs/jev-router/router.err.log                  (messages and startup errors)
+    jev-router report ~/Library/Logs/jev-router/router.log            (requests, spend and savings)
+
+  launchd never rotates the two log files. To keep a rotated log instead, set logFile in the config
+  (the router rotates it at logMaxBytes) and change StandardOutPath below to /dev/null.
+
+  Uninstall:
+
+    launchctl bootout gui/$(id -u)/io.github.dirien.jev-router
+    rm ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.dirien.jev-router</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>jev-router</string>
+    <string>serve</string>
+    <string>--ui</string>
+    <string>4100</string>
+    <string>--env-file</string>
+    <string>@HOME@/.config/jev-router/env</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@PATH@</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>@HOME@/Library/Logs/jev-router/router.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/Library/Logs/jev-router/router.err.log</string>
+</dict>
+</plist>

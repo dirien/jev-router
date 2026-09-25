@@ -1,0 +1,54 @@
+# jev-router as a systemd user service on Linux. It runs `jev-router serve --ui 4100` with the keys
+# from ~/.config/jev-router/env, starts when you log in, and restarts the router when it fails. The
+# router listens on http://127.0.0.1:4000 and its live view on http://127.0.0.1:4100.
+#
+# A service doesn't get your shell's PATH, and jev-router starts with `#!/usr/bin/env node`. So the
+# install commands replace @PATH@ below with the directories that hold jev-router and node on your
+# PATH. Run them again after you reinstall jev-router under another Node.js, for example with nvm.
+#
+# Install, after `npm install -g github:dirien/jev-router#semver:^1`:
+#
+#   command -v jev-router node                     # both must print a path
+#   mkdir -p ~/.config/jev-router ~/.config/systemd/user
+#   touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
+#   # Put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, OLLAMA_API_KEY, ...
+#   unit="$(npm root -g)/@dirien/jev-router/examples/service/systemd/jev-router.service"
+#   path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
+#   sed "s|@PATH@|$path|" "$unit" > ~/.config/systemd/user/jev-router.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now jev-router
+#   loginctl enable-linger "$USER"                 # optional: keep it running while you're logged out
+#
+# Use:
+#
+#   systemctl --user status jev-router
+#   journalctl --user -u jev-router -f             # the log: JSON lines, and messages for people
+#   systemctl --user reload jev-router             # SIGHUP: re-read the config
+#   systemctl --user restart jev-router            # after an upgrade, or a change to the env file
+#
+# The journal keeps and rotates the log. For `jev-router report` without an argument, also set logFile
+# in the config; the router rotates that file at logMaxBytes.
+#
+# Uninstall:
+#
+#   systemctl --user disable --now jev-router
+#   rm ~/.config/systemd/user/jev-router.service
+#   systemctl --user daemon-reload
+
+[Unit]
+Description=jev-router, a Jev model router for Claude Code and Codex
+Documentation=https://github.com/dirien/jev-router
+# Stop retrying after five failed starts within a minute, for example on a broken config.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Environment="PATH=@PATH@"
+ExecStart=/usr/bin/env jev-router serve --ui 4100 --env-file "%h/.config/jev-router/env"
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+SyslogIdentifier=jev-router
+
+[Install]
+WantedBy=default.target
