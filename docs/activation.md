@@ -13,16 +13,19 @@ In order, it:
    Opus 5.5), or Ollama Cloud's `glm-5.3-flash` for the `fast` tier and Claude for the rest;
 1. asks for the keys that config needs for Claude Code: a Jev key (TypeSafe, or OpenRouter when you press Enter),
    and `OLLAMA_API_KEY` for the Ollama option. A key that's saved already stays when you press Enter. On a terminal,
-   what you type isn't shown;
+   what you type isn't shown, and a key with a space or a control character in it is asked again;
 1. checks the Jev key with one real call (about $0.00003). A key that fails gets another try, and nothing is written
    until one works;
 1. asks whether to run the router in the background, when the machine has launchd or a systemd user session;
 1. writes `~/.config/jev-router/config.json` if it's new, and saves the keys in `~/.config/jev-router/env` (mode
    0600), keeping the file's other lines;
 1. installs jev-router globally with npm when setup runs from npx, because a service must not run from npx's cache;
-1. installs and starts the service, and waits up to 15 seconds for the router to answer;
+1. installs and starts the service, and waits up to 15 seconds for the router to answer. On a re-run, launchd gets up
+   to 45 seconds to unload the old agent, whose router may still finish its requests;
 1. merges the router's variables into the `env` block of `~/.claude/settings.json`, after a backup to
-   `settings.json.jev-router.bak`.
+   `settings.json.jev-router.bak`. The file keeps its mode, except that only you can read it once it holds the router
+   token, and the backup is always readable only by you. A settings file or an env file that is a symbolic link, as in
+   a dotfiles repository, stays a link: the file it points to is the one that changes.
 
 Setup is safe to run again. It keeps an existing config as it is, keeps saved keys when you press Enter, and restarts
 the service, so new keys take effect. Its options:
@@ -31,13 +34,31 @@ the service, so new keys take effect. Its options:
 | --- | --- |
 | `--yes`, `-y` | Answers every question with its default, and takes the keys from the environment (`TYPESAFE_API_KEY` and so on). It stops, without writing anything, when a key is missing or fails its check |
 | `--models claude\|ollama` | The config for a machine without one; the default is `claude` |
-| `--service auto\|launchd\|systemd\|none` | `auto`, the default, picks launchd on macOS and systemd on Linux. There's no service on Windows, as root, or where `systemctl --user` doesn't answer, such as in a container |
+| `--service auto\|launchd\|systemd\|none` | `auto`, the default, picks launchd on macOS and systemd on Linux. There's no service on Windows, as root, in a Mac session without a GUI login (over SSH), or where `systemctl --user` doesn't answer, such as in a container |
 | `--no-claude-settings` | Installs the service, but leaves `~/.claude/settings.json` alone |
 
 Setup honors `JEV_ROUTER_CONFIG`, `JEV_ROUTER_ENV_FILE`, `JEV_ROUTER_LOG_FILE`, `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT`
-and `JEV_ROUTER_UI`. The service gets the config, env file and log file setup used, with absolute paths, and the
-host, port and live view address as flags, because a service doesn't see your shell. For the same reason, a
-`JEV_ROUTER_TOKEN` belongs in the env file, which the service reads.
+and `JEV_ROUTER_UI`. A service doesn't see your shell, so the service gets the config, env file and log file setup
+used, with absolute paths, and the live view's address as a flag. A `JEV_ROUTER_HOST` or `JEV_ROUTER_PORT` from your
+shell goes into the env file, which the service and every other command read, so `doctor`, `launch`, `env` and
+`uninstall` find the router in a new shell too. For the same reason, a `JEV_ROUTER_TOKEN` belongs in the env file.
+`JEV_ROUTER_ENV_FILE=/dev/null` turns the env file off, so setup stops: it has nowhere to save the keys.
+
+The systemd unit goes where the user manager looks for units: under the `XDG_CONFIG_HOME` that
+`systemctl --user show-environment` reports, else `~/.config/systemd/user/`.
+
+Setup runs for the user who starts it. As root through `sudo`, or as root with another user's `HOME`, it stops before
+it writes anything: it would leave files owned by root in that user's home. Run it as your own user, without `sudo`.
+
+When Claude Code already goes to another gateway, setup checks what it would carry there. A base URL in
+`settings.json` or in your shell that leads somewhere other than the router or Anthropic counts, unless it's the
+router address setup wrote itself. If Claude Code also carries credentials for it, setup never points Claude Code at
+the router, and says what to remove first: behind the router, Claude Code would send those credentials to Anthropic.
+The credentials are `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` or `ANTHROPIC_CUSTOM_HEADERS` lines other than the
+router token, in your shell or the settings file, and an `apiKeyHelper` in the settings file. Setup names them, never
+their values. Without credentials, setup asks before it replaces the base URL, the default is no, and `--yes` keeps
+it. `launch claude` and `env claude` refuse in the same case, and print the command that leaves the credentials
+out.
 
 Setup records what it changed in Claude Code's settings in `~/.config/jev-router/setup.json`, with no keys and no
 router token. `jev-router uninstall` reads that record: see [Turning it off](#turning-it-off).
@@ -374,9 +395,10 @@ systemctl --user restart jev-router            # after an upgrade, or a change t
 ```
 
 The unit restarts the router when it fails, and gives up after five failed starts within a minute, for example on a
-broken config. It doesn't restart on exit status 9, which is Node's answer to an `--env-file` path that doesn't
-exist: fix the path, then start the unit again. A user service runs while you're logged in;
-`loginctl enable-linger "$USER"` keeps it running after you log out.
+broken config, which ends the router with exit status 1. It doesn't restart on exit status 9: that is how Node itself
+stops, before jev-router runs, when the `--env-file` path is missing or can't be read. Fix the file, then start the
+unit again. A user service runs while you're logged in; `loginctl enable-linger "$USER"` keeps it running after you
+log out.
 
 Uninstall:
 
@@ -454,7 +476,10 @@ For Codex, run `jev-router launch codex` and try two sessions:
 | Setup's `npm install -g` fails with `EACCES` | npm may not write to its global directory, as with a system Node. Use a Node version manager (nvm, fnm, or Homebrew on a Mac), or `npm config set prefix ~/.local` with `~/.local/bin` on PATH, or install with `sudo`. Then run setup again: it keeps your config and keys. |
 | Setup's `npm install -g` fails with `EEXIST` | jev-router 1.4.0 or older, then called `@dirien/jev-router`, owns the `jev-router` command. Run `npm uninstall -g @dirien/jev-router`, then setup again. |
 | Setup says there's no background service | The machine has no launchd or systemd user session, as in a container. Start sessions with `jev-router launch claude`. |
-| `node: <path>: not found`, exit status 9 | The `--env-file` path doesn't exist. Check the path; a systemd unit doesn't restart on this. |
+| Setup says it won't run as root | You ran it with `sudo`, or as root with another user's `HOME`. Run it as your own user, without `sudo`. |
+| Setup doesn't point Claude Code at the router, and names credentials | Claude Code goes to another gateway with credentials for it, which the router would pass on to Anthropic. Remove what setup names, from your shell's startup files or the settings file, open a new shell, and run setup again. |
+| `launch claude` or `env claude` refuses, and names credentials | The same: your shell sends Claude Code to another gateway with credentials for it. Run the command it prints, which leaves them out. |
+| `node: <path>: not found`, exit status 9 | The `--env-file` path doesn't exist, or can't be read. Check the path; a systemd unit doesn't restart on this. |
 | A warning that other users can read or change the env file | Run the `chmod 600` the warning prints. |
 | A warning that a variable in the env file has no effect | Proxy settings and `NODE_EXTRA_CA_CERTS` work only in the environment the router starts with: your shell, or the service file. |
 | `reason: "no-jev"` in the log | No Jev channel has a key in the router's environment. Check the env file with `jev-router doctor`, and restart the router after you change it. |
@@ -481,10 +506,12 @@ For Codex, run `jev-router launch codex` and try two sessions:
 
 - **`setup`:** run `jev-router uninstall`. It stops and removes the service, and takes out of Claude Code's settings
   what setup put there, restoring a value setup replaced. It changes only variables that still hold setup's value,
-  and backs up `settings.json` first. Without setup's record, it removes only a base URL that points at the router,
-  and gateway settings that hold exactly setup's values. It keeps your config, keys and logs, prints the command that
-  deletes them, and ends with the one that removes jev-router: `npm uninstall -g @ediri/jev-router`. Running it twice
-  is fine.
+  never a value that isn't a string, and backs up `settings.json` first. When it can't read `settings.json`, it keeps
+  its record, so that running it again after you fix the file finishes the job. Without setup's record, it removes
+  only a base URL that points at the router, with the gateway settings that hold exactly setup's values; after
+  `setup --no-claude-settings`, it leaves the settings alone. It keeps your config, keys and logs, prints the command
+  that deletes them, and ends with the one that removes jev-router: `npm uninstall -g @ediri/jev-router`. Running it
+  twice is fine. Like setup, it won't run as root on another user's behalf.
 - **`launch`:** nothing to undo. Plain `claude` and `codex` don't go through the router.
 - **Shell variables:** open a new shell, or run the `unset` line from
   [Environment for the current shell](#environment-for-the-current-shell).

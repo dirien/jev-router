@@ -21,10 +21,16 @@ the whole start. The repository and the Docker Sandboxes kit are public.
   hidden on a terminal, with Enter keeping a saved key. It checks the Jev key with one real call (about $0.00003),
   and writes nothing until a key works. Then it writes the config and the env file (mode 0600, its other lines kept),
   installs a launchd agent or a systemd user unit from the packaged templates, waits for the router to answer, and
-  merges the router's variables into `~/.claude/settings.json` with a backup. A base URL that points elsewhere is
-  replaced only on a yes. `--yes` takes the defaults and the keys from the environment; `--models`, `--service` and
-  `--no-claude-settings` choose the rest. Without a service manager, as in a container, setup saves the keys and says
-  to start sessions with `jev-router launch claude`.
+  merges the router's variables into `~/.claude/settings.json` with a backup. A base URL that points elsewhere, in the
+  settings file or the shell, is replaced only on a yes. `--yes` takes the defaults and the keys from the environment;
+  `--models`, `--service` and `--no-claude-settings` choose the rest. Without a service manager, as in a container or
+  a Mac session without a GUI login, setup saves the keys and says to start sessions with `jev-router launch claude`.
+  It runs for the user who starts it, and refuses root on another user's behalf, through `sudo` or with their `HOME`.
+- Another gateway's credentials stay away from Anthropic. When Claude Code goes to another gateway
+  (`ANTHROPIC_BASE_URL`) with credentials for it (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, custom headers, or an
+  `apiKeyHelper`), setup doesn't point it at the router, and `launch claude` and `env claude` refuse: behind the
+  router, Claude Code would send those credentials to Anthropic. They name the variables and where they're set, never
+  their values, and say what to remove.
 - Run through npx, as `npx @ediri/jev-router setup` or `npx github:dirien/jev-router setup`, setup installs the package
   globally before it installs the service, because npm can delete its npx cache at any time. When `npm install -g`
   fails, it says what to do, and names 1.4.0's package when that one holds the command. The commands setup suggests are
@@ -38,6 +44,7 @@ the whole start. The repository and the Docker Sandboxes kit are public.
 - `doctor` has a `service` line: none installed, or which service and whether its router answers. When the service
   answers and `settings.json` points at it, `doctor` says to start Claude Code as usual.
 - `JEV_ROUTER_SETUP_WAIT`, how long setup waits for the service's router to answer: 15 seconds by default.
+- `JEV_ROUTER_ENV_FILE=/dev/null` (or `--env-file /dev/null`) turns the env file off.
 - The package smoke test also runs `setup --yes --service none` against a local Jev stand-in, and `uninstall`.
 
 ### Changed
@@ -49,7 +56,9 @@ the whole start. The repository and the Docker Sandboxes kit are public.
 - `serve`, `launch`, `env` and `doctor` load `~/.config/jev-router/env` (`$XDG_CONFIG_HOME/jev-router/env`) when it
   exists, so `--env-file` is needed only for another file. The rules stay the same: variables already set win, a loose
   mode or a startup-only variable gets a warning, and `launch` keeps the file's variables away from the agent.
-  `doctor` reports the file with an ok line, where it used to say the file wasn't loaded.
+  `doctor` reports the file with an ok line, where it used to say the file wasn't loaded. Setup saves a
+  `JEV_ROUTER_HOST` or `JEV_ROUTER_PORT` from the shell in that file, so the service and every other command find the
+  router at the same address.
 - The service templates pass `--config ~/.config/jev-router/config.json`, so setup and the manual route install the
   same service; the manual route starts with `jev-router init`. The systemd install commands no longer add
   `/usr/local/bin` to the service's `PATH`, which the router never needed.
@@ -62,6 +71,9 @@ the whole start. The repository and the Docker Sandboxes kit are public.
 
 - An env file that exists but can't be read was reported as "no such file", because Node's loader says so. It now
   reads "permission denied".
+- A Jev key with a character an HTTP header can't carry, such as a NUL or a line break inside it, made the Jev
+  client's error quote the whole `authorization` header, key included, into the log and `/healthz`. The error now says
+  what's wrong without it, and a key that a Jev server echoes back is cut from the error too.
 
 ## [1.4.0] - 2026-09-25
 

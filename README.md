@@ -42,7 +42,8 @@ npx asks before it downloads the package. You can also install jev-router first,
 registry, use `npx github:dirien/jev-router setup`, which needs git.
 
 Don't run `npx jev-router` or `npm install -g jev-router`. Without the `@ediri/` scope, that name belongs to an
-unrelated project, [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router).
+unrelated project, [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router). Run setup as your own user,
+not with `sudo`: it sets up jev-router for the user who runs it, and refuses to run as root for someone else.
 
 ### What setup does
 
@@ -65,6 +66,10 @@ Then setup:
 
 Restart any Claude Code session that was already running. You can run setup again at any time: it keeps your config
 and your saved keys (press Enter), and restarts the router.
+
+If Claude Code already goes to another gateway, such as a company LiteLLM with an `ANTHROPIC_AUTH_TOKEN`, setup
+leaves its settings alone and says what to remove first. Behind the router, Claude Code would send that gateway's
+credentials to Anthropic.
 
 - **Check it:** `jev-router doctor` lists the config, the keys, the service, and whether the router answers.
 - **Watch it:** open <http://127.0.0.1:4100>. Each message you write shows up with the model the router picked, and
@@ -168,8 +173,13 @@ This is what setup adds to `~/.claude/settings.json`, next to the keys the file 
 | `ENABLE_TOOL_SEARCH=true` | Behind any gateway, Claude Code turns MCP tool search off and sends every MCP tool definition with every request. In a live test with a few MCP servers, that was about 200,000 tokens per request, more than the compaction window, so Claude Code compacted on every message |
 
 Setup doesn't overwrite a compaction window or a tool search setting you already have. When the router has a token,
-setup also adds it to `ANTHROPIC_CUSTOM_HEADERS`. When `ANTHROPIC_BASE_URL` already points somewhere else, such as a
-company gateway, setup asks before it replaces it, and `--yes` keeps it.
+setup also adds it to `ANTHROPIC_CUSTOM_HEADERS`. When `ANTHROPIC_BASE_URL`, in the settings file or in your shell,
+already points somewhere else, such as a company gateway, setup asks before it replaces it, and `--yes` keeps it.
+
+Setup never replaces it when Claude Code also carries credentials for that gateway: `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_API_KEY` or custom headers, in your shell or the settings file, or an `apiKeyHelper`. Behind the router,
+Claude Code would send them to Anthropic. Setup names them, and where they're set, so you can remove them first.
+`launch claude` and `env claude` refuse in the same case, and show the command that leaves them out.
 
 You don't need an Anthropic API key: the router passes Claude Code's own login to Anthropic and to no other host. If
 the router's environment has an `ANTHROPIC_API_KEY`, the router uses that key for every Anthropic request instead,
@@ -468,7 +478,9 @@ Keys come from the environment, or from an env file of `KEY=value` lines, `~/.co
 writes:
 
 - `serve`, `launch`, `env`, `doctor` and `setup` load that file when it exists. `--env-file`, or
-  `JEV_ROUTER_ENV_FILE`, names another one.
+  `JEV_ROUTER_ENV_FILE`, names another one, and `/dev/null` turns it off.
+- Setup saves a `JEV_ROUTER_HOST` or `JEV_ROUTER_PORT` you set in your shell there too, so the service and every other
+  command find the router at the same address.
 - Variables that are already set win over the file. A leading `~` in the path is expanded, for services that start
   without a shell.
 - The router warns when other users can read or change the file.
@@ -481,9 +493,9 @@ writes:
 | `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY` | Jev channel keys (the shipped channels' `keyEnv`) |
 | `OLLAMA_API_KEY`, `OPENAI_API_KEY` | Upstream keys for Ollama Cloud and OpenAI |
 | `ANTHROPIC_API_KEY` | Optional. Without it, Claude Code's own login goes to Anthropic |
-| `JEV_ROUTER_ENV_FILE` | The env file to load instead of `~/.config/jev-router/env`, when `--env-file` isn't given; setup writes the keys there |
+| `JEV_ROUTER_ENV_FILE` | The env file to load instead of `~/.config/jev-router/env`, when `--env-file` isn't given; setup writes the keys there. `/dev/null` turns the env file off |
 | `JEV_ROUTER_CONFIG` | Config file, after `--config` |
-| `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | Listen address, overriding the config |
+| `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | Listen address, overriding the config. Setup saves them in the env file |
 | `JEV_ROUTER_LOG_FILE` | The log file for `serve`, when `--log-file` isn't given; `report` and `ui` read it too |
 | `JEV_ROUTER_TOKEN` | Shared secret clients send as `x-jev-router-token`; required for a non-loopback address |
 | `JEV_ROUTER_UI`, `JEV_ROUTER_UI_TOKEN` | The live view's address, like `--ui`, and its token, like `--ui-token` |
@@ -500,7 +512,8 @@ writes:
   then send the token as `x-jev-router-token`.
 - **Keys stay with their hosts.** Each key comes from the environment variable its target or Jev channel names, and
   goes only to that host. Upstream redirects are refused, so a key can't follow one. Your Claude login is forwarded
-  only to targets marked `clientAuth` (Anthropic).
+  only to targets marked `clientAuth` (Anthropic). So that another gateway's credentials never reach Anthropic, setup,
+  `launch claude` and `env claude` won't route Claude Code while it goes to another gateway with credentials for it.
 - **Keys at rest.** Setup saves them in `~/.config/jev-router/env` with mode 0600, and never prints them. You can
   also keep them in your shell environment. `serve`, `launch`, `env`, `doctor` and `setup` warn when other users can
   read or change the env file. `launch` keeps the file's variables out of the agent's environment, so the commands the

@@ -64,6 +64,10 @@ time for the fix before you disclose the issue publicly.
   and the tool output an untrusted upstream receives, don't carry the router's keys.
 - The client's own credential, such as a Claude login, is forwarded only to targets marked `clientAuth`
   (Anthropic in the packaged configs).
+- So that another gateway's credentials never reach Anthropic, `jev-router setup`, `launch claude` and `env claude`
+  won't route Claude Code while it goes to another gateway (`ANTHROPIC_BASE_URL`) with credentials for it:
+  `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, custom headers other than the router token, or an `apiKeyHelper`. They
+  name those variables, never their values, and say what to remove.
 - A deterministic scanner checks every human message. A hit keeps the session on the `trusted` target, and pins,
   tags and Jev's answer can't override that.
 - Untrusted targets get secrets redacted anywhere in the body, tool output included, a minimal set of headers, and
@@ -90,14 +94,15 @@ profile, `~/.codex/jev.config.toml`, with mode 0600, since it may hold the route
 
 - the config and the env file, both with mode 0600, in a directory with mode 0700;
 - the service file, a launchd agent or a systemd user unit, which holds paths and a `PATH`, and no keys;
-- Claude Code's `settings.json`, with the router token in `ANTHROPIC_CUSTOM_HEADERS` when the router has one, keeping
-  the file's mode (0600 for a new file), and a backup of the old file, `settings.json.jev-router.bak`, with the same
-  mode;
+- Claude Code's `settings.json`, with the router token in `ANTHROPIC_CUSTOM_HEADERS` when the router has one. It
+  keeps the file's mode (0600 for a new file), without access for other users once the file holds the token, and a
+  backup of the old file, `settings.json.jev-router.bak`, with mode 0600;
 - `~/.config/jev-router/setup.json`, mode 0600, its record of what it changed for `jev-router uninstall`, which holds
   no keys and no router token.
 
 Run through npx, setup installs the package globally with `npm install -g` after you agree, so the service never runs
-from npx's cache.
+from npx's cache. Setup and `uninstall` refuse to run as root on another user's behalf, through `sudo` or with that
+user's `HOME`, so they never leave files owned by root in a user's home.
 
 ### Out of scope
 

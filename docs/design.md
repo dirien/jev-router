@@ -263,6 +263,12 @@ from leaving a machine half set up:
   `PATH` that holds the global `jev-router` and the Node.js that runs setup.
 - **Never from npx's cache.** npm can delete its npx cache at any time, and a service pointing into it would break
   without a word. Run through npx, setup installs the package globally first.
+- **Another gateway's credentials stay with it.** The router passes Claude Code's credential on to Anthropic, which
+  is right for a Claude login and wrong for a token made for a company gateway. So when Claude Code goes to another
+  gateway with credentials for it, setup doesn't point it at the router, and `launch claude` and `env claude` refuse.
+  They look at names only, and say what to remove.
+- **One address for everyone.** The router's host and port live in the env file, which the service and every other
+  command read, so `doctor`, `env`, `launch` and `uninstall` find the service's router from any shell.
 - **Undo exactly what was done.** setup records in `setup.json` which settings it added and the values it replaced,
   without secrets, and `uninstall` restores only variables that still hold setup's value. Without that record,
   `uninstall` removes only values that can only be setup's.

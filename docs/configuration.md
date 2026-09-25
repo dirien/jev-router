@@ -236,11 +236,11 @@ ledger.
 | `OLLAMA_API_KEY` | Ollama Cloud targets | Sent as a bearer key |
 | `OPENAI_API_KEY` | OpenAI targets | Sent as a bearer key |
 | `ANTHROPIC_API_KEY` | Anthropic targets | Optional. When it's unset, Claude Code's own credential goes to Anthropic |
-| `JEV_ROUTER_ENV_FILE` | `serve`, `launch`, `env`, `doctor`, `setup`, `uninstall` | The env file to load instead of `$XDG_CONFIG_HOME/jev-router/env` when `--env-file` isn't given. `setup` saves the keys there |
+| `JEV_ROUTER_ENV_FILE` | `serve`, `launch`, `env`, `doctor`, `setup`, `uninstall` | The env file to load instead of `$XDG_CONFIG_HOME/jev-router/env` when `--env-file` isn't given. `setup` saves the keys there. `/dev/null` turns the env file off, and then `setup` stops, having nowhere to save keys |
 | `JEV_ROUTER_CONFIG` | Config lookup | The config file, after `--config`. `setup` keeps it as it is and gives it to the service |
-| `XDG_CONFIG_HOME` | Config lookup, the env file, `setup` | Base directory for `jev-router/config.json`, `jev-router/env`, `jev-router/setup.json`, and the systemd unit setup writes (`systemd/user/jev-router.service`) |
+| `XDG_CONFIG_HOME` | Config lookup, the env file, `setup` | Base directory for `jev-router/config.json`, `jev-router/env` and `jev-router/setup.json`. The systemd unit goes under the systemd user manager's own `XDG_CONFIG_HOME`, as `systemctl --user show-environment` reports it, else `~/.config` |
 | `XDG_STATE_HOME` | The state file, `launch` | Base directory for the default `stateFile` and for the log that `launch` writes (`~/.local/state` when unset) |
-| `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | `serve`, `setup` | Listen address, overriding `host` and `port`. `setup` passes them to the service as flags |
+| `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | Every command that finds the router | Listen address, overriding `host` and `port`. `setup` saves them in the env file when your shell sets them, so the service and every other command read the same address |
 | `JEV_ROUTER_LOG_FILE` | `serve`, `report`, `ui` | The log file, after `--log-file` and before `logFile` |
 | `JEV_ROUTER_TOKEN` | The router, `launch`, `env` | Shared secret sent as `x-jev-router-token`, overriding `token`. Required for a non-loopback address |
 | `JEV_ROUTER_UI` | `serve`, `launch`, `setup` | The live view's address, like `--ui`: a port or `host:port`. `setup` gives the service this address instead of 4100 |
@@ -258,10 +258,18 @@ The key variables are the `keyEnv` names in the shipped configs. A config can na
 (`$CLAUDE_CONFIG_DIR/settings.json` when that's set), once the router it started answers: `ANTHROPIC_BASE_URL`,
 `CLAUDE_CODE_GATEWAY_HINT_HEADERS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `ENABLE_TOOL_SEARCH` unless they're set,
 and `ANTHROPIC_CUSTOM_HEADERS` when the router has a token. It keeps the file's other keys and their order, writes it
-with 2-space indentation, keeps its mode (0600 for a new file), and backs it up to `settings.json.jev-router.bak`
-first. It asks before it replaces a base URL that points elsewhere, and leaves a file that isn't valid JSON alone.
-What it changed goes into `$XDG_CONFIG_HOME/jev-router/setup.json`, without keys or the router token, for
-`jev-router uninstall`. `jev-router doctor` reads the same file, without changing it, to check that block.
+with 2-space indentation, keeps its mode (0600 for a new file, and no access for other users once it holds the router
+token), and backs it up first to `settings.json.jev-router.bak`, which only you can read. A settings file that is a
+symbolic link stays one. A variable whose value isn't a string, such as `"ENABLE_TOOL_SEARCH": true`, is yours: setup
+never overwrites it, and `uninstall` never removes it.
+
+Setup asks before it replaces a base URL that points elsewhere, in the file or in your shell, and leaves a file that
+isn't valid JSON alone. It never replaces one when Claude Code also carries credentials for that gateway
+(`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, custom headers, or `apiKeyHelper`), because behind the router they'd go
+to Anthropic; `launch claude` and `env claude` refuse then too.
+
+What setup changed goes into `$XDG_CONFIG_HOME/jev-router/setup.json`, without keys or the router token, for
+`jev-router uninstall`. `jev-router doctor` reads the settings file, without changing it, to check that block.
 
 ### The env file
 
@@ -269,7 +277,7 @@ Any of these variables can come from an env file instead of the shell: a file of
 `~/.config/jev-router/env` (`$XDG_CONFIG_HOME/jev-router/env`) with mode 0600, which `jev-router setup` writes.
 `serve`, `launch`, `env`, `doctor` and `setup` load that file when it exists, or the file named by
 `--env-file <file>`, else by `JEV_ROUTER_ENV_FILE`, with Node's own loader, before they read anything else from the
-environment. Messages call the usual file the "default location".
+environment. Messages call the usual file the "default location". Naming `/dev/null` turns the env file off.
 
 - A variable that's already set wins over the file.
 - A leading `~` in the path is your home directory, for services that start without a shell.
@@ -281,8 +289,9 @@ environment. Messages call the usual file the "default location".
   status 9, before jev-router runs. A file named by `JEV_ROUTER_ENV_FILE`, or a `~/.config/jev-router/env` that
   exists but can't be read, stops the command with jev-router's own error. A missing `~/.config/jev-router/env` is
   fine.
-- `setup` changes only the lines of the keys it asks for, and keeps every other line and comment. It quotes a value
-  only when Node's loader would otherwise misread it, for example one with a `#`.
+- `setup` changes only the lines of the keys it asks for, and of a `JEV_ROUTER_HOST` or `JEV_ROUTER_PORT` your shell
+  sets, and keeps every other line and comment. It quotes a value only when Node's loader would otherwise misread it,
+  for example one with a `#`. An env file that is a symbolic link stays one.
 - The file is read once. `SIGHUP` reloads the config, not the env file, so restart the router after a key change.
 - `launch` keeps the file's variables out of the agent's environment.
 
