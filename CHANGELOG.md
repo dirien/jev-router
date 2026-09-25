@@ -7,6 +7,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-25
+
+jev-router now installs and runs on any Mac or Linux machine with Node.js 22 or newer, without a clone of the
+repository and without Docker Sandboxes: install it with npm, keep the keys in an env file, and run it as a launchd
+or systemd service.
+
+### Added
+
+- Install without a clone: `npm install -g github:dirien/jev-router#semver:^1` installs the newest 1.x release, and
+  `#v1.4.0` pins one. Run the command again to update, and `npm uninstall -g @dirien/jev-router` to remove it.
+- A release workflow for version tags. It checks and packs the package, publishes the Docker Sandboxes kit to
+  `ghcr.io/dirien/jev-router-kit` under the version and `latest`, and creates the GitHub Release with the tarball and
+  `SHA256SUMS`. Once the `NPM_PUBLISH` repository variable is on, it also publishes `@dirien/jev-router` to npm with
+  provenance. `docs/releasing.md` describes it.
+- Service templates in the package: a macOS LaunchAgent and a systemd user unit under `examples/service/`. Both run
+  `jev-router serve --ui 4100` with the keys from `~/.config/jev-router/env` and a rotating log, and their headers
+  have the install, use and uninstall commands.
+- `--env-file <file>` for `serve`, `launch`, `env` and `doctor`, or `JEV_ROUTER_ENV_FILE`: loads `KEY=value` lines
+  before anything reads the environment, and variables already set win. A file that other users can read or change
+  gets a warning, and so do proxy settings in it, which Node reads only at startup. `launch` keeps the file's
+  variables out of the agent's environment.
+- `serve --log-file <file>`, or `JEV_ROUTER_LOG_FILE`, ahead of the config's `logFile`. `serve` creates the file's
+  directory, and `report` and `ui` read the same file when you don't name one.
+- `logMaxBytes`, 50 MiB by default: a log file that would grow past it is renamed to `<file>.1`, and one old file is
+  kept. `0` turns rotation off. `report` reads `<file>.1` too.
+- `--ui-token`, or `JEV_ROUTER_UI_TOKEN`: the live view asks for the token. `serve` and `ui` print an address that
+  carries it, and the page keeps it in a cookie.
+- New `doctor` checks: the env file (what it sets, a loose mode, or a `~/.config/jev-router/env` that isn't passed),
+  the log file (a missing or unwritable directory, and when it rotates), and Claude Code's settings. When
+  `ANTHROPIC_BASE_URL` in the shell or in `~/.claude/settings.json` points at the router, `doctor` names each
+  recommended variable that's missing, `ENABLE_TOOL_SEARCH=true` among them.
+- `npm run test:package`, a smoke test that installs the packed package the way users do (and with `--git`, the last
+  commit), then runs `version`, `init`, `serve` with an env file and the live view, `env claude`, `launch claude` and
+  a clean `SIGTERM`, without network access. CI runs it on Node.js 22 and 24.
+- `docs/comparison.md` compares jev-router with LiteLLM, Jevonian, gargpratyush/jev-router and
+  Switchboard.
+
+### Changed
+
+- A stream that the upstream breaks off now logs an `error` line plus a `done` line with the usage so far and an
+  `error`, even when the status was 200. It used to leave only an `error` line reading "terminated", so its cost never
+  reached `report`. The client's response is now cut off rather than ended, so it can't pass for a whole response.
+- A client that leaves before the upstream answers now gets a `done` line with status 499, like a client that leaves
+  during the Jev call, instead of an upstream error.
+- The Docker Sandboxes kit allows `github.com` and `codeload.github.com`, so a sandbox can install jev-router with
+  npm, and it gains `sourceURL` and `licenses`. Its version now comes from the release.
+- The README and the guides lead with a plain Mac or Linux machine. The Docker Sandboxes guide covers only what
+  differs there, and uses the kit from GHCR or git instead of a clone.
+
+### Fixed
+
+- `serve` crashed at its next message to stderr once stderr had closed, so a `serve 2>&1 | tee` that lost `tee` went
+  down at the next config reload.
+- A log file that couldn't be written (a missing directory, a permission, a full disk) lost every line without a
+  word. Now its first failure is one `warning` line and one note on stderr, and `serve` says when it works again.
+- A slow client left two listeners behind at every pause of a stream, so memory grew with each pause of a long
+  stream, and Node printed a `MaxListenersExceededWarning`.
+- An upstream that couldn't be reached showed up as "Upstream request failed: fetch failed". The 502 and the `error`
+  line now name the host and the cause, such as `getaddrinfo ENOTFOUND ollama.com` or a TLS error.
+- Concurrent requests of one human turn share one Jev call, but the call ran on the first request's abort signal:
+  when that client left, the others lost Jev's answer. The call now ends only when every request waiting for it has
+  left.
+- A client that left before the Jev call, or while it waited to retry, counted as a Jev failure against a new
+  session's provisional attempts.
+- A `SIGHUP` right after `serve` said it was listening could end the router, because the signal handlers came after
+  that line.
+- A second `SIGINT` or `SIGTERM` during the 30-second drain did nothing, so an impatient Ctrl-C needed a `SIGKILL`.
+  It now stops `serve` at once. A drain that runs out of time says how many requests it cut.
+- Config validation let through values that broke routing later: a `sideCallModel` that isn't a regular expression,
+  a channel `timeoutMs` of 0 or `"fast"`, `"failClosed": "false"`, which turned fail-closed on, a `maxBodyBytes` of 0
+  or `"32mb"`, and a `stateFile` or `logFile` given as a number, among others. The router now stops at startup and
+  names each one.
+- A long-running router grew without bound in a few places. The state file is now compacted while the router runs,
+  not only at startup. The router remembers at most 100 warnings, the live view takes at most 32 open pages, the
+  usage tap drops an SSE line without a newline past 8 MiB, and a Jev channel's error text is cut to 200 characters.
+
 ## [1.3.3] - 2026-09-24
 
 ### Fixed
@@ -134,7 +210,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/dirien/jev-router/compare/v1.3.3...v1.4.0
 [1.3.3]: https://github.com/dirien/jev-router/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/dirien/jev-router/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/dirien/jev-router/compare/v1.3.0...v1.3.1
