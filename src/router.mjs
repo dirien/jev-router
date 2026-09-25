@@ -336,7 +336,9 @@ export function createRouter(
   }
 
   /**
-   * Sends a request to its target and streams the response back, then logs its usage and cost.
+   * Sends a request to its target and streams the response back, then logs its usage and cost. A
+   * failure before the response is a 502 in the client's shape; a stream that breaks off is cut
+   * short for the client too, and still logs what it cost.
    * @param {IncomingMessage} req
    * @param {ServerResponse} res
    * @param {{ id: number, target: Target, surface: Surface, session: string, shown: Record<string, string>, signal: AbortSignal,
@@ -344,37 +346,44 @@ export function createRouter(
    * @returns {Promise<number | undefined>} the upstream's status, or undefined when the request failed
    */
   async function relay(req, res, { id, target, surface, session, shown, signal, startedAt, body, redacted, capped, folded }) {
+    const ts = () => new Date().toISOString();
+    const host = new URL(target.url).host;
+    let result;
     try {
-      const result = await forward(req, res, target, body, shown, signal, env);
-      const cost = costOf(target.model, result.usage, cfg.prices);
-      const baselineModel = cfg.baselineModel?.[surface];
-      log({
-        ts: new Date().toISOString(),
-        event: 'done',
-        req: id,
-        session,
-        status: result.status,
-        model: target.model,
-        ms: elapsed(startedAt),
-        bytes: result.bytes,
-        sha256: result.sha256,
-        redacted: redacted || undefined,
-        capped_max_tokens: capped,
-        folded_system: folded,
-        error: result.error,
-        client_aborted: result.aborted || undefined,
-        usage: result.usage,
-        cost_usd: cost,
-        baseline_usd: baselineModel ? costOf(baselineModel, result.usage, cfg.prices) : undefined,
-      });
-      return result.status;
+      result = await forward(req, res, target, body, shown, signal, env);
     } catch (err) {
-      const { message } = /** @type {Error} */ (err);
-      log({ ts: new Date().toISOString(), event: 'error', req: id, session, error: message });
-      if (!res.headersSent) fail(res, 502, `Upstream request failed: ${message}`, surface, shown);
+      if (signal.aborted) {
+        log({ ts: ts(), event: 'done', req: id, session, status: 499, client_aborted: true, ms: elapsed(startedAt) });
+        return undefined;
+      }
+      const why = `request to ${host} failed: ${failure(err)}`;
+      log({ ts: ts(), event: 'error', req: id, session, error: `upstream ${why}` });
+      if (!res.headersSent) fail(res, 502, `Upstream ${why}`, surface, shown);
       else res.destroy();
       return undefined;
     }
+    if (result.broken) log({ ts: ts(), event: 'error', req: id, session, error: result.error ?? 'the upstream stream broke off' });
+    const baselineModel = cfg.baselineModel?.[surface];
+    log({
+      ts: ts(),
+      event: 'done',
+      req: id,
+      session,
+      status: result.status,
+      model: target.model,
+      ms: elapsed(startedAt),
+      bytes: result.bytes,
+      sha256: result.sha256,
+      redacted: redacted || undefined,
+      capped_max_tokens: capped,
+      folded_system: folded,
+      error: result.error,
+      client_aborted: result.aborted || undefined,
+      usage: result.usage,
+      cost_usd: costOf(target.model, result.usage, cfg.prices),
+      baseline_usd: baselineModel ? costOf(baselineModel, result.usage, cfg.prices) : undefined,
+    });
+    return result.broken ? undefined : result.status;
   }
 
   const server = http.createServer((req, res) => {
@@ -392,7 +401,8 @@ export function createRouter(
     handle(req, res, controller.signal)
       .catch((/** @type {Error} */ err) => {
         // one malformed request must not take the router down
-        log({ ts: new Date().toISOString(), event: 'error', path: req.url, error: err.message });
+        const error = controller.signal.aborted ? `the client went away before the request was routed: ${err.message}` : err.message;
+        log({ ts: new Date().toISOString(), event: 'error', path: req.url, error });
         if (!res.headersSent) fail(res, 500, 'The router could not handle this request', SURFACES[(req.url ?? '').split('?')[0]]);
         else res.destroy();
       })
@@ -887,7 +897,9 @@ function isJsonObject(value) {
 
 /**
  * Sends a request upstream and streams the response back unchanged, hashing it and reading its
- * usage on the way.
+ * usage on the way. It throws when the upstream can't be reached; once the response has started,
+ * a stream that breaks off is cut for the client as well (so it can't pass for a whole response),
+ * and comes back as `broken` with what it delivered.
  * @param {IncomingMessage} req
  * @param {ServerResponse} res
  * @param {Target} target
@@ -895,7 +907,7 @@ function isJsonObject(value) {
  * @param {Record<string, string>} shown the x-jev-* headers for the client
  * @param {AbortSignal} signal
  * @param {Env} env
- * @returns {Promise<{ status: number, bytes: number, sha256: string, usage: Usage | undefined, aborted: boolean, error?: string }>}
+ * @returns {Promise<{ status: number, bytes: number, sha256: string, usage: Usage | undefined, aborted: boolean, broken: boolean, error?: string }>}
  */
 async function forward(req, res, target, body, shown, signal, env) {
   const upstream = await fetch(target.url + req.url, {
@@ -912,6 +924,8 @@ async function forward(req, res, target, body, shown, signal, env) {
   // The start of an error body, for its message in the log.
   /** @type {Buffer[]} */
   const errorHead = [];
+  /** @type {string | undefined} */
+  let broke;
   try {
     for await (const chunk of upstream.body ?? []) {
       hash.update(chunk);
@@ -924,11 +938,49 @@ async function forward(req, res, target, body, shown, signal, env) {
       if (res.destroyed || signal.aborted) break;
     }
   } catch (err) {
-    if (!signal.aborted) throw err;
+    if (!signal.aborted) broke = `the stream from ${new URL(target.url).host} broke off after ${bytes} bytes: ${failure(err)}`;
   }
-  res.end();
-  const error = upstream.status >= 400 ? errorMessage(Buffer.concat(errorHead).subarray(0, ERROR_HEAD_BYTES).toString()) : undefined;
-  return { status: upstream.status, bytes, sha256: hash.digest('hex'), usage: tap.result(), aborted: signal.aborted, error };
+  if (broke) res.destroy();
+  else res.end();
+  const error =
+    broke ?? (upstream.status >= 400 ? errorMessage(Buffer.concat(errorHead).subarray(0, ERROR_HEAD_BYTES).toString()) : undefined);
+  return {
+    status: upstream.status,
+    bytes,
+    sha256: hash.digest('hex'),
+    usage: tap.result(),
+    aborted: signal.aborted,
+    broken: Boolean(broke),
+    error,
+  };
+}
+
+/**
+ * Why a fetch failed, in words. Undici says "fetch failed" or "terminated"; its cause says what
+ * happened: a DNS lookup, a refused connection, a TLS handshake, a connection that was reset.
+ * @param {unknown} err
+ * @returns {string}
+ */
+function failure(err) {
+  const error = err instanceof Error ? err : new Error(String(err));
+  const { cause } = /** @type {{ cause?: unknown }} */ (error);
+  if (!(cause instanceof Error)) return error.message;
+  const detail = describeCause(cause);
+  return ['fetch failed', 'terminated'].includes(error.message) ? detail : `${error.message}: ${detail}`;
+}
+
+/**
+ * @param {Error} cause the socket, DNS or TLS error behind a fetch failure
+ * @returns {string}
+ */
+function describeCause(cause) {
+  // One error per address tried, as for localhost on both IPv6 and IPv4.
+  if (cause instanceof AggregateError && cause.errors.length) return cause.errors.map((e) => String(e?.message ?? e)).join(', ');
+  const { code, reason } = /** @type {{ code?: unknown, reason?: unknown }} */ (cause);
+  const tag = typeof code === 'string' && !cause.message.includes(code) ? ` (${code})` : '';
+  // An OpenSSL error's message is a raw error string; its reason is the part people read.
+  if (typeof reason === 'string') return `TLS error: ${reason}${tag}`;
+  return `${cause.message}${tag}`;
 }
 
 /** How much of an error body is read for its message. */

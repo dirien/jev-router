@@ -410,7 +410,7 @@ export type DoneLog = {
   capped_max_tokens?: number;
   /** How many mid-conversation system messages were folded into user messages. */
   folded_system?: number;
-  /** The upstream's error message, for a status of 400 or more. */
+  /** The upstream's error message, for a status of 400 or more; or why its stream broke off, which an `error` entry also says. */
   error?: string;
 };
 

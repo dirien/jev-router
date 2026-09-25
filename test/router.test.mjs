@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { after, before, test } from 'node:test';
 import { validateConfig } from '../src/config.mjs';
@@ -1016,10 +1017,129 @@ test('an upstream that cannot be reached is a 502 the client may retry', async (
   assert.equal(res.status, 502);
   const { error } = JSON.parse(res.text);
   assert.equal(error.type, 'api_error');
-  assert.match(error.message, /^Upstream request failed: /);
+  assert.match(
+    error.message,
+    /^Upstream request to 127\.0\.0\.1:\d+ failed: connect ECONNREFUSED 127\.0\.0\.1:\d+$/,
+    'the cause, not "fetch failed"',
+  );
   assert.equal(res.headers.get('x-should-retry'), null, 'no x-should-retry: false on a 5xx');
   assert.equal(res.headers.get('x-jev-tier'), 'frontier', 'the decision headers are still shown');
-  assert.ok(logs.some((e) => e.event === 'error' && e.session));
+  assert.ok(logs.some((e) => e.event === 'error' && e.session && e.error === `u${error.message.slice(1)}`));
+});
+
+test('an upstream whose TLS handshake or DNS lookup fails is a 502 that names the cause', async () => {
+  const plain = http.createServer((_req, res) => res.end('not TLS'));
+  const plainUrl = await listen(plain);
+  const cfg = testConfig();
+  for (const target of Object.values(cfg.surfaces.openai ?? {})) target.url = plainUrl.replace('http:', 'https:');
+  const nowhere = 'https://api.nowhere.invalid';
+  for (const target of Object.values(cfg.surfaces.anthropic ?? {})) target.url = nowhere;
+  const { url, logs } = await startRouter({ cfg });
+  const tls = await post(url, '/v1/responses', codexBody('t-tls', 'Design it'), codexHeaders('t-tls', { 'x-jev-tier': 'frontier' }));
+  assert.equal(tls.status, 502);
+  assert.match(JSON.parse(tls.text).error.message, /^Upstream request to 127\.0\.0\.1:\d+ failed: TLS error: \w/);
+  await close(plain);
+
+  // Tests have no network, so a stand-in for fetch fails the lookup the way undici does.
+  const real = globalThis.fetch;
+  const lookup = Object.assign(new Error('getaddrinfo ENOTFOUND api.nowhere.invalid'), { code: 'ENOTFOUND' });
+  globalThis.fetch = /** @type {typeof fetch} */ (
+    (input, init) =>
+      String(input).startsWith(nowhere) ? Promise.reject(new TypeError('fetch failed', { cause: lookup })) : real(input, init)
+  );
+  try {
+    const dns = await post(url, '/v1/messages', cc('s-dns', 'Add a test'), ccHeaders('s-dns', { 'x-jev-tier': 'frontier' }));
+    assert.equal(dns.status, 502);
+    assert.equal(
+      JSON.parse(dns.text).error.message,
+      'Upstream request to api.nowhere.invalid failed: getaddrinfo ENOTFOUND api.nowhere.invalid',
+    );
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.deepEqual(
+    logs
+      .filter((e) => e.event === 'error')
+      .map((e) => /** @type {{ error: string }} */ (e).error.replace(/:\d+/g, ':<port>').replace(/TLS error: .*/, 'TLS error: …')),
+    [
+      'upstream request to 127.0.0.1:<port> failed: TLS error: …',
+      'upstream request to api.nowhere.invalid failed: getaddrinfo ENOTFOUND api.nowhere.invalid',
+    ],
+  );
+});
+
+test('a stream the upstream cuts off is cut off for the client too, and what it cost still reaches the log', async () => {
+  const cutter = await mockServer((_call, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(anthropicSseWithUsage('claude-sonnet-5').subarray(0, 400)); // message_start, with its usage, and a little more
+    setTimeout(() => res.socket?.destroy(), 30);
+  });
+  const cfg = testConfig();
+  const targets = cfg.surfaces.anthropic;
+  assert.ok(targets);
+  targets.balanced.url = cutter.url;
+  const { url, logs, done } = await startRouter({ cfg });
+  const res = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: ccHeaders('s-cut', { 'x-jev-tier': 'balanced' }),
+    body: JSON.stringify(claudeCodeBody('s-cut', 'Add a test')),
+  });
+  assert.equal(res.status, 200);
+  await assert.rejects(res.arrayBuffer(), /terminated/, 'the client sees the break, not a response that ends cleanly');
+  for (let i = 0; i < 50 && !done().some((e) => e.session && e.bytes === 400); i += 1) await sleep(10);
+  const entry = done().find((e) => e.bytes === 400);
+  assert.ok(entry);
+  assert.equal(entry.status, 200);
+  assert.match(String(entry.error), /^the stream from 127\.0\.0\.1:\d+ broke off after 400 bytes: other side closed \(UND_ERR_SOCKET\)$/);
+  assert.deepEqual(entry.usage, { input: 12, cacheRead: 1000, cacheWrite: 0, output: 1 });
+  assert.ok((entry.cost_usd ?? 0) > 0, 'what the broken stream cost is on the ledger');
+  assert.ok(
+    logs.some((e) => e.event === 'error' && e.req === entry.req && e.error === entry.error),
+    'and an error entry says what happened',
+  );
+  await cutter.close();
+  const next = await post(url, '/v1/messages', cc('s-after-cut', 'hi'), ccHeaders('s-after-cut', { 'x-jev-tier': 'frontier' }));
+  assert.equal(next.status, 200, 'the router carries on');
+});
+
+test('a client that leaves before the upstream answers, or while it sends its request, is logged as gone', async () => {
+  const slow = await mockServer(async (_call, res) => {
+    await sleep(300);
+    json(res, 200, { id: 'msg', type: 'message', role: 'assistant', content: [], usage: { input_tokens: 1, output_tokens: 1 } });
+  });
+  const cfg = testConfig();
+  const targets = cfg.surfaces.anthropic;
+  assert.ok(targets);
+  targets.balanced.url = slow.url;
+  const { url, logs, done } = await startRouter({ cfg });
+  const controller = new AbortController();
+  const pending = fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: ccHeaders('s-gone', { 'x-jev-tier': 'balanced' }),
+    body: JSON.stringify(cc('s-gone', 'Add a test')),
+    signal: controller.signal,
+  }).catch(() => null);
+  await sleep(100);
+  controller.abort();
+  await pending;
+  for (let i = 0; i < 50 && done().length === 0; i += 1) await sleep(10);
+  assert.deepEqual(
+    done().map((e) => [e.status, e.client_aborted]),
+    [[499, true]],
+  );
+  assert.ok(!logs.some((e) => e.event === 'error'), 'no upstream failure is logged');
+
+  const port = Number(new URL(url).port);
+  const socket = net.connect(port, '127.0.0.1');
+  await once(socket, 'connect');
+  socket.write(
+    `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{"model":`,
+  );
+  await sleep(50);
+  socket.destroy();
+  for (let i = 0; i < 50 && !logs.some((e) => e.event === 'error'); i += 1) await sleep(10);
+  assert.match(String(logs.find((e) => e.event === 'error')?.error), /^the client went away before the request was routed: /);
+  await slow.close();
 });
 
 test('reload switches new requests to the new config', async () => {
