@@ -609,7 +609,7 @@ test('report reads a log file, the config logFile, or the log launch writes', as
 
   const nothing = await run(['report'], box.env);
   assert.equal(nothing.code, 1);
-  assert.match(nothing.stderr, /Usage: jev-router report <log\.jsonl> \(or set logFile in the config\)/);
+  assert.match(nothing.stderr, /Usage: jev-router report <log\.jsonl> \(or set JEV_ROUTER_LOG_FILE, or logFile in the config\)/);
   const configured = await run(['report', '--config', writeConfig(join(box.root, 'log.json'), { logFile: file })], box.env);
   assert.equal(JSON.parse(configured.stdout).requests, 1, 'the config logFile');
   mkdirSync(join(box.state, 'jev-router'));

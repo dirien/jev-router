@@ -432,8 +432,9 @@ function listen(server, port, host) {
 }
 
 /**
- * `jev-router [serve]`: runs the router in the foreground and logs one JSON line per event to stdout.
- * SIGHUP reloads the config; SIGTERM and SIGINT let in-flight requests finish, then exit.
+ * `jev-router [serve]`: runs the router in the foreground and logs one JSON line per event to stdout,
+ * and to --log-file, JEV_ROUTER_LOG_FILE or the config's logFile. SIGHUP reloads the config; SIGTERM
+ * and SIGINT let in-flight requests finish for up to 30 s, then exit, and a second one stops it at once.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
  * @returns {Promise<undefined>}
@@ -1250,7 +1251,8 @@ function init(args, env) {
 
 /**
  * `jev-router report [log]`: requests, spend and savings from a router log. Without an argument it
- * reads the config's logFile, else the log that `launch` writes, with the lines its last rotation kept.
+ * reads JEV_ROUTER_LOG_FILE, else the config's logFile, else the log that `launch` writes, with the
+ * lines its last rotation kept.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
  * @returns {number}
@@ -1265,7 +1267,7 @@ function printReport(args, env) {
     namedLogFile(undefined, env) ??
     loadConfig(configFile(values.config, env).path).logFile ??
     (existsSync(launched) ? launched : undefined);
-  if (!file) throw new Error('Usage: jev-router report <log.jsonl> (or set logFile in the config)');
+  if (!file) throw new Error('Usage: jev-router report <log.jsonl> (or set JEV_ROUTER_LOG_FILE, or logFile in the config)');
   // The router's own log keeps the lines from before its last rotation in <file>.1.
   const files = named === undefined && existsSync(`${file}.1`) ? [`${file}.1`, file] : [file];
   const lines = files.flatMap((path) => readFileSync(path, 'utf8').split('\n'));
@@ -1275,8 +1277,8 @@ function printReport(args, env) {
 
 /**
  * `jev-router ui [log]`: a live view of routing in the browser, on loopback. It follows the log
- * given, else the config's logFile, else the log that `launch` writes, and waits for a log that
- * doesn't exist yet.
+ * given, else JEV_ROUTER_LOG_FILE, else the config's logFile, else the log that `launch` writes,
+ * and waits for a log that doesn't exist yet. With --ui-token or JEV_ROUTER_UI_TOKEN it asks for it.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
  * @returns {Promise<undefined>}
