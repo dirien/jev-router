@@ -459,12 +459,8 @@ async function serve(args, env) {
     view?.publish({ ts: new Date().toISOString(), event: 'text', text });
   };
   const server = createRouter(cfg, { log });
-  const bound = await listen(server, port, host).catch((err) => {
-    throw new Error(`cannot listen on ${urlHost(host)}:${port}: ${errorMessage(err)}`);
-  });
-  console.error(`jev-router ${VERSION} listening on http://${urlHost(host)}:${bound}`);
-  logConfig(log, cfg);
-  if (view && uiAddress) await startView(view, uiAddress);
+  // The signal handlers come first: "listening on" is the line a supervisor or a test waits for,
+  // and a SIGHUP that arrived before its handler would end the process.
   process.on('SIGHUP', () => {
     try {
       cfg = { ...loadConfig(path), host, port };
@@ -489,6 +485,12 @@ async function serve(args, env) {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  const bound = await listen(server, port, host).catch((err) => {
+    throw new Error(`cannot listen on ${urlHost(host)}:${port}: ${errorMessage(err)}`);
+  });
+  console.error(`jev-router ${VERSION} listening on http://${urlHost(host)}:${bound}`);
+  logConfig(log, cfg);
+  if (view && uiAddress) await startView(view, uiAddress);
   return undefined;
 }
 
