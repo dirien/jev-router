@@ -36,21 +36,44 @@ from Codex's bundled model catalog; check them against your account.
 
 | Key | Default | Validation | Meaning |
 | --- | --- | --- | --- |
-| `host` | `"127.0.0.1"` | A non-loopback address needs a token, or the router refuses to start | Listen address. `--host` and `JEV_ROUTER_HOST` override it |
+| `host` | `"127.0.0.1"` | A non-empty string. A non-loopback address needs a token, or the router refuses to start | Listen address. `--host` and `JEV_ROUTER_HOST` override it |
 | `port` | `4000` | Integer from 1 to 65535 | Listen port. `--port` and `JEV_ROUTER_PORT` override it |
 | `token` | none | none | Shared secret that every proxied request must carry as `x-jev-router-token`. `JEV_ROUTER_TOKEN` overrides it. `/healthz` doesn't need it |
-| `allowedHosts` | `[]` | Must be an array | `Host` header values (`host:port`) accepted besides `127.0.0.1`, `localhost` and `[::1]` on the router's port |
-| `allowedOrigins` | none | none | `Origin` header values to accept. Any request with another `Origin` gets a 403, which keeps browser tabs out |
-| `maxBodyBytes` | `33554432` (32 MiB) | none | Larger request bodies get a 413 |
-| `maxSessions` | `10000` | none | Sessions kept in memory and in the state file; the least recently used ones are dropped first |
-| `stateFile` | `"~/.local/state/jev-router/sessions.jsonl"` | A leading `~/` is expanded | Where decisions persist across restarts. `null` keeps them in memory only |
-| `logFile` | `null` | A leading `~/` is expanded | A file to append the JSON log lines to, besides stdout (mode 0600) |
+| `allowedHosts` | `[]` | An array of strings | `Host` header values (`host:port`) accepted besides `127.0.0.1`, `localhost` and `[::1]` on the router's port |
+| `allowedOrigins` | none | An array of strings | `Origin` header values to accept. Any request with another `Origin` gets a 403, which keeps browser tabs out |
+| `maxBodyBytes` | `33554432` (32 MiB) | A whole number above 0 | Larger request bodies get a 413 |
+| `maxSessions` | `10000` | A positive whole number | Sessions kept in memory and in the state file; the least recently used ones are dropped first |
+| `stateFile` | `"$XDG_STATE_HOME/jev-router/sessions.jsonl"`, or `"~/.local/state/jev-router/sessions.jsonl"` | A file path or `null`. A leading `~/` is expanded | Where decisions persist across restarts. `null` keeps them in memory only |
+| `logFile` | `null` | A file path or `null`. A leading `~/` is expanded | A file to append the JSON log lines to, besides stdout (mode 0600). For `serve`, `--log-file` and `JEV_ROUTER_LOG_FILE` override it |
+| `logMaxBytes` | `52428800` (50 MiB) | A whole number, 0 or more | The size at which a log file rotates. `0` turns rotation off |
 
 The state file is created with mode 0600 in a directory with mode 0700. The router appends a JSON line whenever a
 session's entry changes, keyed by a SHA-256 hash of the session ID: tier, trust flag, provisional state, turn count,
 the client's model name, the last upstream host, and a hash of the human message where the provider changed. Entries
-older than seven days are dropped, and the file is rewritten to one line per live session at startup. It never holds
-prompt text.
+older than seven days are dropped. The router rewrites the file to one line per live session at startup, and again
+while it runs, once the appended lines outnumber the larger of 1,000 and the sessions it holds. It never holds prompt
+text.
+
+### The log file
+
+`serve` always writes its JSON log lines to stdout. It also appends them to the first of these that's set:
+
+1. the file passed with `--log-file`
+1. `JEV_ROUTER_LOG_FILE`
+1. `logFile` in the config
+
+`serve` creates the directory of a file named by `--log-file` or `JEV_ROUTER_LOG_FILE` (mode 0700), and a leading
+`~` there means your home directory, for services that start without a shell. A router that `launch` starts writes
+`~/.local/state/jev-router/router.log` (`$XDG_STATE_HOME/jev-router/router.log` when that's set), and `logFile` too
+when it's set.
+
+A file that a line would take past `logMaxBytes` is renamed to `<file>.1` first, replacing the previous `<file>.1`,
+so the router keeps two files at most. The line goes into the new file. A symbolic link isn't rotated. A file that
+can't be written costs its own lines and never a request: the router logs one `warning` to its other outputs, notes
+the problem on stderr, and says on stderr when the file can be written again.
+
+`jev-router report` and `jev-router ui` look for the log in the same order, after an argument: `JEV_ROUTER_LOG_FILE`,
+then `logFile`, then the log that `launch` writes. `report` reads `<file>.1` too, unless you name the file.
 
 ## Tiers and routing rules
 
@@ -58,8 +81,8 @@ prompt text.
 | --- | --- | --- | --- |
 | `tiers` | none, required | A non-empty list of strings | Tier names, cheapest first. Shipped: `["fast", "balanced", "frontier"]` |
 | `defaultTier` | none, required | One of `tiers` | The tier a new session gets when Jev can't decide, and the reference a fresh session's decision is compared against. Shipped: `"balanced"` |
-| `sideCallModel` | `"haiku"` | none | A case-insensitive regular expression. When a request carries no request class, a matching model name marks it as a background call |
-| `pinOnModelChange` | `true` | none | When the client switches to another model family (for example `/model opus` in Claude Code), pin the session to that family's tier |
+| `sideCallModel` | `"haiku"` | A string that compiles as a regular expression | A case-insensitive regular expression. When a request carries no request class, a matching model name marks it as a background call |
+| `pinOnModelChange` | `true` | `true` or `false` | When the client switches to another model family (for example `/model opus` in Claude Code), pin the session to that family's tier |
 | `modelPins` | `{}` | Each value must be one of `tiers` | Model family to tier. Families are `fable`, `opus`, `sonnet` and `haiku`. Shipped: `fable` and `opus` to `frontier`, `sonnet` to `balanced`, `haiku` to `fast` |
 
 ## policy
@@ -70,9 +93,9 @@ prompt text.
 | `policy.accept` | `0.6` for every tier | Each value a probability from 0 to 1, keyed by a name in `tiers` | The probability Jev's most likely tier needs to be taken as is. Shipped: `fast` 0.85, `balanced` 0.6, `frontier` 0.3 |
 | `policy.sensitiveOverride` | `0.7` | A probability | When `alters_sensitive_state` reaches this, the request goes to the top tier |
 | `policy.claimGuard` | `0.5` | A probability | When `routing_claim_present` reaches this, the decision can't go below the reference tier |
-| `policy.maxProvisional` | `3` | none | How many failed Jev attempts a new session allows before its fallback tier sticks |
-| `policy.idleResetMinutes` | `10` | none | After this many minutes without traffic, the next human message is decided afresh, because the prompt cache has most likely expired |
-| `policy.failClosed` | `false` | none | Keep provisional sessions, which Jev hasn't answered for yet, on the `trusted` target |
+| `policy.maxProvisional` | `3` | A whole number, 0 or more | How many failed Jev attempts a new session allows before its fallback tier sticks |
+| `policy.idleResetMinutes` | `10` | A number, 0 or more | After this many minutes without traffic, the next human message is decided afresh, because the prompt cache has most likely expired |
+| `policy.failClosed` | `false` | `true` or `false` | Keep provisional sessions, which Jev hasn't answered for yet, on the `trusted` target |
 
 How the policy turns Jev's answer into a tier, in order:
 
@@ -99,12 +122,12 @@ human message, up to `maxProvisional` attempts (`reason: fallback:default`). An 
 
 | Key | Default | Validation | Meaning |
 | --- | --- | --- | --- |
-| `jev.deadlineMs` | `2500` | none | The total time for one decision, across channels and retries |
-| `jev.requestChars` | `4000` | none | Size cap for the latest human message in Jev's state. Longer text keeps a quarter of the cap from its start and the rest from its end, where the question usually is |
-| `jev.stripCode` | `true` | none | Accepted, but the router doesn't read it yet: code blocks are always replaced by a one-line summary |
-| `jev.guards` | `true` | none | Ask the two guard questions, `alters_sensitive_state` and `routing_claim_present`, in the same request as the tier question |
-| `jev.channels` | `[]` | Must be an array. Each channel needs a `name`, an http(s) `baseUrl`, a `model` and a `keyEnv` | System One channels, tried in order |
-| `jev.channels[].timeoutMs` | `1200` | none | Timeout for one attempt on this channel |
+| `jev.deadlineMs` | `2500` | A whole number above 0 | The total time for one decision, across channels and retries |
+| `jev.requestChars` | `4000` | A whole number above 0 | Size cap for the latest human message in Jev's state. Longer text keeps a quarter of the cap from its start and the rest from its end, where the question usually is |
+| `jev.stripCode` | `true` | `true` or `false` | Accepted, but the router doesn't read it yet: code blocks are always replaced by a one-line summary |
+| `jev.guards` | `true` | `true` or `false` | Ask the two guard questions, `alters_sensitive_state` and `routing_claim_present`, in the same request as the tier question |
+| `jev.channels` | `[]` | An array of objects. Each channel needs a `name`, an http(s) `baseUrl`, a `model` and a `keyEnv` | System One channels, tried in order |
+| `jev.channels[].timeoutMs` | `1200` | A whole number above 0 | Timeout for one attempt on this channel |
 | `jev.question` | none, required | A non-empty string | The instructions of the tier question |
 | `jev.options` | none, required | At least two options, each with a `tier` from `tiers` | The tier question's options |
 
@@ -211,15 +234,43 @@ ledger.
 | `OLLAMA_API_KEY` | Ollama Cloud targets | Sent as a bearer key |
 | `OPENAI_API_KEY` | OpenAI targets | Sent as a bearer key |
 | `ANTHROPIC_API_KEY` | Anthropic targets | Optional. When it's unset, Claude Code's own credential goes to Anthropic |
+| `JEV_ROUTER_ENV_FILE` | `serve`, `launch`, `env`, `doctor` | The env file to load when `--env-file` isn't given |
 | `JEV_ROUTER_CONFIG` | Config lookup | The config file, after `--config` |
 | `XDG_CONFIG_HOME` | Config lookup | Base directory for `jev-router/config.json` |
+| `XDG_STATE_HOME` | The state file, `launch` | Base directory for the default `stateFile` and for the log that `launch` writes (`~/.local/state` when unset) |
 | `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | `serve` | Listen address, overriding `host` and `port` |
+| `JEV_ROUTER_LOG_FILE` | `serve`, `report`, `ui` | The log file, after `--log-file` and before `logFile` |
 | `JEV_ROUTER_TOKEN` | The router, `launch`, `env` | Shared secret sent as `x-jev-router-token`, overriding `token`. Required for a non-loopback address |
+| `JEV_ROUTER_UI` | `serve` | The live view's address, like `--ui`: a port or `host:port` |
+| `JEV_ROUTER_UI_TOKEN` | `serve`, `ui` | The live view's token, like `--ui-token`. Unlike the flag, it doesn't show in `ps` |
 | `JEV_ROUTER_TIER` | The router | Pins every main-loop request of every session to this tier. An unknown tier name is logged and ignored |
 | `JEV_ROUTER_CLAUDE_BIN`, `JEV_ROUTER_CODEX_BIN` | `launch` | The `claude` and `codex` binaries to run |
+| `CODEX_HOME` | `launch codex`, `env codex` | Where the Codex profile goes: `$CODEX_HOME/jev.config.toml`, else `~/.codex/jev.config.toml` |
 | `JEV_BASE_URL`, `JEV_API_KEY`, `JEV_MODEL` | The Jev client | Add a channel in front of `jev.channels`. Both `JEV_BASE_URL` and `JEV_API_KEY` must be set |
 
 The key variables are the `keyEnv` names in the shipped configs. A config can name any variable instead.
+
+`jev-router doctor` also reads Claude Code's `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when that's
+set), without changing it, to check the `env` block that points Claude Code at the router.
+
+### The env file
+
+Any of these variables can come from an env file instead of the shell: a file of `KEY=value` lines, such as
+`~/.config/jev-router/env` with mode 0600. `serve`, `launch`, `env` and `doctor` load the file named by
+`--env-file <file>`, else by `JEV_ROUTER_ENV_FILE`, with Node's own loader, before they read anything else from the
+environment.
+
+- A variable that's already set wins over the file.
+- A leading `~` in the path is your home directory, for services that start without a shell.
+- A file that other users can read or change gets a warning with the `chmod 600` that fixes it. `doctor` also
+  checks the mode of `~/.config/jev-router/env` when you don't pass it, and suggests passing it.
+- Variables that Node reads only when it starts, such as `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY` and
+  `NODE_EXTRA_CA_CERTS`, have no effect from the file, and get a warning.
+- Node checks an `--env-file` path itself. A missing file ends the command with `node: <path>: not found` and exit
+  status 9, before jev-router runs. A file named only by `JEV_ROUTER_ENV_FILE` that can't be read stops the command
+  with jev-router's own error.
+- The file is read once. `SIGHUP` reloads the config, not the env file, so restart the router after a key change.
+- `launch` keeps the file's variables out of the agent's environment.
 
 ## Validation messages
 
@@ -236,14 +287,28 @@ Invalid router config:
 | Check | Message |
 | --- | --- |
 | `port` | `port must be an integer between 1 and 65535` |
+| `host` | `host must be an address or a host name` |
 | `allowedHosts` | `allowedHosts must be an array of host[:port] strings` |
+| `allowedOrigins` | `allowedOrigins must be an array of origins` |
+| `maxBodyBytes` | `maxBodyBytes must be a whole number of bytes above 0` |
+| `maxSessions` | `maxSessions must be a positive integer` |
+| `stateFile`, `logFile` | `stateFile must be a file path or null`, `logFile must be a file path or null` |
+| `logMaxBytes` | `logMaxBytes must be a whole number of bytes, or 0 to never rotate` |
+| `sideCallModel` | `sideCallModel must be a regular expression, such as "haiku"` |
+| `pinOnModelChange` | `pinOnModelChange must be true or false` |
 | `tiers` | `tiers must list tier names, cheapest first` |
 | `defaultTier` | `defaultTier "…" is not one of tiers` |
 | `policy.mode` | `policy.mode must be "ratchet" or "sticky"` |
 | `policy.accept` | `policy.accept names unknown tier "…"`, `policy.accept.<tier> must be a probability` |
 | Guard thresholds | `policy.sensitiveOverride must be a probability`, `policy.claimGuard must be a probability` |
-| `jev.channels` | `jev.channels must be an array`, `jev.channels[i].name is required`, `….baseUrl must be an http(s) URL`, `….model is required`, `….keyEnv is required` |
+| Other policy keys | `policy.maxProvisional must be a whole number, 0 or more`, `policy.idleResetMinutes must be a number of minutes, 0 or more`, `policy.failClosed must be true or false` |
+| `jev` settings | `jev.deadlineMs must be a whole number of milliseconds above 0`, `jev.requestChars must be a whole number above 0`, `jev.stripCode must be true or false`, `jev.guards must be true or false` |
+| `jev.channels` | `jev.channels must be an array`, `jev.channels[i] must be an object`, `jev.channels[i].name is required`, `….baseUrl must be an http(s) URL`, `….model is required`, `….keyEnv is required`, `….timeoutMs must be a whole number of milliseconds above 0` |
 | `jev.question`, `jev.options` | `jev.question is required`, `jev.options needs at least two options`, `jev.options.<name>.tier must be one of tiers` |
-| `surfaces` | `surfaces is required`, `surfaces.<surface> has no target for tier "…"`, `… needs a trusted target marked "trusted": true` |
+| `surfaces` | `surfaces is required`, `surfaces.<surface> has no target for tier "…"`, `surfaces.<surface> routes some tiers to untrusted upstreams, so it needs a trusted target marked "trusted": true` |
 | Targets | `….url must be an http(s) URL`, `….model is required`, `….auth must be "x-api-key" or "bearer"`, `… needs keyEnv or clientAuth`, `….omit must be a list of field paths`, `….maxOutputTokens must be a positive whole number`, `….foldSystemMessages must be true or false`, `….omitBetas must be a list of beta names` |
 | `modelPins` | `modelPins.<family> must be one of tiers` |
+
+Several of these checks catch values that would otherwise break routing much later. A `sideCallModel` of `"("` would
+fail each main Codex request with a 500, and `"failClosed": "false"` would turn fail-closed on, because a non-empty
+string counts as true.
