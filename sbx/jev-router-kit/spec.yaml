@@ -1,15 +1,24 @@
-# Docker Sandboxes mixin kit for the Jev router lab.
+# Docker Sandboxes mixin kit for jev-router. It's optional: jev-router runs on any Mac or Linux machine
+# with Node.js 22 or newer. The kit only adds what a sandbox needs.
 # It declares the router's upstream credentials as proxy-managed services, so the real keys stay
 # in the host keychain. Inside the sandbox each variable holds the sentinel "proxy-managed", and the
 # sandbox proxy writes the real Authorization header on the way out.
+#
+# Use it without a clone. The release workflow publishes it to GHCR, or sbx reads this directory from git:
+#   sbx create --kit ghcr.io/dirien/jev-router-kit:latest claude <workspace>
+#   sbx create --kit "git+https://github.com/dirien/jev-router.git#ref=<tag>&dir=sbx/jev-router-kit" claude <workspace>
+# sbx allows only docker.io/ kits by default, so allow the source once:
+#   sbx settings set kit.allowedSources '["docker.io/","ghcr.io/dirien/","github.com/dirien/"]'
+#
+# There's no `version` here: the release workflow adds the release's version to the kit it publishes.
 # Schema: https://docs.docker.com/ai/sandboxes/customize/kit-reference/
-# Status: the schema and fields are documented, but this exact kit hasn't been run yet. Validate it with:
-#   sbx kit validate <path-to-this-directory>
+# Status: `sbx kit validate` passes with sbx 0.45.1, but the kit hasn't run in a sandbox end to end yet.
 schemaVersion: "2"
 kind: mixin
 name: jev-router
-version: "0.1.0"
 description: Upstream credentials and egress for jev-router
+sourceURL: https://github.com/dirien/jev-router
+licenses: [Apache-2.0]
 requires:
   agent: claude
 permissions:
@@ -19,7 +28,9 @@ permissions:
       - api.typesafe.ai        # Jev direct from TypeSafe
       - ollama.com             # Ollama Cloud: /v1/messages for Claude Code, /v1/responses for Codex
       - api.openai.com         # OpenAI: Codex frontier and trusted tiers
-      - registry.npmjs.org     # npm install -g @openai/codex
+      - registry.npmjs.org     # npm install -g @openai/codex, and @dirien/jev-router once it's on npm
+      - github.com             # npm install -g github:dirien/jev-router#semver:^1
+      - codeload.github.com    # the tarball npm fetches for that install once the repository is public
 credentials:
   - service: openrouter
     apiKey:
