@@ -47,10 +47,14 @@ npm install -g github:dirien/jev-router#semver:^1
 `#semver:^1` picks the newest 1.x release. To pin a version, name its tag instead:
 `npm install -g github:dirien/jev-router#v1.4.0`. To update, run the install command again.
 
+Up to 1.4.0 the package was called `@dirien/jev-router`. If you installed one of those versions, run
+`npm uninstall -g @dirien/jev-router` before you install a newer one: npm won't replace a command that another
+package owns.
+
 While the repository is private, npm needs git access to it: run `gh auth setup-git` once for HTTPS, or use an SSH
 key that GitHub knows.
 
-jev-router isn't on the npm registry yet. Once it's published, `npm install -g @dirien/jev-router` will work too.
+jev-router isn't on the npm registry yet. Once it's published, `npm install -g @ediri/jev-router` will work too.
 Don't run `npm install -g jev-router`: that package is an unrelated project,
 [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router).
 
@@ -67,7 +71,7 @@ What else you need:
 | Codex CLI | 0.134.0 or newer, for profile files (request shapes taken from 0.156.1) |
 
 To remove jev-router, first remove the service if you installed one (see [Run it as a service](#run-it-as-a-service)),
-then run `npm uninstall -g @dirien/jev-router`. Your config, keys and session state stay in `~/.config/jev-router`
+then run `npm uninstall -g @ediri/jev-router`. Your config, keys and session state stay in `~/.config/jev-router`
 and `~/.local/state/jev-router` until you delete them.
 
 ## Quick start
@@ -198,7 +202,7 @@ On macOS, install a LaunchAgent:
 command -v jev-router node                   # both must print a path
 mkdir -p ~/.config/jev-router ~/Library/Logs/jev-router ~/Library/LaunchAgents
 touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
-plist="$(npm root -g)/@dirien/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
+plist="$(npm root -g)/@ediri/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
 path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/bin:/bin"
 sed -e "s|@HOME@|$HOME|g" -e "s|@PATH@|$path|g" "$plist" > ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
 plutil -lint ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
@@ -211,7 +215,7 @@ On Linux, install a systemd user unit:
 command -v jev-router node                     # both must print a path
 mkdir -p ~/.config/jev-router ~/.config/systemd/user
 touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
-unit="$(npm root -g)/@dirien/jev-router/examples/service/systemd/jev-router.service"
+unit="$(npm root -g)/@ediri/jev-router/examples/service/systemd/jev-router.service"
 path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
 sed "s|@PATH@|$path|" "$unit" > ~/.config/systemd/user/jev-router.service
 systemctl --user daemon-reload

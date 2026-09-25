@@ -53,11 +53,11 @@ and that `SIGTERM` stops the router cleanly. CI runs it on Node.js 22 and 24.
 | --- | --- |
 | The newest 1.x from GitHub | `npm install -g github:dirien/jev-router#semver:^1` |
 | One version from GitHub | `npm install -g github:dirien/jev-router#vX.Y.Z` |
-| The release tarball | `npm install -g ./dirien-jev-router-X.Y.Z.tgz`, after `gh release download vX.Y.Z -R dirien/jev-router` and `sha256sum -c SHA256SUMS` |
-| npm, once publishing is on | `npm install -g @dirien/jev-router` |
+| The release tarball | `npm install -g ./ediri-jev-router-X.Y.Z.tgz`, after `gh release download vX.Y.Z -R dirien/jev-router` and `sha256sum -c SHA256SUMS` |
+| npm, once publishing is on | `npm install -g @ediri/jev-router` |
 | The Docker Sandboxes kit | `sbx create --kit ghcr.io/dirien/jev-router-kit:X.Y.Z claude <workspace>` |
 
-Installing again with the same command updates jev-router; `npm uninstall -g @dirien/jev-router` removes it. While
+Installing again with the same command updates jev-router; `npm uninstall -g @ediri/jev-router` removes it. While
 the repository is private, the GitHub installs need access to it: npm tries `https://github.com` first, which works
 with a git credential helper such as `gh auth setup-git`, then falls back to SSH.
 
@@ -87,13 +87,13 @@ The npm job stays off until you turn it on, and the repository has to be public 
 provenance for a private repository.
 
 1. Publish the first version by hand. npm trusted publishing can't create a package, and the name
-   `@dirien/jev-router` needs an npm account that owns the `@dirien` scope. Publish the tarball from the GitHub
+   `@ediri/jev-router` needs an npm account that owns the `@ediri` scope. Publish the tarball from the GitHub
    Release, so npm gets the same file:
 
    ```bash
    gh release download vX.Y.Z -R dirien/jev-router -p '*.tgz' -p SHA256SUMS
    sha256sum -c SHA256SUMS            # shasum -a 256 -c SHA256SUMS on macOS
-   npm publish ./dirien-jev-router-X.Y.Z.tgz --access public --provenance=false
+   npm publish ./ediri-jev-router-X.Y.Z.tgz --access public --provenance=false
    ```
 
    `--provenance=false` overrides `publishConfig.provenance`, which works only in CI.
@@ -102,7 +102,7 @@ provenance for a private repository.
    or newer:
 
    ```bash
-   npm trust github @dirien/jev-router --repo dirien/jev-router --file release.yml --allow-publish
+   npm trust github @ediri/jev-router --repo dirien/jev-router --file release.yml --allow-publish
    ```
 
 1. Turn the job on: `gh variable set NPM_PUBLISH --body true -R dirien/jev-router`.

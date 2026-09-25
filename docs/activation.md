@@ -106,7 +106,7 @@ cap on output tokens that `env claude` doesn't set, and commented-out lines for 
 the package:
 
 ```bash
-source "$(npm root -g)/@dirien/jev-router/examples/claude-code.env"
+source "$(npm root -g)/@ediri/jev-router/examples/claude-code.env"
 ```
 
 ### Persistent settings.json
@@ -172,7 +172,7 @@ The profile is [`examples/codex/jev.config.toml`](../examples/codex/jev.config.t
 Both files ship with the package. This does the first two steps:
 
 ```bash
-examples="$(npm root -g)/@dirien/jev-router/examples/codex"
+examples="$(npm root -g)/@ediri/jev-router/examples/codex"
 mkdir -p ~/.codex
 sed "s#/absolute/path/to/jev-models.json#$examples/jev-models.json#" "$examples/jev.config.toml" \
   > ~/.codex/jev.config.toml
@@ -205,7 +205,7 @@ A service keeps one router running for all your clients, independent of any term
 Session state persists in `~/.local/state/jev-router/sessions.jsonl`, so a restart doesn't move live sessions to
 another model.
 
-The package ships a template for each system, under `$(npm root -g)/@dirien/jev-router/examples/service/`. Both run
+The package ships a template for each system, under `$(npm root -g)/@ediri/jev-router/examples/service/`. Both run
 `jev-router serve --ui 4100 --env-file ~/.config/jev-router/env --log-file ~/.local/state/jev-router/router.log`:
 the router on `http://127.0.0.1:4000`, the live view on `http://127.0.0.1:4100`, and the keys from your env file. The
 commands below come from each template's header.
@@ -235,7 +235,7 @@ command -v jev-router node                   # both must print a path
 mkdir -p ~/.config/jev-router ~/Library/Logs/jev-router ~/Library/LaunchAgents
 touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
 # Put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, ...
-plist="$(npm root -g)/@dirien/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
+plist="$(npm root -g)/@ediri/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
 path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/bin:/bin"
 sed -e "s|@HOME@|$HOME|g" -e "s|@PATH@|$path|g" "$plist" > ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
 plutil -lint ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
@@ -274,7 +274,7 @@ command -v jev-router node                     # both must print a path
 mkdir -p ~/.config/jev-router ~/.config/systemd/user
 touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
 # Put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, OLLAMA_API_KEY, ...
-unit="$(npm root -g)/@dirien/jev-router/examples/service/systemd/jev-router.service"
+unit="$(npm root -g)/@ediri/jev-router/examples/service/systemd/jev-router.service"
 path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
 sed "s|@PATH@|$path|" "$unit" > ~/.config/systemd/user/jev-router.service
 systemctl --user daemon-reload
@@ -401,5 +401,5 @@ For Codex, run `jev-router launch codex` and try two sessions:
 - **launchd:** run the uninstall commands in [macOS launchd](#macos-launchd).
 - **systemd:** run the uninstall commands in [Linux systemd user unit](#linux-systemd-user-unit).
 - **Docker Sandboxes:** see the teardown in [sandbox.md](sandbox.md#teardown).
-- **Everything:** after the above, `npm uninstall -g @dirien/jev-router`, then
+- **Everything:** after the above, `npm uninstall -g @ediri/jev-router`, then
   `rm -rf ~/.local/state/jev-router ~/.config/jev-router`, which also deletes your env file.

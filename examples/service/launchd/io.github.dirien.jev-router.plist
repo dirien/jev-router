@@ -19,7 +19,7 @@
     mkdir -p ~/.config/jev-router ~/Library/Logs/jev-router ~/Library/LaunchAgents
     touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
     (put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, ...)
-    plist="$(npm root -g)/@dirien/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
+    plist="$(npm root -g)/@ediri/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
     path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/bin:/bin"
     sed -e "s|@HOME@|$HOME|g" -e "s|@PATH@|$path|g" "$plist" > ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
     plutil -lint ~/Library/LaunchAgents/io.github.dirien.jev-router.plist

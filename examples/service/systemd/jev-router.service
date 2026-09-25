@@ -12,7 +12,7 @@
 #   mkdir -p ~/.config/jev-router ~/.config/systemd/user
 #   touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
 #   # Put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, OLLAMA_API_KEY, ...
-#   unit="$(npm root -g)/@dirien/jev-router/examples/service/systemd/jev-router.service"
+#   unit="$(npm root -g)/@ediri/jev-router/examples/service/systemd/jev-router.service"
 #   path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
 #   sed "s|@PATH@|$path|" "$unit" > ~/.config/systemd/user/jev-router.service
 #   systemctl --user daemon-reload

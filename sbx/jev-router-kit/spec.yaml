@@ -28,7 +28,7 @@ permissions:
       - api.typesafe.ai        # Jev direct from TypeSafe
       - ollama.com             # Ollama Cloud: /v1/messages for Claude Code, /v1/responses for Codex
       - api.openai.com         # OpenAI: Codex frontier and trusted tiers
-      - registry.npmjs.org     # npm install -g @openai/codex, and @dirien/jev-router once it's on npm
+      - registry.npmjs.org     # npm install -g @openai/codex, and @ediri/jev-router once it's on npm
       - github.com             # npm install -g github:dirien/jev-router#semver:^1
       - codeload.github.com    # the tarball npm fetches for that install once the repository is public
 credentials:

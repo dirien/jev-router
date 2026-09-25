@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The npm package is now `@ediri/jev-router`, the npm account that holds the author's other packages. Nothing was
+  published under the old name, and GitHub installs work as before. If you installed 1.4.0, the old package
+  `@dirien/jev-router` owns the `jev-router` command: run `npm uninstall -g @dirien/jev-router` before you install
+  1.5.0, or npm stops with `EEXIST` on the command's link.
+
 ## [1.4.0] - 2026-09-25
 
 jev-router now installs and runs on any Mac or Linux machine with Node.js 22 or newer, without a clone of the
