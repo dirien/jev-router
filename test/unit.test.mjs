@@ -2,7 +2,7 @@
 // the Jev client (against a fake fetch), config validation, session state, usage accounting and the report.
 
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { loadConfig, validateConfig } from '../src/config.mjs';
@@ -859,4 +859,26 @@ test('Jev client: a long error body is cut to 200 characters, and an odd one doe
   assert.ok(!answer.ok);
   assert.equal(client.health().one.lastError, `HTTP 422 ${'y'.repeat(200)}`);
   assert.equal(client.health().two.lastError, 'HTTP 500 42');
+});
+
+test('sessions: a rewrite that fails, as on a full or read-only disk, is reported and changes nothing', {
+  skip: process.getuid?.() === 0 && 'root ignores file modes',
+}, () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-sessions-`);
+  const file = `${dir}/sessions.jsonl`;
+  /** @type {unknown[]} */
+  const errors = [];
+  const store = new SessionStore({ file, onError: (err) => errors.push(err) });
+  store.set('kept', entry('frontier'));
+  chmodSync(dir, 0o500); // the file can still be appended to, but no new file can be made next to it
+  try {
+    for (let i = 0; i < 1000; i += 1) store.set('busy', entry('fast'));
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  assert.equal(errors.length, 1, 'the failed rewrite is reported once');
+  assert.match(String(/** @type {Error} */ (errors[0]).message), /EACCES/);
+  assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 1001, 'the file is left as it was, every line in it');
+  assert.equal(store.get('kept')?.tier, 'frontier', 'and the store goes on');
+  assert.equal(new SessionStore({ file }).get('busy')?.tier, 'fast');
 });
