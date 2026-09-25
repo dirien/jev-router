@@ -3,14 +3,23 @@
 
 import assert from 'node:assert/strict';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
+import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
+import { parseEnv } from 'node:util';
+import { changeSettingsEnv, settingsBlock } from '../src/claude.mjs';
 import { loadConfig, validateConfig } from '../src/config.mjs';
+import { quoteEnvValue, setEnvValues } from '../src/envfile.mjs';
+import { commandVersion, installSpec, LEGACY_PACKAGE, npxDirOf, origin, PACKAGE } from '../src/install.mjs';
 import { applyPolicy, buildQuestions, buildState, hardenState, JevClient, tierProbabilities } from '../src/jev.mjs';
 import { appendLogLine } from '../src/logfile.mjs';
 import { clip, describeCode, harness, header, humanTurns, recentTools, stripWrappers, tierTag } from '../src/messages.mjs';
-import { report, requestKind, sessionKey } from '../src/router.mjs';
+import { portProblem } from '../src/net.mjs';
+import { PromptAbort, Prompter, typeKeys } from '../src/prompt.mjs';
+import { report, requestKind, sessionKey, VERSION } from '../src/router.mjs';
 import { findSecrets, mayContainSecret, redactBody, scrub } from '../src/secrets.mjs';
+import { renderService } from '../src/service.mjs';
 import { hashKey, SessionStore } from '../src/sessions.mjs';
 import { costOf, UsageTap } from '../src/usage.mjs';
 import { claudeCodeBody, claudeCodeToolTurn, codexBody, jevOptionsAnswer } from './helpers.mjs';
@@ -881,4 +890,290 @@ test('sessions: a rewrite that fails, as on a full or read-only disk, is reporte
   assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 1001, 'the file is left as it was, every line in it');
   assert.equal(store.get('kept')?.tier, 'frontier', 'and the store goes on');
   assert.equal(new SessionStore({ file }).get('busy')?.tier, 'fast');
+});
+
+// Setup's building blocks: the env file writer, typed secrets, questions, install specs, the
+// service files and Claude Code's settings.
+
+test('env file: a value Node would misread goes in quotes, and every value reads back the same', () => {
+  const values = [
+    'plain-key_123',
+    'a#b',
+    ' lead',
+    'trail ',
+    'in side',
+    "'quoted'",
+    '"quoted"',
+    '`quoted`',
+    "it's",
+    'say "hi"',
+    'a\'b"c',
+    '$HOME',
+    fake('$', '{HOME}'),
+    'a=b',
+    'back\\nslash',
+    "x'\\ny",
+    'two\nlines',
+    'tab\tinside',
+    '',
+    'ümlaut',
+  ];
+  for (const value of values) {
+    const line = `KEY=${quoteEnvValue(value)}\n`;
+    assert.equal(parseEnv(line).KEY, value, `${JSON.stringify(value)} as ${JSON.stringify(line)}`);
+  }
+  assert.equal(quoteEnvValue('plain-key_123'), 'plain-key_123', 'a plain key stays bare');
+  assert.equal(quoteEnvValue('a#b'), "'a#b'");
+  assert.equal(quoteEnvValue("it's #1"), '"it\'s #1"');
+  assert.throws(() => quoteEnvValue('a\'b"c`d#'), /all three kinds of quotes/);
+  assert.throws(() => quoteEnvValue('a\rb'), /carriage return/);
+});
+
+test('env file: setting keys replaces their lines in place and keeps every other line', () => {
+  const text = [
+    '# my keys',
+    'TYPESAFE_API_KEY=old',
+    '',
+    'export OLLAMA_API_KEY="first',
+    'line"',
+    'OTHER=1 # a comment',
+    'TYPESAFE_API_KEY=later',
+    'broken line without equals',
+    "QUOTE='never closed",
+    '',
+  ].join('\n');
+  const out = setEnvValues(text, { TYPESAFE_API_KEY: 'new', OLLAMA_API_KEY: 'o#k', NEW_KEY: 'n' });
+  assert.equal(
+    out,
+    [
+      '# my keys',
+      'TYPESAFE_API_KEY=new',
+      '',
+      "export OLLAMA_API_KEY='o#k'",
+      'OTHER=1 # a comment',
+      'broken line without equals',
+      "QUOTE='never closed",
+      'NEW_KEY=n',
+      '',
+    ].join('\n'),
+  );
+  assert.deepEqual(parseEnv(out), { TYPESAFE_API_KEY: 'new', OLLAMA_API_KEY: 'o#k', OTHER: '1', QUOTE: "'never closed", NEW_KEY: 'n' });
+  assert.equal(setEnvValues('', { A: '1' }), 'A=1\n');
+  assert.equal(setEnvValues('A=1', { B: '2' }), 'A=1\nB=2\n', 'a last line without a line break keeps its line');
+  assert.equal(setEnvValues('A=1\r\nB=2\r\n', { A: '3' }), 'A=3\r\nB=2\r\n', 'Windows line breaks stay');
+});
+
+test('typed secrets: Enter, Backspace, Ctrl-U, Ctrl-C, Ctrl-D, pastes and escape sequences', () => {
+  assert.deepEqual(typeKeys('', 'abc\r'), { value: 'abc', rest: '', done: true });
+  assert.deepEqual(typeKeys('', 'ab\u007fc\bd\n'), { value: 'ad', rest: '', done: true }, 'both backspaces');
+  assert.deepEqual(typeKeys('', 'pasted-key\r\nnext answer\n'), { value: 'pasted-key', rest: 'next answer\n', done: true });
+  assert.deepEqual(typeKeys('ab', 'c'), { value: 'abc', rest: '', done: false }, 'a key at a time');
+  assert.deepEqual(typeKeys('secret', '\u0015new\r'), { value: 'new', rest: '', done: true }, 'Ctrl-U clears');
+  assert.deepEqual(typeKeys('x', '\u0003'), { value: '', rest: '', done: true, abort: 130 });
+  assert.deepEqual(typeKeys('', '\u0004'), { value: '', rest: '', done: true, abort: 1 });
+  assert.deepEqual(typeKeys('key', '\u0004more'), { value: 'key', rest: 'more', done: true }, 'Ctrl-D ends a line that has text');
+  assert.deepEqual(typeKeys('', '\u001b[A\u001b[200~k\u001b[201~ey\u001bOP\u001b\u0001\t\r'), { value: 'key', rest: '', done: true });
+  assert.deepEqual(typeKeys('é', '\u007f'), { value: '', rest: '', done: false }, 'Backspace removes a whole character');
+});
+
+/**
+ * A stand-in for stdin: a pipe, or a terminal whose raw mode is recorded.
+ * @param {boolean} [terminal]
+ */
+function fakeInput(terminal = false) {
+  const input = new PassThrough();
+  /** @type {boolean[]} */
+  const raw = [];
+  Object.assign(input, { isTTY: terminal, setRawMode: (/** @type {boolean} */ on) => raw.push(on) });
+  return { input, raw, stdin: /** @type {NodeJS.ReadStream} */ (/** @type {unknown} */ (input)) };
+}
+
+/** Collects what a Prompter prints. */
+function fakeOutput() {
+  const output = new PassThrough();
+  const text = { value: '' };
+  output.on('data', (chunk) => {
+    text.value += chunk;
+  });
+  return { output, text };
+}
+
+test('questions: one reader serves every question, so piped answers that arrive together all count', async () => {
+  const { input, stdin } = fakeInput();
+  const { output, text } = fakeOutput();
+  const prompter = new Prompter(stdin, output);
+  input.write('2\nsecret-value\n\nmaybe\nN\n');
+  assert.equal(await prompter.ask('Choose: '), '2');
+  assert.equal(await prompter.secret('Key: '), 'secret-value');
+  assert.equal(await prompter.confirm('Go?', true), true, 'Enter takes the default');
+  assert.equal(await prompter.confirm('Again?', true), false, 'after a wrong answer it asks again');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(text.value, 'Choose: 2\nKey: \nGo? [Y/n] \nAgain? [Y/n] maybe\nPlease answer y or n.\nAgain? [Y/n] N\n');
+  assert.ok(!text.value.includes('secret-value'), 'a secret is never printed');
+  input.end('last answer without a line break');
+  assert.equal(await prompter.ask('More? '), 'last answer without a line break');
+  await assert.rejects(prompter.ask('And? '), (/** @type {PromptAbort} */ err) => err instanceof PromptAbort && err.exitCode === 1);
+  prompter.close();
+});
+
+test('questions: Ctrl-C outside raw mode interrupts the question being asked', async () => {
+  const { stdin } = fakeInput();
+  const prompter = new Prompter(stdin, fakeOutput().output);
+  const waiting = prompter.ask('Choose: ');
+  prompter.interrupt();
+  await assert.rejects(waiting, (/** @type {PromptAbort} */ err) => err.exitCode === 130);
+  await assert.rejects(prompter.confirm('Again?', true), (/** @type {PromptAbort} */ err) => err.exitCode === 130);
+  prompter.close();
+});
+
+test('questions: on a terminal a secret is typed in raw mode without an echo, and what follows Enter is kept', async () => {
+  const { input, raw, stdin } = fakeInput(true);
+  const { output, text } = fakeOutput();
+  const prompter = new Prompter(stdin, output);
+  assert.equal(prompter.terminal, true);
+  const typed = prompter.secret('Key: ');
+  input.write('ab');
+  input.write('\u007fc\rleft over\n');
+  assert.equal(await typed, 'ac');
+  assert.deepEqual(raw, [true, false], 'raw mode is on only while the secret is typed');
+  assert.equal(await prompter.ask('Next: '), 'left over');
+  const interrupted = prompter.secret('Key: ');
+  input.write('x\u0003');
+  await assert.rejects(interrupted, (/** @type {PromptAbort} */ err) => err.exitCode === 130);
+  const ended = prompter.secret('Key: ');
+  input.write('\u0004');
+  await assert.rejects(ended, (/** @type {PromptAbort} */ err) => err.exitCode === 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(text.value, 'Key: \nNext: Key: Key: ', 'no echo of what was typed; a terminal echoes answers itself');
+  assert.deepEqual(raw, [true, false, true, false, true, false]);
+  prompter.close();
+});
+
+test('install: npx runs are recognized by where the package really is, and npm gets the spec npx recorded', () => {
+  const root = mkdtempSync(`${tmpdir()}/jev-npx-`);
+  const npx = `${root}/cache/_npx/1a2b3c`;
+  const bin = `${npx}/node_modules/@ediri/jev-router/bin`;
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(`${bin}/jev-router.mjs`, '');
+  mkdirSync(`${npx}/node_modules/.bin`);
+  symlinkSync(`${bin}/jev-router.mjs`, `${npx}/node_modules/.bin/jev-router`);
+  assert.equal(npxDirOf(`${npx}/node_modules/.bin/jev-router`), npx);
+  assert.equal(npxDirOf(`${root}/elsewhere/jev-router`), undefined);
+
+  assert.deepEqual(installSpec(undefined, npx, '1.5.0'), { spec: '@ediri/jev-router@1.5.0', registry: true }, "when it can't tell");
+  assert.deepEqual(installSpec('^1.5.0', npx, '1.5.0'), { spec: '@ediri/jev-router@1.5.0', registry: true });
+  assert.deepEqual(installSpec('latest', npx, '1.5.0'), { spec: '@ediri/jev-router@1.5.0', registry: true });
+  for (const git of [
+    'github:dirien/jev-router',
+    'github:dirien/jev-router#semver:^1',
+    'git+https://github.com/dirien/jev-router.git',
+    'dirien/jev-router#v1.5.0',
+  ])
+    assert.deepEqual(installSpec(git, npx, '1.5.0'), { spec: git, registry: false }, git);
+  assert.deepEqual(installSpec('file:../../../ediri-jev-router-1.5.0.tgz', npx, '1.5.0'), {
+    spec: `${root}/ediri-jev-router-1.5.0.tgz`,
+    registry: false,
+  });
+
+  writeFileSync(`${npx}/package.json`, JSON.stringify({ dependencies: { '@ediri/jev-router': 'github:dirien/jev-router#semver:^1' } }));
+  assert.deepEqual(origin('1.5.0', `${bin}/jev-router.mjs`), {
+    npx,
+    spec: 'github:dirien/jev-router#semver:^1',
+    npxCommand: "npx 'github:dirien/jev-router#semver:^1'",
+  });
+  writeFileSync(`${npx}/package.json`, JSON.stringify({ dependencies: { '@ediri/jev-router': '*' } }));
+  assert.deepEqual(origin('1.5.0', `${bin}/jev-router.mjs`), { npx, spec: '@ediri/jev-router@1.5.0', npxCommand: 'npx @ediri/jev-router' });
+  writeFileSync(`${npx}/package.json`, '{ not json');
+  assert.equal(origin('1.5.0', `${bin}/jev-router.mjs`).spec, '@ediri/jev-router@1.5.0');
+  assert.deepEqual(origin('1.5.0', `${root}/clone/bin/jev-router.mjs`), { spec: '@ediri/jev-router@1.5.0' }, 'not npx');
+});
+
+test('the package name and version in the code match package.json, and a jev-router command says its version', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(PACKAGE, pkg.name);
+  assert.equal(VERSION, pkg.version);
+  assert.notEqual(LEGACY_PACKAGE, pkg.name);
+  const bin = new URL('../bin/jev-router.mjs', import.meta.url).pathname;
+  assert.equal(commandVersion(bin, process.env), pkg.version);
+  assert.equal(commandVersion(`${tmpdir()}/no-such-jev-router`, process.env), '');
+});
+
+/**
+ * A template as the manual route installs it: the sed commands in its header fill in the home and
+ * PATH placeholders, and systemd expands %h itself. The header comment differs from setup's, so it goes.
+ * @param {string} text
+ * @param {string} home
+ * @param {string} path
+ */
+const manually = (text, home, path) =>
+  text
+    .replaceAll('@HOME@', home)
+    .replaceAll('@PATH@', path)
+    .replaceAll('%h', home)
+    .replace(/<!--[\s\S]*?-->\n/, '')
+    .replace(/^(#.*\n)+\n?/, '');
+
+test('service: setup installs the same launchd agent and systemd unit as the manual route in examples/service', () => {
+  const home = homedir();
+  const path = '/opt/node/bin:/usr/bin:/bin';
+  const args = [
+    '/usr/bin/env',
+    'jev-router',
+    'serve',
+    '--ui',
+    '4100',
+    '--config',
+    `${home}/.config/jev-router/config.json`,
+    '--env-file',
+    `${home}/.config/jev-router/env`,
+    '--log-file',
+    `${home}/.local/state/jev-router/router.log`,
+  ];
+  for (const [manager, template] of /** @type {const} */ ([
+    ['launchd', '../examples/service/launchd/io.github.dirien.jev-router.plist'],
+    ['systemd', '../examples/service/systemd/jev-router.service'],
+  ])) {
+    const rendered = renderService(manager, { args, path });
+    assert.match(rendered, /Written by `jev-router setup`/);
+    assert.equal(manually(rendered, home, path), manually(readFileSync(new URL(template, import.meta.url), 'utf8'), home, path), manager);
+  }
+  const odd = renderService('systemd', {
+    args: ['/usr/bin/env', 'jev-router', 'serve', '--env-file', '/a b/"x"/100%/$y', '--ui', '0'],
+    path: '/p q/%',
+  });
+  assert.match(odd, /^ExecStart=\/usr\/bin\/env jev-router serve --env-file "\/a b\/\\"x\\"\/100%%\/\$\$y" --ui 0$/m);
+  assert.match(odd, /^Environment="PATH=\/p q\/%%"$/m);
+  const xml = renderService('launchd', { args: ['/usr/bin/env', 'jev-router', 'serve', '--env-file', '/a&b/<c>'], path: '/p&q' });
+  assert.match(xml, /<string>\/a&amp;b\/&lt;c&gt;<\/string>/);
+  assert.match(xml, /<string>\/p&amp;q<\/string>/);
+});
+
+test("Claude Code's settings: variables keep their order, new ones go at the end, and an emptied block goes", () => {
+  /** @type {Record<string, unknown>} */
+  const data = { model: 'opus', env: { B: 'b', ANTHROPIC_BASE_URL: 'old', A: 'a' }, permissions: { allow: [] } };
+  const changes = changeSettingsEnv(data, { ANTHROPIC_BASE_URL: 'new', C: 'c', A: 'a', D: undefined });
+  assert.deepEqual(changes, [
+    { name: 'ANTHROPIC_BASE_URL', before: 'old', after: 'new' },
+    { name: 'C', before: undefined, after: 'c' },
+  ]);
+  assert.equal(
+    JSON.stringify(data),
+    '{"model":"opus","env":{"B":"b","ANTHROPIC_BASE_URL":"new","A":"a","C":"c"},"permissions":{"allow":[]}}',
+  );
+  /** @type {Record<string, unknown>} */
+  const fresh = {};
+  changeSettingsEnv(fresh, { X: '1' });
+  assert.deepEqual(fresh, { env: { X: '1' } });
+  changeSettingsEnv(fresh, { X: undefined });
+  assert.deepEqual(fresh, {}, 'a block left empty goes too');
+  assert.deepEqual(settingsBlock({ env: { A: 'a', N: 1, O: null } }), { A: 'a' }, 'only strings');
+});
+
+test('ports: a port something holds is reported, a free one is not', async () => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(undefined)));
+  const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
+  assert.equal(await portProblem('127.0.0.1', port), 'EADDRINUSE');
+  await new Promise((resolve) => server.close(resolve));
+  assert.equal(await portProblem('127.0.0.1', port), undefined);
 });

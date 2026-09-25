@@ -1,248 +1,45 @@
-// CLI tests. Every command runs through the real bin/jev-router.mjs in a child process, with its own
-// HOME, XDG directories and CODEX_HOME, and a PATH that holds only node. test/fakes/fake-agent.mjs
-// stands in for claude and codex; Jev and the upstream providers are local mocks. No network, no real agent.
+// CLI tests. Every command runs through the real bin/jev-router.mjs in a child process (harness.mjs),
+// with its own HOME, XDG directories and CODEX_HOME, and a PATH that holds only node.
+// test/fakes/fake-agent.mjs stands in for claude and codex; Jev and the upstream providers are local
+// mocks. No network, no real agent. setup and uninstall have their own file, setup.test.mjs.
 
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { validateConfig } from '../src/config.mjs';
-import { createRouter, VERSION } from '../src/router.mjs';
-import { close, jevOptionsAnswer, json, listen, mockServer, sleep } from './helpers.mjs';
-
-const BIN = fileURLToPath(new URL('../bin/jev-router.mjs', import.meta.url));
-const FAKE_AGENT = fileURLToPath(new URL('./fakes/fake-agent.mjs', import.meta.url));
-const DEFAULT_CONFIG = fileURLToPath(new URL('../config/default.json', import.meta.url));
-const ANTHROPIC_ONLY_CONFIG = fileURLToPath(new URL('../config/anthropic-only.json', import.meta.url));
-const CODEX_MODELS = fileURLToPath(new URL('../examples/codex/jev-models.json', import.meta.url));
-const shipped = JSON.parse(readFileSync(DEFAULT_CONFIG, 'utf8'));
-
-// Fake credentials, assembled at runtime so secret scanners don't flag this file.
-/** @param {string[]} parts */
-const fake = (...parts) => parts.join('');
-const JEV_KEY = fake('ts-', 'test-jev-', 'DO-NOT-PRINT');
-const OLLAMA_KEY = fake('ol-', 'test-ollama-', 'DO-NOT-PRINT');
-const MOCK_KEY = fake('mk-', 'test-mock-', 'DO-NOT-PRINT');
-const CLIENT_KEY = fake('client-', 'login-', 'placeholder');
-const TOKEN = fake('router-', "to'k$en");
-
-/** @type {string[]} */
-const roots = [];
-/** @type {import('node:http').Server[]} */
-const servers = [];
-after(async () => {
-  await Promise.all(servers.map(close));
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
-});
-
-/**
- * A throwaway home for one test: HOME, XDG directories and CODEX_HOME, and a bin directory that
- * holds only node (the fake agent's shebang needs it), so no real claude or codex is ever on PATH.
- */
-function sandbox() {
-  const root = mkdtempSync(join(tmpdir(), 'jev-cli-'));
-  roots.push(root);
-  const dirs = {
-    home: join(root, 'home'),
-    config: join(root, 'config'),
-    state: join(root, 'state'),
-    codex: join(root, 'codex'),
-    bin: join(root, 'bin'),
-  };
-  for (const dir of Object.values(dirs)) mkdirSync(dir);
-  symlinkSync(process.execPath, join(dirs.bin, 'node'));
-  const report = join(root, 'agent.json');
-  /** @type {Record<string, string>} */
-  const env = {
-    PATH: dirs.bin,
-    HOME: dirs.home,
-    XDG_CONFIG_HOME: dirs.config,
-    XDG_STATE_HOME: dirs.state,
-    CODEX_HOME: dirs.codex,
-    FAKE_AGENT_REPORT: report,
-  };
-  // --experimental-test-coverage collects child processes through NODE_V8_COVERAGE.
-  if (process.env.NODE_V8_COVERAGE) env.NODE_V8_COVERAGE = process.env.NODE_V8_COVERAGE;
-  return { root, ...dirs, env, report, agent: () => JSON.parse(readFileSync(report, 'utf8')) };
-}
-
-/**
- * @typedef {{ code: number | null, signal: string | null, stdout: string, stderr: string }} Result
- */
-/**
- * Starts bin/jev-router.mjs with exactly `env`: nothing leaks in from the test runner's environment.
- * @param {string[]} args
- * @param {Record<string, string>} env
- */
-function start(args, env) {
-  const child = spawn(process.execPath, [BIN, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  const out = { stdout: '', stderr: '' };
-  child.stdout.on('data', (chunk) => {
-    out.stdout += chunk;
-  });
-  child.stderr.on('data', (chunk) => {
-    out.stderr += chunk;
-  });
-  /** @type {Promise<Result>} */
-  const done = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`jev-router ${args.join(' ')} timed out\n${out.stderr}`));
-    }, 20000);
-    child.on('error', reject);
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code, signal, ...out });
-    });
-  });
-  return { child, out, done };
-}
-
-/**
- * @param {string[]} args
- * @param {Record<string, string>} env
- */
-const run = (args, env) => start(args, env).done;
-
-/**
- * Polls until `check` returns something truthy.
- * @template T
- * @param {() => T} check
- * @param {string} what
- * @returns {Promise<NonNullable<T>>}
- */
-async function waitFor(check, what) {
-  const deadline = Date.now() + 10000;
-  while (Date.now() < deadline) {
-    const value = check();
-    if (value) return value;
-    await sleep(25);
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
-
-/**
- * Writes a config file based on the packaged default.
- * @param {string} path
- * @param {Record<string, unknown>} [patch] top-level fields to replace
- * @param {{ upstream?: string, jev?: string }} [mocks] point every upstream target, or the Jev channels, at a local mock
- */
-function writeConfig(path, patch = {}, { upstream, jev } = {}) {
-  const cfg = { ...structuredClone(shipped), stateFile: null, ...patch };
-  if (upstream) for (const targets of Object.values(cfg.surfaces)) for (const target of Object.values(targets)) target.url = upstream;
-  if (jev) cfg.jev.channels = [{ name: 'mock', baseUrl: jev, model: 'jev-1.13.0', keyEnv: 'MOCK_JEV_KEY', timeoutMs: 1000 }];
-  writeFileSync(path, JSON.stringify(cfg));
-  return path;
-}
-
-/** @import { MockCall } from './helpers.mjs' */
-/**
- * A local mock server that records every call; it's closed after the tests.
- * @param {(call: MockCall, res: import('node:http').ServerResponse) => unknown} handler
- */
-async function mock(handler) {
-  const server = await mockServer(handler);
-  servers.push(server.server);
-  return server;
-}
-
-/** A mock provider that answers every request with a small message. */
-function mockUpstream() {
-  return mock((call, res) =>
-    json(res, 200, {
-      id: 'msg_cli',
-      type: 'message',
-      role: 'assistant',
-      model: call.body.model,
-      content: [{ type: 'text', text: 'ok' }],
-      usage: { input_tokens: 10, output_tokens: 1 },
-    }),
-  );
-}
-
-/**
- * A real router in this process, as `jev-router serve` would run it, on an ephemeral port.
- * @param {Record<string, string>} [env]
- */
-async function runningRouter(env = {}) {
-  // The router's own log isn't under test here.
-  const server = createRouter(validateConfig({ ...structuredClone(shipped), stateFile: null }), { env, log: () => true });
-  servers.push(server);
-  const url = await listen(server);
-  return { url, port: Number(new URL(url).port) };
-}
-
-/** A port nothing listens on: the OS hands it out, and it's closed again at once. */
-async function freePort() {
-  const server = http.createServer();
-  const port = Number(new URL(await listen(server)).port);
-  await close(server);
-  return port;
-}
-
-/** @param {number} port */
-function isListening(port) {
-  return new Promise((resolve) => {
-    const socket = net.connect(port, '127.0.0.1');
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => resolve(false));
-  });
-}
-
-/**
- * The complete lines of a log as entries. Output that is still arriving can end in part of a line,
- * or be empty, and neither is an entry yet.
- * @param {string} text
- */
-const logEntries = (text) =>
-  text
-    .split('\n')
-    .slice(0, -1)
-    .map((line) => JSON.parse(line));
-/** @param {string} text */
-const logEvents = (text) => logEntries(text).map((entry) => entry.event);
-
-/** @param {string} url */
-const portOf = (url) => Number(new URL(url).port);
-
-/**
- * Sends one small Claude Code shaped request through the router at `url`, with a client login.
- * @param {string} url
- */
-async function ask(url) {
-  const res = await fetch(`${url}/v1/messages`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': CLIENT_KEY },
-    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 64, messages: [{ role: 'user', content: 'Add a test' }] }),
-  });
-  await res.text();
-  return res;
-}
-
-/**
- * @param {string} url a router's base URL
- * @returns {Promise<{ ok: boolean, version: string }>}
- */
-const healthz = async (url) => /** @type {{ ok: boolean, version: string }} */ (await (await fetch(`${url}/healthz`)).json());
+import { test } from 'node:test';
+import { VERSION } from '../src/router.mjs';
+import {
+  ANTHROPIC_ONLY_CONFIG,
+  ask,
+  CLIENT_KEY,
+  CODEX_MODELS,
+  DEFAULT_CONFIG,
+  FAKE_AGENT,
+  fake,
+  freePort,
+  healthz,
+  isListening,
+  JEV_KEY,
+  logEntries,
+  logEvents,
+  MOCK_KEY,
+  mock,
+  mockUpstream,
+  OLLAMA_KEY,
+  portOf,
+  run,
+  runningRouter,
+  sandbox,
+  servers,
+  shipped,
+  start,
+  TOKEN,
+  waitFor,
+  writeConfig,
+} from './harness.mjs';
+import { jevOptionsAnswer, json, listen, sleep } from './helpers.mjs';
 
 test('version, help, and a short error for an unknown command, option or usage', async () => {
   const { env } = sandbox();
@@ -252,7 +49,16 @@ test('version, help, and a short error for an unknown command, option or usage',
   for (const args of [['help'], ['--help'], ['-h']]) {
     const help = await run(args, env);
     assert.equal(help.code, 0);
-    for (const usage of ['launch claude', 'launch codex', 'env claude|codex', 'doctor', 'init', 'report [<log.jsonl>]']) {
+    for (const usage of [
+      'setup [--yes]',
+      'uninstall',
+      'launch claude',
+      'launch codex',
+      'env claude|codex',
+      'doctor',
+      'init',
+      'report [<log.jsonl>]',
+    ]) {
       assert.ok(help.stdout.includes(`jev-router ${usage}`), usage);
     }
     assert.match(help.stdout, /\[--env-file <file>\]/);
@@ -273,6 +79,7 @@ test('version, help, and a short error for an unknown command, option or usage',
     'Usage: jev-router env claude|codex': ['env'],
     'Usage: jev-router doctor': ['doctor', 'now'],
     'Usage: jev-router init': ['init', 'here'],
+    'Usage: jev-router setup': ['setup', 'now'],
     'Usage: jev-router report': ['report', 'a.jsonl', 'b.jsonl'],
     'serve takes no arguments, got "now"': ['serve', 'now'],
     '--force takes no value': ['init', '--force=yes'],

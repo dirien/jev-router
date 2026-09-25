@@ -1,7 +1,8 @@
-// The jev-router command. `serve` runs the router in the foreground; `launch` runs Claude Code or
-// Codex through a router for one session; `env`, `doctor`, `init`, `report` and `ui` set it up and
-// read its log. What scripts consume (exports, reports, the router log under `serve`) goes to stdout,
-// messages for people go to stderr.
+// The jev-router command. `setup` installs the router as a service and points Claude Code at it, and
+// `uninstall` undoes that; `serve` runs the router in the foreground; `launch` runs Claude Code or
+// Codex through a router for one session; `env`, `doctor`, `init`, `report` and `ui` set it up by
+// hand and read its log. What scripts consume (exports, reports, the router log under `serve`) goes
+// to stdout, messages for people go to stderr.
 import { spawn } from 'node:child_process';
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, constants as osConstants } from 'node:os';
@@ -26,14 +27,17 @@ import {
   shellQuote,
   userConfigPath,
 } from './files.mjs';
-import { JevClient } from './jev.mjs';
+import { JevClient, SAMPLE_STATE } from './jev.mjs';
 import { appendLogLine } from './logfile.mjs';
-import { clientHost, isLoopback, LOOPBACK, parsePort, probe, TOKEN_HEADER, UI_PORT, urlHost } from './net.mjs';
+import { clientHost, isLoopback, LOOPBACK, parsePort, parseUiAddress, probe, TOKEN_HEADER, UI_PORT, urlHost } from './net.mjs';
 import { createRouter, describeConfig, report, VERSION } from './router.mjs';
+import { installedServices, logHint, MANAGER_NAMES } from './service.mjs';
+import { readManifest, runSetup, runUninstall } from './setup.mjs';
 import { createUiServer } from './ui.mjs';
 
-/** @import { Config, RouterServer, UiServer } from './types.js' */
+/** @import { Config, Health, RouterServer, UiServer } from './types.js' */
 /** @import { EnvFile } from './envfile.mjs' */
+/** @import { SetupOptions } from './setup.mjs' */
 
 /**
  * @typedef {'ok' | 'warn' | 'FAIL' | 'hint' | 'info'} Status
@@ -46,6 +50,9 @@ const CODEX_MODELS = packaged('examples/codex/jev-models.json');
 const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or Codex turn with Jev.
 
 Usage:
+  jev-router setup [--yes] [--models claude|ollama] [--service auto|launchd|systemd|none]
+                   [--no-claude-settings]
+  jev-router uninstall
   jev-router [serve] [--config <file>] [--env-file <file>] [--log-file <file>] [--host <h>] [--port <n>]
                      [--ui [<host>:]<port>] [--ui-token <token>]
   jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--ui [<host>:]<port>]
@@ -59,14 +66,19 @@ Usage:
   jev-router ui [<log.jsonl>] [--port <n>] [--ui-token <token>]
   jev-router version | help
 
-  serve    run the router in the foreground (the default command); --ui also serves the live view
-  launch   run Claude Code or Codex through the router on the configured port, starting one if none runs;
-           --ui also serves the live view of a router it starts
-  env      print shell exports for a running router: eval "$(jev-router env claude)"
-  doctor   check the config, the keys and a running router; --live makes one Jev call (~$0.00003)
-  init     write the user config; --anthropic-only sends every Claude Code tier to Anthropic
-  report   sum up requests, spend and savings from a router log
-  ui       serve the live view for a router log another process writes (http://127.0.0.1:4100)
+  setup      ask which models Claude Code uses and for their keys, check the Jev key with one call,
+             then save them, run the router in the background and point Claude Code at it. Safe to
+             run again. --yes takes the defaults and the keys from the environment
+  uninstall  remove the service and what setup put in Claude Code's settings; keeps the config, keys and logs
+  serve      run the router in the foreground (the default command); --ui also serves the live view
+  launch     run Claude Code or Codex through the router on the configured port, starting one if none
+             runs; --ui also serves the live view of a router it starts
+  env        print shell exports for a running router: eval "$(jev-router env claude)"
+  doctor     check the config, the keys, the service and a running router; --live makes one Jev call
+             (~$0.00003)
+  init       write the user config; --anthropic-only sends every Claude Code tier to Anthropic
+  report     sum up requests, spend and savings from a router log
+  ui         serve the live view for a router log another process writes (http://127.0.0.1:4100)
 
 Config: --config, else $JEV_ROUTER_CONFIG, else $XDG_CONFIG_HOME/jev-router/config.json
 (~/.config by default) if it exists, else the packaged default. JEV_ROUTER_HOST and
@@ -76,9 +88,14 @@ for that token: open the address serve or ui prints, which carries it.
 
 Keys: a file of KEY=VALUE lines (mode 600) is loaded before anything reads the environment:
 --env-file, else $JEV_ROUTER_ENV_FILE, else $XDG_CONFIG_HOME/jev-router/env if it exists
-(~/.config by default). Variables already set win. launch keeps the file's variables away from
-the agent. Proxy settings (HTTPS_PROXY, NODE_USE_ENV_PROXY) don't work from it: Node reads them
-at startup.
+(~/.config by default), which is where setup saves them. Variables already set win. launch keeps
+the file's variables away from the agent. Proxy settings (HTTPS_PROXY, NODE_USE_ENV_PROXY) don't
+work from it: Node reads them at startup.
+
+Service: setup runs \`jev-router serve --ui 4100\` as a launchd agent (macOS) or a systemd user
+unit (Linux) with the config, env file and log it used, and waits up to $JEV_ROUTER_SETUP_WAIT
+seconds (15) for it to answer. Without a service manager, or when you answer no, it stops after
+saving the keys: start sessions with jev-router launch claude.
 
 Log: serve writes JSON lines to stdout and to --log-file, else $JEV_ROUTER_LOG_FILE, else the
 config's logFile (its directory is created for --log-file and $JEV_ROUTER_LOG_FILE). The file
@@ -146,7 +163,7 @@ function readOption(arg, spec) {
   const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
   const name = eq > 2 ? arg.slice(0, eq) : arg;
   if (!Object.hasOwn(spec, name)) return undefined;
-  return { name, key: name.slice(2), kind: spec[name], inline: eq > 2 ? arg.slice(eq + 1) : undefined };
+  return { name, key: name.replace(/^--?/, ''), kind: spec[name], inline: eq > 2 ? arg.slice(eq + 1) : undefined };
 }
 
 /** @param {NodeJS.ProcessEnv} env */
@@ -346,19 +363,6 @@ async function serve(args, env) {
   logConfig(log, cfg);
   if (view && uiAddress) await startView(view, uiAddress, uiToken);
   return undefined;
-}
-
-/**
- * The address for `serve --ui` and JEV_ROUTER_UI: a port, or host:port ([::]:4100 for IPv6).
- * @param {string | undefined} value
- * @returns {{ host: string, port: number } | undefined} undefined when no view is wanted
- */
-function parseUiAddress(value) {
-  if (value === undefined) return undefined;
-  if (/^\d+$/.test(value)) return { host: LOOPBACK, port: parsePort(value) };
-  const match = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d+)$/.exec(value);
-  if (!match) throw new Error(`--ui takes a port or host:port, got "${value}"`);
-  return { host: match[1] ?? match[2], port: parsePort(match[3]) };
 }
 
 /**
@@ -682,10 +686,14 @@ async function doctor(args, env) {
     checkLogFile(list, cfg, env);
   }
   checkProxy(list, env, file?.names ?? []);
-  await checkRouter(list, cfg, env);
-  if (cfg) checkClaudeCode(list, cfg, env);
+  const router = await checkRouter(list, cfg, env);
+  const service = checkService(list, env, router);
+  const claude = cfg ? checkClaudeCode(list, cfg, env) : undefined;
   if (cfg && flags.has('live')) await checkLive(list, cfg, env);
-  const verdict = list.failed ? 'Not ready: fix the FAIL lines above.' : 'Ready. Start a session with: jev-router launch claude';
+  const always = service && claude === 'settings'; // the service answers, and every Claude Code session uses it
+  const verdict = list.failed
+    ? 'Not ready: fix the FAIL lines above.'
+    : `Ready. ${always ? 'Start Claude Code as usual: claude' : 'Start a session with: jev-router launch claude'}`;
   process.stdout.write(`jev-router ${VERSION} doctor\n${list.lines.join('\n')}\n\n${verdict}\n`);
   return list.failed ? 1 : 0;
 }
@@ -769,6 +777,7 @@ function canWrite(path) {
  * @param {Checklist} list
  * @param {Config} cfg
  * @param {NodeJS.ProcessEnv} env
+ * @returns {'settings' | 'shell' | undefined} where Claude Code gets the router's address from, if anywhere
  */
 function checkClaudeCode(list, cfg, env) {
   const file = claudeSettingsPath(env);
@@ -776,7 +785,7 @@ function checkClaudeCode(list, cfg, env) {
   /** @param {string} name */
   const value = (name) => saved[name] ?? envValue(env, name);
   const base = value('ANTHROPIC_BASE_URL');
-  if (!base || !pointsAtRouter(base, cfg, env)) return;
+  if (!base || !pointsAtRouter(base, cfg, env)) return undefined;
   const where = saved.ANTHROPIC_BASE_URL ? file : 'this shell';
   const missing = Object.entries(CLAUDE_SETTINGS).filter(([name]) => !value(name));
   if (!missing.length)
@@ -787,6 +796,7 @@ function checkClaudeCode(list, cfg, env) {
       'claude',
       `Claude Code uses the router (ANTHROPIC_BASE_URL in ${where}), but ${name} is not set: ${why}. Set ${name}=${wanted}.`,
     );
+  return saved.ANTHROPIC_BASE_URL ? 'settings' : 'shell';
 }
 
 /**
@@ -864,6 +874,7 @@ function checkProxy(list, env, fromFile) {
  * @param {Checklist} list
  * @param {Config | undefined} cfg
  * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<{ url: string, health?: Health } | undefined>} where the router should answer, and what it said
  */
 async function checkRouter(list, cfg, env) {
   let url;
@@ -872,7 +883,7 @@ async function checkRouter(list, cfg, env) {
     url = `http://${clientHost(host)}:${parsePort(envValue(env, 'JEV_ROUTER_PORT') ?? cfg?.port ?? 4000)}`;
   } catch (err) {
     list.add('FAIL', 'router', errorMessage(err));
-    return;
+    return undefined;
   }
   const { answered, health } = await probe(url);
   if (health) {
@@ -887,6 +898,29 @@ async function checkRouter(list, cfg, env) {
     );
   } else if (answered) list.add('warn', 'router', `something answers at ${url}, but it is not a jev-router`);
   else list.add('info', 'router', `nothing answers at ${url}; start one with: jev-router serve`);
+  return { url, health };
+}
+
+/**
+ * The background service that setup installs: none, or which one, and whether its router answers.
+ * @param {Checklist} list
+ * @param {NodeJS.ProcessEnv} env
+ * @param {{ url: string, health?: Health } | undefined} router
+ * @returns {boolean} whether a service is installed and the router answers
+ */
+function checkService(list, env, router) {
+  const found = installedServices(env, readManifest(env)?.service);
+  if (!found.length) list.add('info', 'service', 'none installed; jev-router setup installs one');
+  for (const { manager, file } of found) {
+    if (router?.health) list.add('ok', 'service', `${MANAGER_NAMES[manager]} ${file}; the router answers at ${router.url}`);
+    else
+      list.add(
+        'warn',
+        'service',
+        `${MANAGER_NAMES[manager]} ${file}, but nothing answers at ${router?.url ?? 'its address'}. See ${logHint(manager)}`,
+      );
+  }
+  return found.length > 0 && Boolean(router?.health);
 }
 
 /**
@@ -901,10 +935,7 @@ async function checkLive(list, cfg, env) {
     list.add('info', 'live', 'skipped: no Jev channel has a key');
     return;
   }
-  const answer = await client.decide({
-    request: 'Rename the variable tmp to total in utils.py.',
-    session: { harness: 'Claude Code', depth: 'new session' },
-  });
+  const answer = await client.decide(SAMPLE_STATE);
   if (answer.ok) list.add('ok', 'live', `${answer.channel} answered in ${answer.ms} ms with ${answer.model} (choice: ${answer.choice})`);
   else list.add('FAIL', 'live', `no answer after ${answer.ms} ms: ${answer.error}`);
 }
@@ -988,6 +1019,46 @@ async function ui(args, env) {
   return undefined;
 }
 
+/** @type {ReadonlyArray<SetupOptions['service']>} */
+const SERVICES = ['auto', 'launchd', 'systemd', 'none'];
+
+/**
+ * `jev-router setup`: see `runSetup` in setup.mjs.
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<number>}
+ */
+function setup(args, env) {
+  const { values, flags, rest } = parseArgs(args, {
+    '--yes': 'flag',
+    '-y': 'flag',
+    '--models': 'value',
+    '--service': 'value',
+    '--no-claude-settings': 'flag',
+  });
+  if (rest.length)
+    throw new Error(
+      'Usage: jev-router setup [--yes] [--models claude|ollama] [--service auto|launchd|systemd|none] [--no-claude-settings]',
+    );
+  const service = SERVICES.find((name) => name === (values.service ?? 'auto'));
+  if (!service) throw new Error(`--service takes auto, launchd, systemd or none, got "${values.service}"`);
+  const { models } = values;
+  if (models !== undefined && models !== 'claude' && models !== 'ollama')
+    throw new Error(`--models takes claude or ollama, got "${models}"`);
+  return runSetup({ yes: flags.has('yes') || flags.has('y'), service, claudeSettings: !flags.has('no-claude-settings'), models }, env);
+}
+
+/**
+ * `jev-router uninstall`: see `runUninstall` in setup.mjs.
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<number>}
+ */
+function uninstall(args, env) {
+  if (args.length) throw new Error('Usage: jev-router uninstall');
+  return runUninstall(env);
+}
+
 const printVersion = () => {
   process.stdout.write(`${VERSION}\n`);
   return 0;
@@ -1000,6 +1071,8 @@ const printHelp = () => {
 
 /** @type {Record<string, (args: string[], env: NodeJS.ProcessEnv) => Promise<number | undefined> | number>} */
 const COMMANDS = {
+  setup,
+  uninstall,
   serve,
   launch,
   env: printEnv,

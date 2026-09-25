@@ -148,6 +148,16 @@ const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * A small state in the shape the router sends, for one call that checks a Jev key: `doctor --live`
+ * and `setup` make it, and it costs about $0.00003.
+ * @type {JevState}
+ */
+export const SAMPLE_STATE = {
+  request: 'Rename the variable tmp to total in utils.py.',
+  session: { harness: 'Claude Code', depth: 'new session' },
+};
+
+/**
  * Talks to one or more System One channels (TypeSafe, OpenRouter, Vercel AI Gateway, or a
  * compatible server). Each channel has its own key, bound to its own host. The whole decision
  * has one deadline; within it a channel gets one retry, and a failing channel is skipped for a while.

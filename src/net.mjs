@@ -1,6 +1,7 @@
 // The router's addresses as clients see them, and the /healthz probe that tells a jev-router from
 // anything else on a port.
 import http from 'node:http';
+import net from 'node:net';
 
 /** @import { Health } from './types.js' */
 
@@ -19,6 +20,34 @@ export function parsePort(value) {
   const port = typeof value === 'number' ? value : /^\d+$/.test(value) ? Number(value) : Number.NaN;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`port must be a number from 0 to 65535, got "${value}"`);
   return port;
+}
+
+/**
+ * The address for `--ui` and JEV_ROUTER_UI: a port, or host:port ([::]:4100 for IPv6).
+ * @param {string | undefined} value
+ * @returns {{ host: string, port: number } | undefined} undefined when no view is wanted
+ */
+export function parseUiAddress(value) {
+  if (value === undefined) return undefined;
+  if (/^\d+$/.test(value)) return { host: LOOPBACK, port: parsePort(value) };
+  const match = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d+)$/.exec(value);
+  if (!match) throw new Error(`--ui takes a port or host:port, got "${value}"`);
+  return { host: match[1] ?? match[2], port: parsePort(match[3]) };
+}
+
+/**
+ * Whether a server could listen on host:port now: the port may be held by something that doesn't
+ * speak HTTP, which a probe can't see.
+ * @param {string} host
+ * @param {number} port
+ * @returns {Promise<string | undefined>} why it can't (EADDRINUSE, EACCES, …), or undefined when it can
+ */
+export function portProblem(host, port) {
+  return new Promise((done) => {
+    const server = net.createServer();
+    server.once('error', (err) => done('code' in err && typeof err.code === 'string' ? err.code : err.message));
+    server.listen({ host, port, exclusive: true }, () => server.close(() => done(undefined)));
+  });
 }
 
 /**

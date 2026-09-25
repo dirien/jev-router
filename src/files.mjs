@@ -1,8 +1,8 @@
 // Where jev-router's files live, how programs are found on PATH, and how a file is replaced safely.
 // The commands share these rules, so a service, a shell and `doctor` agree on every path.
-import { accessSync, constants, existsSync, mkdirSync, statSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -53,6 +53,11 @@ export const userConfigPath = (env) => join(configDir(env), 'config.json');
  * @param {NodeJS.ProcessEnv} env
  */
 export const standardEnvFile = (env) => join(configDir(env), 'env');
+/**
+ * What `setup` changed, for `uninstall`: `$XDG_CONFIG_HOME/jev-router/setup.json`. It holds no secrets.
+ * @param {NodeJS.ProcessEnv} env
+ */
+export const setupManifestPath = (env) => join(configDir(env), 'setup.json');
 /**
  * The router log that `launch` and the services write, and `report` and `ui` read by default.
  * @param {NodeJS.ProcessEnv} env
@@ -107,6 +112,27 @@ export function makeDirectory(dir) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
     // the write that follows names the problem
+  }
+}
+
+/**
+ * Replaces a file in one step: the text goes to a temporary file next to it, which is renamed over
+ * it, so a reader sees the old file or the new one and never half of one. A missing directory is
+ * created with mode 0700.
+ * @param {string} path
+ * @param {string} text
+ * @param {number} mode the new file's permissions
+ */
+export function writeFileAtomic(path, text, mode) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, text, { mode });
+    chmodSync(temporary, mode); // the umask may have taken bits away
+    renameSync(temporary, path);
+  } catch (err) {
+    rmSync(temporary, { force: true });
+    throw err;
   }
 }
 

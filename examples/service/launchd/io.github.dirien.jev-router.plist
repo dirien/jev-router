@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  jev-router as a macOS LaunchAgent. It runs "jev-router serve" with the live view on port 4100 and
-  the keys from ~/.config/jev-router/env (the arguments are in ProgramArguments below), starts when
-  you log in, and restarts the router when it fails. The router listens on http://127.0.0.1:4000
-  and its live view on http://127.0.0.1:4100.
+  jev-router as a macOS LaunchAgent. `jev-router setup` installs it for you; this template is the
+  manual route, and setup writes the same agent from it. It runs "jev-router serve" with the live
+  view on port 4100, the config ~/.config/jev-router/config.json and the keys from
+  ~/.config/jev-router/env (the arguments are in ProgramArguments below), starts when you log in,
+  and restarts the router when it fails. The router listens on http://127.0.0.1:4000 and its live
+  view on http://127.0.0.1:4100.
 
   launchd doesn't expand ~ or $HOME, and a LaunchAgent doesn't get your shell's PATH, while
   jev-router starts with "#!/usr/bin/env node". So the install commands fill in two placeholders
@@ -13,9 +15,10 @@
   macOS's login shell is zsh, and nvm and similar version managers set up PATH only in interactive
   shells. Run the install commands again after you reinstall jev-router under another Node.js.
 
-  Install, after "npm install -g github:dirien/jev-router#semver:^1":
+  Install by hand, after "npm install -g github:dirien/jev-router#semver:^1":
 
     command -v jev-router node                   (both must print a path)
+    jev-router init                              (writes ~/.config/jev-router/config.json)
     mkdir -p ~/.config/jev-router ~/Library/Logs/jev-router ~/Library/LaunchAgents
     touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
     (put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, ...)
@@ -38,7 +41,7 @@
   never rotates files, so it gets only the messages for people, which stay small. ExitTimeOut gives the
   router's 30-second drain room: launchd's default of 20 seconds would cut streams short.
 
-  Uninstall:
+  Uninstall ("jev-router uninstall" does this, and undoes the rest of setup):
 
     launchctl bootout gui/$(id -u)/io.github.dirien.jev-router
     rm ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
@@ -54,6 +57,8 @@
     <string>serve</string>
     <string>--ui</string>
     <string>4100</string>
+    <string>--config</string>
+    <string>@HOME@/.config/jev-router/config.json</string>
     <string>--env-file</string>
     <string>@HOME@/.config/jev-router/env</string>
     <string>--log-file</string>

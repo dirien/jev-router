@@ -1,19 +1,22 @@
-# jev-router as a systemd user service on Linux. It runs `jev-router serve --ui 4100` with the keys
-# from ~/.config/jev-router/env, starts when you log in, and restarts the router when it fails. The
+# jev-router as a systemd user service on Linux. `jev-router setup` installs it for you; this
+# template is the manual route, and setup writes the same unit from it. It runs
+# `jev-router serve --ui 4100` with the config ~/.config/jev-router/config.json and the keys from
+# ~/.config/jev-router/env, starts when you log in, and restarts the router when it fails. The
 # router listens on http://127.0.0.1:4000 and its live view on http://127.0.0.1:4100.
 #
 # A service doesn't get your shell's PATH, and jev-router starts with `#!/usr/bin/env node`. So the
 # install commands replace @PATH@ below with the directories that hold jev-router and node on your
 # PATH. Run them again after you reinstall jev-router under another Node.js, for example with nvm.
 #
-# Install, after `npm install -g github:dirien/jev-router#semver:^1`:
+# Install by hand, after `npm install -g github:dirien/jev-router#semver:^1`:
 #
 #   command -v jev-router node                     # both must print a path
+#   jev-router init                                # writes ~/.config/jev-router/config.json
 #   mkdir -p ~/.config/jev-router ~/.config/systemd/user
 #   touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
 #   # Put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, OLLAMA_API_KEY, ...
 #   unit="$(npm root -g)/@ediri/jev-router/examples/service/systemd/jev-router.service"
-#   path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
+#   path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/bin:/bin"
 #   sed "s|@PATH@|$path|" "$unit" > ~/.config/systemd/user/jev-router.service
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now jev-router
@@ -30,7 +33,7 @@
 # The router writes its JSON log to ~/.local/state/jev-router/router.log and rotates it at logMaxBytes
 # (50 MiB by default); `jev-router report` and `jev-router ui` read that file without an argument.
 #
-# Uninstall:
+# Uninstall (`jev-router uninstall` does this, and undoes the rest of setup):
 #
 #   systemctl --user disable --now jev-router
 #   rm ~/.config/systemd/user/jev-router.service
@@ -45,7 +48,7 @@ StartLimitBurst=5
 
 [Service]
 Environment="PATH=@PATH@"
-ExecStart=/usr/bin/env jev-router serve --ui 4100 --env-file "%h/.config/jev-router/env" --log-file "%h/.local/state/jev-router/router.log"
+ExecStart=/usr/bin/env jev-router serve --ui 4100 --config "%h/.config/jev-router/config.json" --env-file "%h/.config/jev-router/env" --log-file "%h/.local/state/jev-router/router.log"
 ExecReload=/bin/kill -HUP $MAINPID
 # The JSON lines are in the log file above; the journal gets the messages for people.
 StandardOutput=null
