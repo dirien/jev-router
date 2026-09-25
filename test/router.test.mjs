@@ -153,15 +153,19 @@ after(async () => {
 });
 
 // Left as the any that JSON.parse returns: the tests rewrite it in ways no config type allows.
-const shipped = JSON.parse(readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
+/** @param {string} name a packaged config's file name, without `.json` */
+const packagedConfig = (name) => JSON.parse(readFileSync(new URL(`../config/${name}.json`, import.meta.url), 'utf8'));
+const shipped = packagedConfig('default');
 
 /**
- * The shipped config pointed at the mocks, with `patch` on top; `patch.policy` merges into the policy.
+ * A packaged config, the default one unless `base` is another, pointed at the mocks, with `patch`
+ * on top; `patch.policy` merges into the policy.
  * @param {Record<string, unknown> & { policy?: Record<string, unknown> }} [patch]
+ * @param {any} [base]
  * @returns {Config}
  */
-function testConfig(patch = {}) {
-  const cfg = structuredClone(shipped);
+function testConfig(patch = {}, base = shipped) {
+  const cfg = structuredClone(base);
   /** @type {Record<string, string>} */
   const hosts = { 'https://api.anthropic.com': anthropic.url, 'https://ollama.com': ollama.url, 'https://api.openai.com': openai.url };
   for (const targets of Object.values(cfg.surfaces)) for (const target of Object.values(targets)) target.url = hosts[target.url];
@@ -777,6 +781,49 @@ test('/model in Claude Code pins the matching tier; /healthz reports the router 
   assert.equal(health.ok, true);
   assert.equal(health.jev.configured, true);
   assert.ok(health.sessions >= 1);
+});
+
+test('the Fable config sends deep work, /model fable and #max to Fable 5.1; after a switch back, a session keeps a strong model', async () => {
+  const { url, server, routes } = await startRouter({ cfg: testConfig({}, packagedConfig('anthropic-fable')) });
+  const h = ccHeaders('s-fable');
+  const text = 'Choose between these two architectures for the session store and defend the choice.';
+  reset(plans.a, { option: 'deep', probability: 0.81 });
+  const d1 = await delta(async () => {
+    await post(url, '/v1/messages', cc('s-fable', text), h);
+    await post(url, '/v1/messages', { ...claudeCodeToolTurn('s-fable', text), stream: false }, h);
+  });
+  assert.deepEqual(
+    d1.anthropic.map((c) => c.body.model),
+    ['claude-fable-5-1', 'claude-fable-5-1'],
+  );
+  assert.equal(d1.jevA.length, 1, 'the tool step keeps the tier of its turn');
+  assert.deepEqual(
+    routes().map((r) => `${r.tier}:${r.reason}`),
+    ['max:jev', 'max:sticky'],
+  );
+
+  reset(plans.a, { option: 'complex', probability: 0.9 });
+  const first = cc('s-opus', 'Find why the auth test fails intermittently.', { model: 'claude-opus-5-5' });
+  assert.equal((await delta(() => post(url, '/v1/messages', first, ccHeaders('s-opus')))).anthropic[0].body.model, 'claude-opus-5-5');
+  const history = [...first.messages, { role: 'assistant', content: 'ok' }];
+  const pinned = await delta(() =>
+    post(url, '/v1/messages', cc('s-opus', 'keep going', { model: 'claude-fable-5-1', history }), ccHeaders('s-opus')),
+  );
+  assert.equal(pinned.result.headers.get('x-jev-reason'), 'client-model:fable');
+  assert.equal(pinned.anthropic[0].body.model, 'claude-fable-5-1');
+
+  reset(plans.a, { option: 'mechanical', probability: 0.95 });
+  const tagged = await delta(() => post(url, '/v1/messages', cc('s-tag', 'Review the migration plan #max'), ccHeaders('s-tag')));
+  assert.equal(tagged.result.headers.get('x-jev-reason'), 'tag');
+  assert.equal(tagged.anthropic[0].body.model, 'claude-fable-5-1');
+  assert.equal(tagged.jevA.length, 0);
+
+  // The Claude-only config has no max tier. A session that was on it goes on with the top tier the
+  // config has, Opus 5.5: falling back to the cheapest tier would put its tool steps on Haiku 4.5.
+  server.reload(testConfig({}, packagedConfig('anthropic-only')));
+  const after = await delta(() => post(url, '/v1/messages', { ...claudeCodeToolTurn('s-fable', text), stream: false }, h));
+  assert.equal(after.anthropic[0].body.model, 'claude-opus-5-5');
+  assert.equal(after.result.headers.get('x-jev-tier'), 'frontier');
 });
 
 test('a client that leaves during the Jev call costs no upstream request', async () => {

@@ -28,6 +28,12 @@ adds a fourth tier, `max`, for the messages Jev calls deep. Run setup again to s
   a packaged one; a config you changed, or one that `JEV_ROUTER_CONFIG` names, stays as it is, and setup says how to
   start over from a packaged one.
 
+### Fixed
+
+- A session whose tier the config no longer has, after a switch to another config, went on with the cheapest tier: after
+  a switch away from the Fable config, a session on Fable 5.1 would have run its next tool steps on Haiku 4.5. It now
+  goes on with the config's top tier until Jev decides again.
+
 ## [1.5.0] - 2026-09-25
 
 Starting jev-router takes one command now. `jev-router setup` asks which models Claude Code uses and for the keys,

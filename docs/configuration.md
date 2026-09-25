@@ -41,6 +41,10 @@ option, `modelPins.fable`, and `baselineModel`, which is Fable 5.1, so savings c
 Fable 5.1. The risk override (`policy.sensitiveOverride`) sends a request to the top tier, which is `max` there. The
 OpenAI model names come from Codex's bundled model catalog; check them against your account.
 
+A session keeps its tier across a config change. When the new config lacks that tier, as `max` after a switch from
+the Fable config to another, the session goes on with the new config's top tier, never a cheaper one, until Jev
+decides afresh.
+
 ## Server keys
 
 | Key | Default | Validation | Meaning |

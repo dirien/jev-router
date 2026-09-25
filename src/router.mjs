@@ -190,7 +190,10 @@ export function createRouter(
    */
   function facts({ headers, body, bodyBytes }) {
     const key = sessionKey(headers, body);
-    const entry = sessions.get(key.id);
+    const stored = sessions.get(key.id);
+    // A tier the config no longer has, after a switch to another config, counts as its top tier:
+    // a session in the middle of a task never lands on a cheaper model than it had.
+    const entry = stored && !cfg.tiers.includes(stored.tier) ? { ...stored, tier: cfg.tiers[cfg.tiers.length - 1] } : stored;
     const kind = requestKind(headers);
     const turns = humanTurns(body);
     const latest = turns.at(-1);
