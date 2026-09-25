@@ -2,6 +2,7 @@
 // Assertions count calls per test (call deltas), so a leftover call from an earlier test can't pass one.
 
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
@@ -624,6 +625,51 @@ test('responses stream back byte for byte, unbuffered, with usage and cost in th
   assert.deepEqual(entry.usage, { input: 12, cacheRead: 1000, cacheWrite: 0, output: 9 });
   assert.equal(entry.cost_usd, 0.000314);
   assert.equal(entry.baseline_usd, 0.000428, 'the same usage on the baseline model (Opus 5.5)');
+});
+
+test('a slow client gets a large stream in full without piling up listeners (regression: each wait for drain left two behind)', async () => {
+  const chunk = Buffer.alloc(64 * 1024, 'a');
+  const chunks = 128; // 8 MiB: more than loopback buffers take, so the router waits for the client again and again
+  const big = await mockServer(async (_call, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (let i = 0; i < chunks; i += 1) if (!res.write(chunk)) await once(res, 'drain');
+    res.end();
+  });
+  const cfg = testConfig();
+  const targets = cfg.surfaces.anthropic;
+  assert.ok(targets);
+  targets.balanced.url = big.url;
+  const { url, server } = await startRouter({ cfg });
+  /** @type {import('node:http').ServerResponse | undefined} */
+  let relaying;
+  server.on('request', (_req, res) => {
+    relaying = res;
+  });
+  let most = 0;
+  try {
+    const received = await new Promise((resolve, reject) => {
+      const req = http.request(
+        `${url}/v1/messages`,
+        { method: 'POST', headers: ccHeaders('s-slow', { 'x-jev-tier': 'balanced' }) },
+        (res) => {
+          let bytes = 0;
+          res.on('data', (piece) => {
+            bytes += piece.length;
+            most = Math.max(most, relaying?.listenerCount('close') ?? 0);
+            res.pause();
+            setTimeout(() => res.resume(), 1);
+          });
+          res.on('end', () => resolve(bytes));
+          res.on('error', reject);
+        },
+      );
+      req.end(JSON.stringify(cc('s-slow', 'Stream a lot')));
+    });
+    assert.equal(received, chunks * chunk.length, 'every byte arrived');
+    assert.ok(most <= 3, `the relayed response had ${most} close listeners at once`);
+  } finally {
+    await big.close();
+  }
 });
 
 test('browser-shaped requests, wrong content types, oversized bodies and missing tokens are refused', async () => {

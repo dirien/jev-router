@@ -918,8 +918,10 @@ async function forward(req, res, target, body, shown, signal, env) {
       tap.push(chunk);
       if (upstream.status >= 400 && bytes < ERROR_HEAD_BYTES) errorHead.push(chunk);
       bytes += chunk.length;
-      if (!res.write(chunk)) await Promise.race([once(res, 'drain'), once(res, 'close')]);
-      if (res.destroyed) break;
+      // A slow client: wait until it takes more, or leaves (the signal aborts on close). A race with
+      // once(res, 'close') would leave that listener behind on every wait until the response ends.
+      if (!res.write(chunk)) await once(res, 'drain', { signal }).catch(() => undefined);
+      if (res.destroyed || signal.aborted) break;
     }
   } catch (err) {
     if (!signal.aborted) throw err;
