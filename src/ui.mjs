@@ -48,6 +48,8 @@ const MAX_LINE = 64 * 1024;
 const MAX_READ = 4 * 1024 * 1024;
 /** A page that stops reading is dropped once this much is queued for it. */
 const MAX_QUEUED = 1024 * 1024;
+/** Open pages at most. A person has a few; every one gets the whole history when it connects. */
+const MAX_CLIENTS = 32;
 
 /**
  * @param {unknown} value
@@ -286,7 +288,15 @@ async function sendAsset(res, path, headOnly) {
  * @param {UiOptions} [options]
  * @returns {UiServer}
  */
-export function createUiServer({ file, pollMs, backlogBytes, history = 2000, heartbeatMs = 15000, assets = ASSET_DIR } = {}) {
+export function createUiServer({
+  file,
+  pollMs,
+  backlogBytes,
+  history = 2000,
+  heartbeatMs = 15000,
+  assets = ASSET_DIR,
+  maxClients = MAX_CLIENTS,
+} = {}) {
   /** @type {UiEvent[]} */
   const recent = [];
   /** @type {Set<ServerResponse>} */
@@ -351,7 +361,9 @@ export function createUiServer({ file, pollMs, backlogBytes, history = 2000, hea
     const refused = refusal(req, names);
     if (refused) return reply(res, refused.status, refused.message);
     const path = (req.url ?? '/').split('?')[0];
-    if (path === '/events') return req.method === 'GET' ? subscribe(res) : reply(res, 405, 'Use GET for /events');
+    if (path === '/events' && req.method !== 'GET') return reply(res, 405, 'Use GET for /events');
+    if (path === '/events' && clients.size >= maxClients) return reply(res, 503, `Too many open pages (${maxClients}): close one`);
+    if (path === '/events') return subscribe(res);
     const asset = ASSETS[path];
     if (!asset) return reply(res, 404, 'Not found');
     void sendAsset(res, join(assets, asset), req.method === 'HEAD');

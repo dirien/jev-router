@@ -42,6 +42,8 @@ export class UsageTap {
     }
     const lines = (this.pending + text).split('\n');
     this.pending = lines.pop() ?? '';
+    // A line with no end in sight carries no usage the tap can read; it must not grow without bound.
+    if (this.pending.length > MAX_JSON_BYTES) this.pending = '';
     for (const line of lines) if (line.startsWith('data:')) this.#event(line.slice(5).trim());
   }
 

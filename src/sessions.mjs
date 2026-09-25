@@ -23,8 +23,14 @@ import { dirname } from 'node:path';
  */
 export const hashKey = (key) => createHash('sha256').update(String(key)).digest('hex').slice(0, 32);
 
+/** Lines appended between rewrites of the state file, at least; more when it holds more sessions. */
+const REWRITE_EVERY = 1000;
+
 /** Session entries by key, least recently used first. */
 export class SessionStore {
+  /** Lines appended to the file since it was last rewritten. */
+  #appended = 0;
+
   /** @param {SessionStoreOptions} [options] */
   constructor({ file = null, max = 10000, ttlMs = 7 * 24 * 3600 * 1000, onError = () => undefined } = {}) {
     this.file = file;
@@ -71,9 +77,12 @@ export class SessionStore {
       const { lastSeen, ...persisted } = value;
       try {
         appendFileSync(this.file, `${JSON.stringify({ k, ...persisted })}\n`, { mode: 0o600 });
+        this.#appended += 1;
       } catch (err) {
         this.onError(err);
       }
+      // A router that runs for weeks would otherwise grow the file with every decision until it restarts.
+      if (this.#appended > Math.max(REWRITE_EVERY, this.map.size)) this.#rewrite(this.file);
     }
     return value;
   }
@@ -113,7 +122,21 @@ export class SessionStore {
         }
       }
       this.#trim();
-      // Rewrite one line per live session so the file doesn't grow forever.
+    } catch (err) {
+      this.onError(err);
+      return;
+    }
+    this.#rewrite(file);
+  }
+
+  /**
+   * Replaces the file with one line per session held, so it doesn't grow forever. The new file
+   * takes the old one's place only once it is whole.
+   * @param {string} file
+   */
+  #rewrite(file) {
+    this.#appended = 0;
+    try {
       const tmp = `${file}.tmp`;
       writeFileSync(tmp, [...this.map].map(([k, { lastSeen, ...e }]) => `${JSON.stringify({ k, ...e })}\n`).join(''), { mode: 0o600 });
       renameSync(tmp, file);

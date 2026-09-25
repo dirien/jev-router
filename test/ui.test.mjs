@@ -268,6 +268,27 @@ test('a view without a log shows what is published, and answers a port forwarded
   await view.close();
 });
 
+test('the view takes a bounded number of open pages', async () => {
+  const view = createUiServer({ heartbeatMs: 1000, maxClients: 2 });
+  const port = Number(new URL(await view.listen(0)).port);
+  const pages = [await subscribe(port), await subscribe(port)];
+  try {
+    await until(() => view.clients === 2, 'two pages');
+    const third = await subscribe(port);
+    pages.push(third);
+    assert.equal(third.res.statusCode, 503);
+    await until(() => third.state.ended, 'the refusal to end');
+    assert.match(third.state.text, /Too many open pages \(2\)/);
+    pages[0].close();
+    await until(() => view.clients === 1, 'a page to leave');
+    pages.push(await subscribe(port));
+    await until(() => view.clients === 2, 'a new page in its place');
+  } finally {
+    for (const page of pages) page.close();
+    await view.close();
+  }
+});
+
 test('hostNamesFor: loopback names always, the listening address too, and nothing more for a wildcard', () => {
   assert.deepEqual([...hostNamesFor('0.0.0.0')], ['127.0.0.1', 'localhost', '[::1]']);
   assert.deepEqual([...hostNamesFor('::')], ['127.0.0.1', 'localhost', '[::1]']);

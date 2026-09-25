@@ -337,7 +337,8 @@ function httpFailure(res, text) {
     status: res.status,
     waf,
     retryAfterMs: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined,
-    error: `HTTP ${res.status} ${detail}`.trim(),
+    // It ends up in every route entry of the turn and in /healthz, so a long error body is cut.
+    error: `HTTP ${res.status} ${String(detail).slice(0, 200)}`.trim(),
   };
 }
 

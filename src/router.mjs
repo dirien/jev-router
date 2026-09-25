@@ -87,6 +87,8 @@ const ERROR_TYPES = {
   413: 'request_too_large',
   415: 'invalid_request_error',
 };
+/** How many different warnings the router remembers, to log each one once. */
+const MAX_WARNINGS = 100;
 /** @param {string} text */
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 /**
@@ -151,14 +153,15 @@ export function createRouter(
   let cfg = input;
   let jev = new JevClient(cfg.jev, env, { fetchImpl });
   // Defined before the session store: it loads the state file, and reports errors, while it is constructed.
-  /** @type {Set<string>} */
+  /** @type {Set<string>} each warning is logged once while it is remembered */
   const warned = new Set();
   /** @param {string} message */
   const warn = (message) => {
-    if (!warned.has(message)) {
-      warned.add(message);
-      log({ ts: new Date().toISOString(), event: 'warning', message });
-    }
+    if (warned.has(message)) return;
+    // Some warnings quote what a client sent, so the set forgets its oldest rather than grow.
+    if (warned.size >= MAX_WARNINGS) warned.delete(/** @type {string} */ (warned.values().next().value));
+    warned.add(message);
+    log({ ts: new Date().toISOString(), event: 'warning', message });
   };
   const sessions =
     store ??
@@ -519,7 +522,8 @@ function settleByRequest(f, env, warn) {
     warn('Claude Code requests carry no request class. Set CLAUDE_CODE_GATEWAY_HINT_HEADERS=1 so background calls are recognized.');
 
   const pin = header(headers, 'x-jev-tier') ?? env.JEV_ROUTER_TIER;
-  if (pin && !cfg.tiers.includes(pin)) warn(`Ignoring unknown tier pin "${pin}". Known tiers: ${cfg.tiers.join(', ')}.`);
+  if (pin && !cfg.tiers.includes(pin))
+    warn(`Ignoring unknown tier pin ${JSON.stringify(pin.slice(0, 40))}. Known tiers: ${cfg.tiers.join(', ')}.`);
   if (pin && cfg.tiers.includes(pin)) return remember(f, pin, 'pinned', { pinned: true, clientModel: entry?.clientModel ?? body.model });
 
   // /model in Claude Code changes the requested model; follow the user's explicit switch.

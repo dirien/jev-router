@@ -460,6 +460,8 @@ export interface UiOptions {
   heartbeatMs?: number;
   /** Where the page's files are. Defaults to the packaged `ui/` directory. */
   assets?: string;
+  /** How many pages may stream at once; one more gets a 503. Defaults to 32. */
+  maxClients?: number;
 }
 
 /** The live view's server; see `createUiServer`. */

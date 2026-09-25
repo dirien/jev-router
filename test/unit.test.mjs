@@ -805,3 +805,37 @@ test('config: logMaxBytes defaults to 50 MiB and takes 0 to never rotate; logFil
     assert.throws(() => validateConfig({ ...shipped, stateFile: null, logFile: bad }), /logFile must be a file path or null/, String(bad));
   assert.equal(validateConfig({ ...shipped, stateFile: null, logFile: null }).logFile, null);
 });
+
+test('sessions: the state file is rewritten while the router runs, so it stays near one line per session', () => {
+  const file = `${mkdtempSync(`${tmpdir()}/jev-sessions-`)}/sessions.jsonl`;
+  const store = new SessionStore({ file });
+  const lines = () => readFileSync(file, 'utf8').trim().split('\n').length;
+  for (let i = 0; i < 1000; i += 1) store.set(i % 2 ? 'odd' : 'even', entry(i % 3 ? 'fast' : 'frontier'));
+  assert.equal(lines(), 1000, 'every change is appended');
+  store.set('even', entry('balanced'));
+  assert.equal(lines(), 2, 'one change more, and the file holds one line per session');
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.ok(!existsSync(`${file}.tmp`));
+  const reloaded = new SessionStore({ file });
+  assert.equal(reloaded.get('even')?.tier, 'balanced');
+  assert.equal(reloaded.get('odd')?.tier, 'frontier');
+});
+
+test('the usage tap drops an SSE line that never ends instead of holding it', () => {
+  const tap = new UsageTap('text/event-stream');
+  tap.push(Buffer.from(`data: ${'x'.repeat(9 * 1024 * 1024)}`));
+  assert.equal(tap.pending, '', 'more than 8 MiB without a newline is let go');
+  tap.push(Buffer.from('xx\ndata: {"type":"message_delta","usage":{"output_tokens":5}}\n\n'));
+  assert.deepEqual(tap.result(), { input: 0, cacheRead: 0, cacheWrite: 0, output: 5 }, 'and the lines after it are read');
+});
+
+test('Jev client: a long error body is cut to 200 characters, and an odd one does not throw', async () => {
+  const { client } = scripted({
+    'one.invalid': [() => reply(422, { detail: 'y'.repeat(10000) })],
+    'two.invalid': [() => reply(500, { error: { message: 42 } }), () => reply(500, { error: { message: 42 } })],
+  });
+  const answer = await client.decide(stateOf('Add a test'));
+  assert.ok(!answer.ok);
+  assert.equal(client.health().one.lastError, `HTTP 422 ${'y'.repeat(200)}`);
+  assert.equal(client.health().two.lastError, 'HTTP 500 42');
+});

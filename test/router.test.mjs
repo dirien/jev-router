@@ -1236,6 +1236,24 @@ test('a client that leaves mid-stream is logged as gone, and the upstream stream
   assert.equal(entry.client_aborted, true);
 });
 
+test('the router remembers a bounded number of warnings, so pins a client makes up cannot grow it', async () => {
+  reset(plans.a, { option: 'routine', probability: 0.9 });
+  const { url, logs } = await startRouter();
+  await post(url, '/v1/messages', cc('s-pins', 'Add a test'), ccHeaders('s-pins'));
+  // Tool-loop steps: no new human turn, so no Jev call, but each pin is read.
+  const step = { ...claudeCodeToolTurn('s-pins', 'Add a test'), stream: false };
+  const pinned = (/** @type {string} */ pin) => post(url, '/v1/messages', step, ccHeaders('s-pins', { 'x-jev-tier': pin }));
+  for (let i = 0; i <= 100; i += 1) await pinned(`made-up-${i}`);
+  await pinned('made-up-100');
+  await pinned('made-up-0');
+  const warnings = () => logs.flatMap((e) => (e.event === 'warning' ? [e.message] : []));
+  const pinWarnings = warnings().filter((message) => message.startsWith('Ignoring unknown tier pin'));
+  assert.equal(pinWarnings.length, 102, 'each pin once while it is remembered, and the oldest forgotten after 100');
+  assert.equal(pinWarnings.at(-1), 'Ignoring unknown tier pin "made-up-0". Known tiers: fast, balanced, frontier.');
+  await pinned(`x${'y'.repeat(5000)}`);
+  assert.ok(String(warnings().at(-1)).length < 120, 'a long pin is cut');
+});
+
 test('logs carry decisions but never keys or prompt text', () => {
   const text = JSON.stringify(allLogs);
   assert.ok(allLogs.length > 30);
