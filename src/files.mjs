@@ -7,6 +7,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -18,6 +19,8 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** @import { Models } from './types.js' */
+
 /**
  * A path inside the installed package.
  * @param {string} path relative to the package root
@@ -27,6 +30,27 @@ export const packaged = (path) => fileURLToPath(new URL(`../${path}`, import.met
 export const DEFAULT_CONFIG = packaged('config/default.json');
 /** The packaged config that keeps Claude Code on Claude models. */
 export const ANTHROPIC_ONLY_CONFIG = packaged('config/anthropic-only.json');
+/** The packaged config that keeps Claude Code on Claude models, with Fable 5.1 as a fourth tier, `max`, for deep work. */
+export const ANTHROPIC_FABLE_CONFIG = packaged('config/anthropic-fable.json');
+/** The packaged configs by the name `setup --models` and `init --models` give them, in the order setup offers them. */
+export const PACKAGED_CONFIGS = Object.freeze({ claude: ANTHROPIC_ONLY_CONFIG, fable: ANTHROPIC_FABLE_CONFIG, ollama: DEFAULT_CONFIG });
+/** @type {ReadonlyArray<Models>} */
+export const MODEL_CHOICES = ['claude', 'fable', 'ollama'];
+
+/**
+ * The packaged config a file is an exact copy of: one that setup or init wrote and nobody has changed since.
+ * @param {string} path
+ * @returns {Models | undefined} undefined for any other file, or one that can't be read
+ */
+export function packagedModels(path) {
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+  return MODEL_CHOICES.find((name) => readFileSync(PACKAGED_CONFIGS[name], 'utf8') === text);
+}
 
 /**
  * @param {NodeJS.ProcessEnv} env

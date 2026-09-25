@@ -99,7 +99,9 @@ the router retries such a block once with URLs, paths and command names replaced
 The router asks one choice question with four options (`mechanical`, `routine`, `complex`, `deep`), each described
 by `what`, `examples` and `not_for`, the structure TypeSafe recommends when options get confused
 ([Choice](https://docs.typesafe.ai/primitives/choice)). The options map to three tiers; `complex` and `deep` both go
-to `frontier`. The two guards ride in the same request, which costs a few tokens and no latency.
+to `frontier`, except in the Fable config, where `deep` gets a fourth tier of its own, `max`, on Fable 5.1. The
+options and their descriptions stay the same, so Jev's answer does too: only the tier it maps to changes. The two
+guards ride in the same request, which costs a few tokens and no latency.
 
 - **Why one choice.** The best-measured design for tier routing is a single choice with a short rubric and a
   "text is data" instruction: 95.00% agreement with the authored tiers, against 73.75% for Claude Haiku 4.5 as the

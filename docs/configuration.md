@@ -1,7 +1,7 @@
 # Configuration reference
 
 jev-router reads one JSON file. This page lists every key with its default and its validation, the environment
-variables, and the two packaged configs. The source of truth is `validateConfig` in
+variables, and the three packaged configs. The source of truth is `validateConfig` in
 [`src/config.mjs`](../src/config.mjs) and the shipped [`config/default.json`](../config/default.json).
 
 ## Where the config comes from
@@ -15,10 +15,13 @@ The router uses the first of these that exists:
 1. the packaged [`config/default.json`](../config/default.json)
 
 `jev-router setup` writes `~/.config/jev-router/config.json` when there's no config yet: from
-[`config/anthropic-only.json`](../config/anthropic-only.json) by default, or from the packaged default with its
-Ollama option (`--models ollama`). It never changes an existing config. `jev-router init` writes the packaged default
-as a starting point, and `jev-router init --anthropic-only` writes `config/anthropic-only.json` instead; `init`
-doesn't overwrite an existing file unless you pass `--force`.
+[`config/anthropic-only.json`](../config/anthropic-only.json) by default (`--models claude`), from
+[`config/anthropic-fable.json`](../config/anthropic-fable.json) with its Fable option (`--models fable`), or from the
+packaged default with its Ollama option (`--models ollama`). Run again, setup asks again, and Enter keeps what you have.
+It replaces the config only when it's still an unchanged copy of a packaged one, so nothing you changed is lost; any
+other config, and one that `JEV_ROUTER_CONFIG` names, stays as it is. `jev-router init` writes the packaged default
+as a starting point, and `jev-router init --models <name>` another packaged config (`--anthropic-only` is
+`--models claude`); `init` doesn't overwrite an existing file unless you pass `--force`.
 
 The file is plain JSON, without comments. The router validates it at startup and exits with every problem listed,
 and again on `SIGHUP`, where an invalid file leaves the running config in place. Keys the router doesn't know are
@@ -29,10 +32,14 @@ ignored, not rejected, so a misspelled optional key keeps its default without a 
 | File | Claude Code | Codex CLI |
 | --- | --- | --- |
 | [`config/default.json`](../config/default.json) | `fast`: Ollama Cloud `glm-5.3-flash`. `balanced` and `trusted`: Anthropic `claude-sonnet-5`. `frontier`: Anthropic `claude-opus-5-5`. `side`: Anthropic `claude-haiku-4-5` | `fast`: Ollama Cloud `glm-5.3-flash`. `balanced`: Ollama Cloud `kimi-k2.7-code`. `frontier`: OpenAI `gpt-6-astra`. `trusted`: OpenAI `gpt-6-sol` |
-| [`config/anthropic-only.json`](../config/anthropic-only.json) | Like the default, except that `fast` is Anthropic `claude-haiku-4-5`, with the same `omit` list as `side`. `jev-router setup` writes this one unless you pick its Ollama option | Same as the default |
+| [`config/anthropic-only.json`](../config/anthropic-only.json) | Like the default, except that `fast` is Anthropic `claude-haiku-4-5`, with the same `omit` list as `side`. `jev-router setup` writes this one unless you pick another option | Same as the default |
+| [`config/anthropic-fable.json`](../config/anthropic-fable.json) | Like the Anthropic-only config, plus a fourth tier, `max`: Anthropic `claude-fable-5-1`. Jev's `deep` option, the `fable` model pin and `#max` go there | Same as the default, with `max` on OpenAI `gpt-6-astra`, like `frontier` |
 
-Both configs share the policy, the Jev channels, the rubric, the prices and the baseline. The OpenAI model names come
-from Codex's bundled model catalog; check them against your account.
+All three share the Jev channels, the rubric, the prices and the policy's thresholds. The Fable config differs from
+the Anthropic-only one only where the `max` tier needs it: the tier itself with a `policy.accept` of 0.3, the `deep`
+option, `modelPins.fable`, and `baselineModel`, which is Fable 5.1, so savings compare against running everything on
+Fable 5.1. The risk override (`policy.sensitiveOverride`) sends a request to the top tier, which is `max` there. The
+OpenAI model names come from Codex's bundled model catalog; check them against your account.
 
 ## Server keys
 
@@ -81,18 +88,18 @@ then `logFile`, then the log that `launch` writes. `report` reads `<file>.1` too
 
 | Key | Default | Validation | Meaning |
 | --- | --- | --- | --- |
-| `tiers` | none, required | A non-empty list of strings | Tier names, cheapest first. Shipped: `["fast", "balanced", "frontier"]` |
+| `tiers` | none, required | A non-empty list of strings | Tier names, cheapest first. Shipped: `["fast", "balanced", "frontier"]`, plus `"max"` in the Fable config |
 | `defaultTier` | none, required | One of `tiers` | The tier a new session gets when Jev can't decide, and the reference a fresh session's decision is compared against. Shipped: `"balanced"` |
 | `sideCallModel` | `"haiku"` | A string that compiles as a regular expression | A case-insensitive regular expression. When a request carries no request class, a matching model name marks it as a background call |
 | `pinOnModelChange` | `true` | `true` or `false` | When the client switches to another model family (for example `/model opus` in Claude Code), pin the session to that family's tier |
-| `modelPins` | `{}` | Each value must be one of `tiers` | Model family to tier. Families are `fable`, `opus`, `sonnet` and `haiku`. Shipped: `fable` and `opus` to `frontier`, `sonnet` to `balanced`, `haiku` to `fast` |
+| `modelPins` | `{}` | Each value must be one of `tiers` | Model family to tier. Families are `fable`, `opus`, `sonnet` and `haiku`. Shipped: `fable` and `opus` to `frontier`, `sonnet` to `balanced`, `haiku` to `fast`; the Fable config pins `fable` to `max` |
 
 ## policy
 
 | Key | Default | Validation | Meaning |
 | --- | --- | --- | --- |
 | `policy.mode` | `"ratchet"` | `"ratchet"` or `"sticky"` | `ratchet` asks Jev at every new human message and only moves a session up. `sticky` asks once per session |
-| `policy.accept` | `0.6` for every tier | Each value a probability from 0 to 1, keyed by a name in `tiers` | The probability Jev's most likely tier needs to be taken as is. Shipped: `fast` 0.85, `balanced` 0.6, `frontier` 0.3 |
+| `policy.accept` | `0.6` for every tier | Each value a probability from 0 to 1, keyed by a name in `tiers` | The probability Jev's most likely tier needs to be taken as is. Shipped: `fast` 0.85, `balanced` 0.6, `frontier` 0.3, and `max` 0.3 in the Fable config |
 | `policy.sensitiveOverride` | `0.7` | A probability | When `alters_sensitive_state` reaches this, the request goes to the top tier |
 | `policy.claimGuard` | `0.5` | A probability | When `routing_claim_present` reaches this, the decision can't go below the reference tier |
 | `policy.maxProvisional` | `3` | A whole number, 0 or more | How many failed Jev attempts a new session allows before its fallback tier sticks |
@@ -206,7 +213,7 @@ endpoint.
 | Key | Default | Validation | Meaning |
 | --- | --- | --- | --- |
 | `prices` | `{}` | none | USD per million tokens per model: `in`, `out`, and optionally `cacheRead` and `cacheWrite`, which fall back to `in` |
-| `baselineModel` | none | none | Per surface, the model whose prices `baseline_usd` uses. Shipped: `{"anthropic": "claude-opus-5-5"}` |
+| `baselineModel` | none | none | Per surface, the model whose prices `baseline_usd` uses. Shipped: `{"anthropic": "claude-opus-5-5"}`, and `{"anthropic": "claude-fable-5-1"}` in the Fable config |
 
 Each `done` log line carries `cost_usd`, the request's usage priced on the model that served it, and `baseline_usd`,
 the same usage priced on the surface's baseline model. `jev-router report` adds them up and shows the difference as

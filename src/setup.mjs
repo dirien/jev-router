@@ -23,17 +23,18 @@ import {
 import { loadConfig } from './config.mjs';
 import { agentEnv, envFilePath, loadEnvFile, looseFile, readEnvFile, saveEnvValues } from './envfile.mjs';
 import {
-  ANTHROPIC_ONLY_CONFIG,
   claudeSettingsPath,
   configFile,
-  DEFAULT_CONFIG,
   envValue,
   errorCode,
   errorMessage,
   hasControlCharacter,
+  MODEL_CHOICES,
   NO_ENV_FILE,
   namedLogFile,
+  PACKAGED_CONFIGS,
   packaged,
+  packagedModels,
   routerLogPath,
   setupManifestPath,
   shellQuote,
@@ -65,7 +66,7 @@ import {
   startService,
 } from './service.mjs';
 
-/** @import { Config, JevChannel } from './types.js' */
+/** @import { Config, JevChannel, Models } from './types.js' */
 /** @import { Credential, SettingsChange } from './claude.mjs' */
 /** @import { Origin } from './install.mjs' */
 /** @import { Manager, ManagerChoice } from './service.mjs' */
@@ -75,7 +76,7 @@ import {
  * @property {boolean} yes answer every question with its default, and take the keys from the environment
  * @property {'auto' | Manager | 'none'} service
  * @property {boolean} claudeSettings whether to point Claude Code's settings at the router
- * @property {'claude' | 'ollama'} [models] the config for a machine that has none yet
+ * @property {Models} [models] the packaged config to use, for a machine without a config or with an unchanged packaged one
  */
 
 /**
@@ -93,10 +94,19 @@ import {
  * @property {Credential[]} credentials what Claude Code would carry to the router, and the router to Anthropic
  */
 
-/** @type {Record<'claude' | 'ollama', { file: string, what: string }>} */
+/** @type {Record<Models, { what: string, short: string, needs: string }>} */
 const MODELS = {
-  claude: { file: ANTHROPIC_ONLY_CONFIG, what: 'Claude only: Haiku 4.5, Sonnet 5 and Opus 5.5' },
-  ollama: { file: DEFAULT_CONFIG, what: "Ollama Cloud's glm-5.3-flash for quick work, and Claude for the rest" },
+  claude: { what: 'Claude only: Haiku 4.5, Sonnet 5 and Opus 5.5', short: 'Claude only', needs: 'a Jev key' },
+  fable: {
+    what: 'Claude only, with Fable 5.1 for deep work: Haiku 4.5, Sonnet 5, Opus 5.5 and Fable 5.1',
+    short: 'Claude with Fable 5.1',
+    needs: 'a Jev key',
+  },
+  ollama: {
+    what: "Ollama Cloud's glm-5.3-flash for quick work, and Claude for the rest",
+    short: 'Ollama Cloud and Claude',
+    needs: 'a Jev key and an Ollama key',
+  },
 };
 /** @type {Record<string, string>} */
 const KEY_NAMES = { TYPESAFE_API_KEY: 'TypeSafe', OPENROUTER_API_KEY: 'OpenRouter', OLLAMA_API_KEY: 'Ollama', OPENAI_API_KEY: 'OpenAI' };
@@ -129,7 +139,8 @@ const oddKey = (value) => /\s/.test(value) || hasControlCharacter(value);
  * @typedef {object} Plan everything setup asked and found, before it writes anything
  * @property {Config} cfg
  * @property {string} configPath
- * @property {string} [configFrom] the packaged config to copy, for a machine without one
+ * @property {Models} [models] the packaged config to write, for a machine without a config or to switch models
+ * @property {Models} [replaces] the packaged config that one replaces, unchanged since setup or init wrote it
  * @property {string} envFile
  * @property {Record<string, string>} saved the variables the env file sets now
  * @property {Record<string, string>} keys the keys to save
@@ -266,7 +277,7 @@ async function ask(options, env, prompter, signal) {
   const choice = chooseManager(options.service, env);
   if (!choice.manager && options.service !== 'auto' && options.service !== 'none')
     throw new Error(`--service ${options.service}: ${choice.why}`);
-  const { cfg, configPath, configFrom } = await chooseConfig(options, env, prompter);
+  const { cfg, configPath, models, replaces } = await chooseConfig(options, env, prompter);
   const router = routerPlan(cfg, env, saved);
   const odd = [configPath, envFile, router.logFile].find(hasControlCharacter);
   if (odd !== undefined) throw new Error(`setup can't put ${JSON.stringify(odd)} in a service file: it has a control character`);
@@ -275,46 +286,78 @@ async function ask(options, env, prompter, signal) {
   // What Claude Code starts with: the shell's variables, without the ones the env file added for the router.
   const gateway = gatewayCheck(router, env, agentEnv(env, loaded));
   /** @type {Plan} */
-  const plan = { ...router, cfg, configPath, configFrom, envFile, saved, keys, origin: origin(VERSION), gateway, service: choice };
+  const plan = {
+    ...router,
+    cfg,
+    configPath,
+    models,
+    replaces,
+    envFile,
+    saved,
+    keys,
+    origin: origin(VERSION),
+    gateway,
+    service: choice,
+  };
   plan.installed = installedCommand(env);
   if (choice.manager) plan.service = await planService(plan, choice, options, env, prompter);
   return plan;
 }
 
 /**
- * The config to use: an existing one as it is, else the packaged one for the models the person picks.
+ * The config to use. A machine without one gets the packaged config for the models the person
+ * picks, and so does a user config that is still an unchanged copy of a packaged one: that's how a
+ * second run switches models. Any other config stays as it is.
  * @param {SetupOptions} options
  * @param {NodeJS.ProcessEnv} env
  * @param {Prompter | undefined} prompter
- * @returns {Promise<{ cfg: Config, configPath: string, configFrom?: string }>}
+ * @returns {Promise<Pick<Plan, 'cfg' | 'configPath' | 'models' | 'replaces'>>}
  */
 async function chooseConfig(options, env, prompter) {
   const found = configFile(undefined, env);
-  if (found.source !== 'packaged default') {
-    const note = options.models ? '; --models applies only to a machine without one' : '';
-    say(`Config: ${found.path} (${found.source}), kept as it is${note}.\n\n`);
+  const current = found.source === 'user config' ? packagedModels(found.path) : undefined;
+  if (found.source !== 'packaged default' && !current) {
+    say(`Config: ${found.path} (${found.source}), kept as it is${keptNote(found.source, options.models)}.\n\n`);
     return { cfg: loadConfig(found.path), configPath: found.path };
   }
-  const models = options.models ?? (prompter ? await askModels(prompter) : 'claude');
+  const models = options.models ?? (prompter ? await askModels(prompter, current) : (current ?? 'claude'));
   say(prompter && !options.models ? '\n' : `Models: ${MODELS[models].what}.\n\n`);
-  return { cfg: loadConfig(MODELS[models].file), configPath: userConfigPath(env), configFrom: MODELS[models].file };
+  if (models === current) return { cfg: loadConfig(found.path), configPath: found.path };
+  return { cfg: loadConfig(PACKAGED_CONFIGS[models]), configPath: userConfigPath(env), models, replaces: current };
+}
+
+/**
+ * Why --models didn't change the config setup keeps, and how to change it.
+ * @param {string} source where the config came from, as `configFile` says
+ * @param {Models | undefined} models
+ */
+function keptNote(source, models) {
+  if (!models) return '';
+  if (source !== 'user config') return `; --models doesn't change a config that ${source} names`;
+  return (
+    ': it has changes of your own, so --models leaves it alone. ' +
+    `To replace it with the packaged ${models} config, run jev-router init --models ${models} --force, then setup again`
+  );
 }
 
 /**
  * @param {Prompter} prompter
- * @returns {Promise<'claude' | 'ollama'>}
+ * @param {Models | undefined} current the packaged config the machine has now, which Enter keeps
+ * @returns {Promise<Models>}
  */
-async function askModels(prompter) {
+async function askModels(prompter, current) {
+  const fallback = current ?? 'claude';
+  const numbers = MODEL_CHOICES.map((_, i) => String(i + 1));
   prompter.say(
-    'Which models should Claude Code use?\n' +
-      `  1. ${MODELS.claude.what}. You need a Jev key.\n` +
-      `  2. ${MODELS.ollama.what}. You need a Jev key and an Ollama key.\n`,
+    `Which models should Claude Code use?${current ? ' Enter keeps the ones you have.' : ''}\n` +
+      MODEL_CHOICES.map((name, i) => `  ${numbers[i]}. ${MODELS[name].what}. You need ${MODELS[name].needs}.\n`).join(''),
   );
   for (;;) {
-    const answer = await prompter.ask('Choose 1 or 2 [1]: ');
-    if (answer === '' || answer === '1') return 'claude';
-    if (answer === '2') return 'ollama';
-    prompter.say('Please answer 1 or 2.\n');
+    const answer = await prompter.ask(`Choose ${orWords(numbers)} [${numbers[MODEL_CHOICES.indexOf(fallback)]}]: `);
+    if (answer === '') return fallback;
+    const index = numbers.indexOf(answer);
+    if (index >= 0) return MODEL_CHOICES[index];
+    prompter.say(`Please answer ${orWords(numbers)}.\n`);
   }
 }
 
@@ -721,13 +764,17 @@ async function carryOut(plan, env) {
 }
 
 /**
- * Writes the config for a machine that has none, and the keys and router settings that changed.
+ * Writes the config for a machine that has none, or the one it switches to, and the keys and router settings that changed.
  * @param {Plan} plan
  */
 function writeFiles(plan) {
-  if (plan.configFrom) {
-    writeFileAtomic(plan.configPath, readFileSync(plan.configFrom, 'utf8'), 0o600);
-    say(`Wrote ${plan.configPath} (${plan.configFrom === ANTHROPIC_ONLY_CONFIG ? MODELS.claude.what : MODELS.ollama.what}).\n`);
+  if (plan.models) {
+    writeFileAtomic(plan.configPath, readFileSync(PACKAGED_CONFIGS[plan.models], 'utf8'), 0o600);
+    say(
+      plan.replaces
+        ? `Switched ${plan.configPath} from ${MODELS[plan.replaces].short} to ${MODELS[plan.models].short}.\n`
+        : `Wrote ${plan.configPath} (${MODELS[plan.models].what}).\n`,
+    );
   } else say(`Kept ${plan.configPath}.\n`);
   const names = Object.keys(plan.keys);
   const router = Object.entries(plan.routerVariables).map(([name, value]) => `${name}=${value}`);

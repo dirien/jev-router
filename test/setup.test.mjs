@@ -24,6 +24,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from '../src/router.mjs';
 import {
+  ANTHROPIC_FABLE_CONFIG,
   ANTHROPIC_ONLY_CONFIG,
   ask,
   BIN,
@@ -118,7 +119,7 @@ test('setup asks for the models and a Jev key, checks the key, runs the router a
   assert.equal(result.stdout, '');
   for (const text of [
     'Which models should Claude Code use?\n  1. Claude only: Haiku 4.5, Sonnet 5 and Opus 5.5. You need a Jev key.\n',
-    'Choose 1 or 2 [1]: \n',
+    'Choose 1, 2 or 3 [1]: \n',
     'TypeSafe API key (press Enter to use an OpenRouter key instead): \n',
     'Checking the TypeSafe key with one Jev call (about $0.00003)... it works (typesafe answered in ',
     'Start jev-router in the background when you log in, and send every Claude Code session through it? [Y/n] \n',
@@ -270,7 +271,11 @@ test('setup keeps an existing config and a saved key, and a second run restarts 
   assert.equal(first.code, 0, first.stderr);
   assert.match(
     first.stderr,
-    new RegExp(`^Config: ${box.configFile} \\(user config\\), kept as it is; --models applies only to a machine without one\\.$`, 'm'),
+    new RegExp(
+      `^Config: ${box.configFile} \\(user config\\), kept as it is: it has changes of your own, so --models leaves it alone\\. ` +
+        'To replace it with the packaged ollama config, run jev-router init --models ollama --force, then setup again\\.$',
+      'm',
+    ),
   );
   assert.doesNotMatch(first.stderr, /Which models/);
   assert.match(first.stderr, /^MOCK_JEV_KEY API key \[saved; press Enter to keep it\]: $/m);
@@ -285,6 +290,70 @@ test('setup keeps an existing config and a saved key, and a second run restarts 
   assert.doesNotMatch(second.stderr, /Restart any Claude Code session/, 'nothing changed, so nothing to restart');
   assert.equal(box.calls().filter((call) => call.args[1] === 'restart').length, 2);
   assert.equal((await healthz(box.url)).ok, true);
+});
+
+/**
+ * The tiers of the config the service's router started with, from the newest `config` line in its log.
+ * @param {{ state: string }} box
+ */
+async function startedTiers(box) {
+  const log = join(box.state, 'jev-router', 'router.log');
+  /** @returns {string[] | undefined} */
+  const newest = () =>
+    existsSync(log)
+      ? readFileSync(log, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+          .findLast((entry) => entry.event === 'config')?.tiers
+      : undefined;
+  await waitFor(() => newest() !== undefined, 'the config line');
+  return newest();
+}
+
+test('setup --models fable writes the Fable config, and a second run switches an unchanged packaged config or keeps it on Enter', async () => {
+  const box = await setupBox();
+  const fable = await setup(box, ['--yes', '--service', 'systemd', '--models', 'fable'], { env: { TYPESAFE_API_KEY: GOOD } });
+  assert.equal(fable.code, 0, fable.stderr);
+  assert.match(fable.stderr, /^Models: Claude only, with Fable 5\.1 for deep work: Haiku 4\.5, Sonnet 5, Opus 5\.5 and Fable 5\.1\.$/m);
+  assert.match(fable.stderr, new RegExp(`^Wrote ${box.configFile} \\(Claude only, with Fable 5\\.1 for deep work: `, 'm'));
+  assert.equal(readFileSync(box.configFile, 'utf8'), readFileSync(ANTHROPIC_FABLE_CONFIG, 'utf8'));
+  assert.deepEqual(await startedTiers(box), ['fast', 'balanced', 'frontier', 'max'], 'the service runs it');
+
+  const kept = await setup(box, ['--service', 'systemd'], { input: '\n\n\n' });
+  assert.equal(kept.code, 0, kept.stderr);
+  assert.ok(kept.stderr.includes('Which models should Claude Code use? Enter keeps the ones you have.\n'), kept.stderr);
+  assert.ok(
+    kept.stderr.includes(
+      '  2. Claude only, with Fable 5.1 for deep work: Haiku 4.5, Sonnet 5, Opus 5.5 and Fable 5.1. You need a Jev key.\n',
+    ),
+  );
+  assert.ok(kept.stderr.includes('Choose 1, 2 or 3 [2]: \n'), 'Enter keeps the Fable config');
+  assert.match(kept.stderr, new RegExp(`^Kept ${box.configFile}\\.$`, 'm'));
+  assert.equal(readFileSync(box.configFile, 'utf8'), readFileSync(ANTHROPIC_FABLE_CONFIG, 'utf8'));
+
+  const switched = await setup(box, ['--service', 'systemd'], { input: '1\n\n\n' });
+  assert.equal(switched.code, 0, switched.stderr);
+  assert.match(switched.stderr, new RegExp(`^Switched ${box.configFile} from Claude with Fable 5\\.1 to Claude only\\.$`, 'm'));
+  assert.equal(readFileSync(box.configFile, 'utf8'), readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'));
+  assert.deepEqual(await startedTiers(box), ['fast', 'balanced', 'frontier'], 'the restarted service runs the new one');
+
+  const back = await setup(box, ['--yes', '--service', 'systemd', '--models', 'fable']);
+  assert.equal(back.code, 0, back.stderr);
+  assert.match(back.stderr, new RegExp(`^Switched ${box.configFile} from Claude only to Claude with Fable 5\\.1\\.$`, 'm'));
+  const same = await setup(box, ['--yes', '--service', 'systemd']);
+  assert.match(same.stderr, new RegExp(`^Kept ${box.configFile}\\.$`, 'm'), '--yes keeps the models');
+  assert.equal(readJson(box.manifest).files.config, box.configFile);
+
+  const mine = join(box.root, 'mine.json');
+  copyFileSync(ANTHROPIC_FABLE_CONFIG, mine);
+  const named = await setup(box, ['--yes', '--service', 'none', '--models', 'claude'], { env: { JEV_ROUTER_CONFIG: mine } });
+  assert.equal(named.code, 0, named.stderr);
+  assert.match(
+    named.stderr,
+    /^Config: .*mine\.json \(JEV_ROUTER_CONFIG\), kept as it is; --models doesn't change a config that JEV_ROUTER_CONFIG names\.$/m,
+  );
+  assert.equal(readFileSync(mine, 'utf8'), readFileSync(ANTHROPIC_FABLE_CONFIG, 'utf8'));
 });
 
 test('a Jev key that fails its check writes nothing: setup offers another try, and --yes exits 1', async () => {
@@ -345,7 +414,7 @@ test("when Jev doesn't answer, setup says to check the connection rather than th
 test('Ctrl-C during a question stops setup with exit code 130, and nothing is written', async () => {
   const box = await setupBox();
   const running = start(['setup'], box.env, { input: null, node: ['--import', REDIRECT] });
-  await waitFor(() => running.out.stderr.includes('Choose 1 or 2 [1]: '), 'the first question');
+  await waitFor(() => running.out.stderr.includes('Choose 1, 2 or 3 [1]: '), 'the first question');
   running.child.kill('SIGINT');
   const result = await running.done;
   assert.equal(result.code, 130);
@@ -387,7 +456,7 @@ test('without a service manager, setup saves the keys and says to start sessions
 
   const bad = await run(['setup', '--service', 'cron'], container.env);
   assert.match(bad.stderr, /--service takes auto, launchd, systemd or none, got "cron"/);
-  assert.match((await run(['setup', '--models', 'gpt'], container.env)).stderr, /--models takes claude or ollama, got "gpt"/);
+  assert.match((await run(['setup', '--models', 'gpt'], container.env)).stderr, /--models takes claude, fable or ollama, got "gpt"/);
   assert.match((await run(['uninstall', 'now'], container.env)).stderr, /Usage: jev-router uninstall/);
 });
 
@@ -457,7 +526,7 @@ test("a base URL for another gateway stays unless the person says yes, and setti
   assert.match(kept.stderr, /Start Claude Code through the router with: jev-router launch claude\n/);
   assert.deepEqual(readJson(box.settings), gateway);
 
-  const replaced = await setup(box, ['--service', 'systemd'], { input: '\n\ny\n' });
+  const replaced = await setup(box, ['--service', 'systemd'], { input: '\n\n\ny\n' });
   assert.equal(replaced.code, 0, replaced.stderr);
   assert.match(replaced.stderr, /Replace that with the router\? \[y\/N\] y\n/);
   assert.equal(readJson(box.settings).env.ANTHROPIC_BASE_URL, box.url);
@@ -731,9 +800,9 @@ test('when npm install -g fails, setup installs no service, keeps the keys, and 
 
 test('setup asks again after an answer it cannot use, and a service manager that fails leaves Claude Code alone', async () => {
   const box = await setupBox();
-  const asked = await setup(box, ['--service', 'systemd'], { input: `3\n2\n${GOOD}\n\n${OLLAMA}\n\n`, env: { FAKE_SYSTEMD: 'refuses' } });
+  const asked = await setup(box, ['--service', 'systemd'], { input: `4\n3\n${GOOD}\n\n${OLLAMA}\n\n`, env: { FAKE_SYSTEMD: 'refuses' } });
   assert.equal(asked.code, 1);
-  assert.match(asked.stderr, /Choose 1 or 2 \[1\]: 3\nPlease answer 1 or 2\.\nChoose 1 or 2 \[1\]: 2\n/);
+  assert.match(asked.stderr, /Choose 1, 2 or 3 \[1\]: 4\nPlease answer 1, 2 or 3\.\nChoose 1, 2 or 3 \[1\]: 3\n/);
   assert.match(
     asked.stderr,
     /Ollama API key \(ollama\.com\) for Claude Code's fast tier: \nThat tier needs OLLAMA_API_KEY\.\nOllama API key/,
@@ -795,7 +864,7 @@ test("setup never points Claude Code at the router while it carries another gate
   assert.ok(!guarded.stderr.includes(GATEWAY_TOKEN), 'names only, never a value');
   assert.equal((await healthz(box.url)).ok, true, 'the service runs anyway');
 
-  const asked = await setup(box, ['--service', 'systemd'], { input: '\n\n', env: gateway });
+  const asked = await setup(box, ['--service', 'systemd'], { input: '\n\n\n', env: gateway });
   assert.equal(asked.code, 0, asked.stderr);
   assert.doesNotMatch(asked.stderr, /Replace that/, 'no question either');
   assert.ok(!existsSync(box.settings));
@@ -829,7 +898,7 @@ test("setup never points Claude Code at the router while it carries another gate
     box.settings,
     JSON.stringify({ apiKeyHelper: '/usr/local/bin/gateway-token', env: { ANTHROPIC_BASE_URL: 'https://gw.example.com' } }),
   );
-  const helper = await setup(box, ['--service', 'systemd'], { input: '\n\n' });
+  const helper = await setup(box, ['--service', 'systemd'], { input: '\n\n\n' });
   assert.equal(helper.code, 0, helper.stderr);
   assert.match(helper.stderr, /with apiKeyHelper in .*settings\.json\. Behind the router/);
   assert.match(helper.stderr, /remove ANTHROPIC_BASE_URL and apiKeyHelper from .*settings\.json, then run setup again\./);
@@ -903,7 +972,7 @@ test('a base URL from this shell without credentials gets the question, which sa
   );
   const kept = await setup(box, ['--yes', '--service', 'systemd'], { env: proxy });
   assert.match(kept.stderr, /--yes keeps that\./);
-  const replaced = await setup(box, ['--service', 'systemd'], { input: '\n\ny\n', env: proxy });
+  const replaced = await setup(box, ['--service', 'systemd'], { input: '\n\n\ny\n', env: proxy });
   assert.equal(replaced.code, 0, replaced.stderr);
   assert.equal(readJson(box.settings).env.ANTHROPIC_BASE_URL, box.url, 'a yes replaces it');
 });

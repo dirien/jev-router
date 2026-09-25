@@ -11,6 +11,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -23,7 +24,7 @@ import { parseEnv } from 'node:util';
 import { changeSettingsEnv, readSettings, settingsBlock, settingsSet } from '../src/claude.mjs';
 import { loadConfig, validateConfig } from '../src/config.mjs';
 import { envFileFor, loadEnvFile, quoteEnvValue, setEnvValues } from '../src/envfile.mjs';
-import { writeFileAtomic } from '../src/files.mjs';
+import { MODEL_CHOICES, PACKAGED_CONFIGS, packagedModels, writeFileAtomic } from '../src/files.mjs';
 import { commandVersion, installSpec, LEGACY_PACKAGE, npxDirOf, origin, PACKAGE } from '../src/install.mjs';
 import { applyPolicy, buildQuestions, buildState, hardenState, JevClient, tierProbabilities } from '../src/jev.mjs';
 import { appendLogLine } from '../src/logfile.mjs';
@@ -243,6 +244,54 @@ test('config validation fails fast and lists every problem', () => {
   const filled = validateConfig({ ...minimal, stateFile: null });
   assert.equal(filled.sideCallModel, 'haiku', 'a missing sideCallModel gets a safe default instead of matching everything');
   assert.equal(filled.policy.sensitiveOverride, 0.7);
+});
+
+test('the packaged configs validate; the Fable one is the Claude-only one plus a max tier on Fable 5.1', () => {
+  /** @param {import('../src/types.js').Models} name */
+  const read = (name) => JSON.parse(readFileSync(PACKAGED_CONFIGS[name], 'utf8'));
+  for (const name of MODEL_CHOICES) assert.ok(loadConfig(PACKAGED_CONFIGS[name]).tiers.length >= 3, name);
+  // Everything else is the Claude-only config's, so a change there has to reach the Fable config too.
+  const expected = read('claude');
+  expected.tiers.push('max');
+  expected.policy.accept.max = 0.3;
+  expected.modelPins.fable = 'max';
+  expected.jev.options.deep.tier = 'max';
+  expected.surfaces.anthropic.max = { ...expected.surfaces.anthropic.frontier, model: 'claude-fable-5-1' };
+  expected.surfaces.openai.max = expected.surfaces.openai.frontier;
+  expected.baselineModel.anthropic = 'claude-fable-5-1';
+  assert.deepEqual(read('fable'), expected);
+
+  const fable = loadConfig(PACKAGED_CONFIGS.fable);
+  /**
+   * @param {[number, number, number, number]} p mechanical, routine, complex and deep
+   * @param {number} [sensitive]
+   */
+  const tier = ([mechanical, routine, complex, deep], sensitive = 0) =>
+    applyPolicy({
+      answer: { probabilities: { mechanical, routine, complex, deep }, sensitive },
+      tiers: fable.tiers,
+      options: fable.jev.options,
+      policy: fable.policy,
+      reference: fable.defaultTier,
+    }).tier;
+  assert.equal(tier([0.9, 0.08, 0.01, 0.01]), 'fast');
+  assert.equal(tier([0.05, 0.85, 0.08, 0.02]), 'balanced');
+  assert.equal(tier([0, 0.1, 0.8, 0.1]), 'frontier');
+  assert.equal(tier([0, 0.05, 0.3, 0.65]), 'max');
+  assert.equal(tier([0, 0.15, 0.45, 0.4]), 'frontier', 'Fable 5.1 only when Jev leans deep');
+  assert.equal(tier([0.05, 0.85, 0.08, 0.02], 0.9), 'max', 'the risk override goes to the top tier');
+});
+
+test('packagedModels names the packaged config a file is an unchanged copy of', () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-packaged-`);
+  for (const name of MODEL_CHOICES) {
+    copyFileSync(PACKAGED_CONFIGS[name], `${dir}/${name}.json`);
+    assert.equal(packagedModels(`${dir}/${name}.json`), name);
+  }
+  writeFileSync(`${dir}/edited.json`, `${readFileSync(PACKAGED_CONFIGS.claude, 'utf8')} `);
+  assert.equal(packagedModels(`${dir}/edited.json`), undefined, 'one byte more is a change');
+  assert.equal(packagedModels(`${dir}/missing.json`), undefined);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('config validation rejects a maxSessions the session store cannot honor (regression: -1 hung the router)', () => {

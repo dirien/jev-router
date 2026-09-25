@@ -21,16 +21,16 @@ import {
 import { loadConfig } from './config.mjs';
 import { agentEnv, loadEnvFile } from './envfile.mjs';
 import {
-  ANTHROPIC_ONLY_CONFIG,
   claudeSettingsPath,
   configFile,
-  DEFAULT_CONFIG,
   envValue,
   errorCode,
   errorMessage,
   findProgram,
+  MODEL_CHOICES,
   makeDirectory,
   namedLogFile,
+  PACKAGED_CONFIGS,
   packaged,
   routerLogPath,
   shellQuote,
@@ -41,11 +41,11 @@ import { appendLogLine } from './logfile.mjs';
 import { clientHost, isLoopback, LOOPBACK, parsePort, parseUiAddress, probe, TOKEN_HEADER, UI_PORT, urlHost } from './net.mjs';
 import { createRouter, describeConfig, report, VERSION } from './router.mjs';
 import { installedServices, logHint, MANAGER_NAMES } from './service.mjs';
-import { readManifest, runSetup } from './setup.mjs';
+import { inWords, readManifest, runSetup } from './setup.mjs';
 import { createUiServer } from './ui.mjs';
 import { runUninstall } from './uninstall.mjs';
 
-/** @import { Config, Health, RouterServer, UiServer } from './types.js' */
+/** @import { Config, Health, Models, RouterServer, UiServer } from './types.js' */
 /** @import { EnvFile } from './envfile.mjs' */
 /** @import { SetupOptions } from './setup.mjs' */
 /** @import { Credential } from './claude.mjs' */
@@ -61,7 +61,7 @@ const CODEX_MODELS = packaged('examples/codex/jev-models.json');
 const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or Codex turn with Jev.
 
 Usage:
-  jev-router setup [--yes] [--models claude|ollama] [--service auto|launchd|systemd|none]
+  jev-router setup [--yes] [--models claude|fable|ollama] [--service auto|launchd|systemd|none]
                    [--no-claude-settings]
   jev-router uninstall
   jev-router [serve] [--config <file>] [--env-file <file>] [--log-file <file>] [--host <h>] [--port <n>]
@@ -72,14 +72,14 @@ Usage:
                            [--force] [--] [codex args…]
   jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
   jev-router doctor [--config <file>] [--env-file <file>] [--live]
-  jev-router init [--anthropic-only] [--force]
+  jev-router init [--models claude|fable|ollama] [--force]
   jev-router report [<log.jsonl>]
   jev-router ui [<log.jsonl>] [--port <n>] [--ui-token <token>]
   jev-router version | help
 
   setup      ask which models Claude Code uses and for their keys, check the Jev key with one call,
              then save them, run the router in the background and point Claude Code at it. Safe to
-             run again. --yes takes the defaults and the keys from the environment
+             run again, also to switch models. --yes takes the defaults and the keys from the environment
   uninstall  remove the service and what setup put in Claude Code's settings; keeps the config, keys and logs
   serve      run the router in the foreground (the default command); --ui also serves the live view
   launch     run Claude Code or Codex through the router on the configured port, starting one if none
@@ -87,7 +87,8 @@ Usage:
   env        print shell exports for a running router: eval "$(jev-router env claude)"
   doctor     check the config, the keys, the service and a running router; --live makes one Jev call
              (~$0.00003)
-  init       write the user config; --anthropic-only sends every Claude Code tier to Anthropic
+  init       write the user config from a packaged one: Ollama Cloud and Claude, or the one --models
+             names (--anthropic-only is --models claude)
   report     sum up requests, spend and savings from a router log
   ui         serve the live view for a router log another process writes (http://127.0.0.1:4100)
 
@@ -1014,15 +1015,19 @@ async function checkLive(list, cfg, env) {
 }
 
 /**
- * `jev-router init`: copies a packaged config to the user config path.
+ * `jev-router init`: copies a packaged config to the user config path, the one --models names, else
+ * the packaged default. `--anthropic-only`, from before `--models`, is `--models claude`.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
  * @returns {number}
  */
 function init(args, env) {
-  const { flags, rest } = parseArgs(args, { '--anthropic-only': 'flag', '--force': 'flag' });
-  if (rest.length) throw new Error('Usage: jev-router init [--anthropic-only] [--force]');
-  const source = flags.has('anthropic-only') ? ANTHROPIC_ONLY_CONFIG : DEFAULT_CONFIG;
+  const { values, flags, rest } = parseArgs(args, { '--models': 'value', '--anthropic-only': 'flag', '--force': 'flag' });
+  if (rest.length) throw new Error(`Usage: jev-router init [--models ${MODEL_CHOICES.join('|')}] [--force]`);
+  const named = modelsFlag(values.models);
+  if (named && named !== 'claude' && flags.has('anthropic-only'))
+    throw new Error(`--anthropic-only is --models claude, not --models ${named}`);
+  const source = PACKAGED_CONFIGS[named ?? (flags.has('anthropic-only') ? 'claude' : 'ollama')];
   const target = userConfigPath(env);
   if (existsSync(target) && !flags.has('force')) {
     console.error(`jev-router: ${target} already exists. Pass --force to overwrite it.`);
@@ -1096,6 +1101,18 @@ async function ui(args, env) {
 const SERVICES = ['auto', 'launchd', 'systemd', 'none'];
 
 /**
+ * The packaged config `--models` names.
+ * @param {string | undefined} value
+ * @returns {Models | undefined}
+ */
+function modelsFlag(value) {
+  if (value === undefined) return undefined;
+  const models = MODEL_CHOICES.find((name) => name === value);
+  if (!models) throw new Error(`--models takes ${inWords([...MODEL_CHOICES], 'or')}, got "${value}"`);
+  return models;
+}
+
+/**
  * `jev-router setup`: see `runSetup` in setup.mjs.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
@@ -1111,13 +1128,11 @@ function setup(args, env) {
   });
   if (rest.length)
     throw new Error(
-      'Usage: jev-router setup [--yes] [--models claude|ollama] [--service auto|launchd|systemd|none] [--no-claude-settings]',
+      `Usage: jev-router setup [--yes] [--models ${MODEL_CHOICES.join('|')}] [--service auto|launchd|systemd|none] [--no-claude-settings]`,
     );
   const service = SERVICES.find((name) => name === (values.service ?? 'auto'));
   if (!service) throw new Error(`--service takes auto, launchd, systemd or none, got "${values.service}"`);
-  const { models } = values;
-  if (models !== undefined && models !== 'claude' && models !== 'ollama')
-    throw new Error(`--models takes claude or ollama, got "${models}"`);
+  const models = modelsFlag(values.models);
   return runSetup({ yes: flags.has('yes') || flags.has('y'), service, claudeSettings: !flags.has('no-claude-settings'), models }, env);
 }
 

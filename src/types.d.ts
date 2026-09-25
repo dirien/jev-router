@@ -117,6 +117,9 @@ export interface JevConfig {
   options: Record<string, JevOption>;
 }
 
+/** A packaged config, as `setup --models` and `init --models` name it: Claude only, Claude with Fable 5.1, or Ollama Cloud and Claude. */
+export type Models = 'claude' | 'fable' | 'ollama';
+
 /** A validated config with every default filled in, as `validateConfig` returns it. */
 export interface Config {
   host: string;

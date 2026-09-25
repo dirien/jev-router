@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { VERSION } from '../src/router.mjs';
 import {
+  ANTHROPIC_FABLE_CONFIG,
   ANTHROPIC_ONLY_CONFIG,
   ask,
   CLIENT_KEY,
@@ -179,7 +180,7 @@ test('env claude prints shell-safe exports, and env codex explains the profile',
   assert.ok(codex.stdout.includes('codex --profile jev'));
 });
 
-test('init writes the user config once; --force overwrites it', async () => {
+test('init writes the user config once; --force overwrites it; --models picks the packaged config', async () => {
   const box = sandbox();
   const target = join(box.config, 'jev-router', 'config.json');
   const first = await run(['init'], box.env);
@@ -198,6 +199,22 @@ test('init writes the user config once; --force overwrites it', async () => {
   assert.equal(forced.code, 0);
   assert.equal(readFileSync(target, 'utf8'), readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'));
   assert.match((await run(['doctor'], box.env)).stdout, /config {4}.*config\.json \(user config\)/, 'the next command uses it');
+
+  const fable = await run(['init', '--models', 'fable', '--force'], box.env);
+  assert.equal(fable.code, 0, fable.stderr);
+  assert.equal(
+    fable.stdout,
+    `Wrote ${target} from the packaged anthropic-fable.json.\nNext: set your Jev key, then run: jev-router doctor\n`,
+  );
+  assert.equal(readFileSync(target, 'utf8'), readFileSync(ANTHROPIC_FABLE_CONFIG, 'utf8'));
+  assert.equal((await run(['init', '--models', 'claude', '--anthropic-only', '--force'], box.env)).code, 0, 'the old flag agrees');
+  assert.equal(readFileSync(target, 'utf8'), readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'));
+  assert.equal(
+    (await run(['init', '--models', 'fable', '--anthropic-only', '--force'], box.env)).stderr,
+    'jev-router: --anthropic-only is --models claude, not --models fable\n',
+  );
+  assert.equal((await run(['init', '--models', 'gpt'], box.env)).stderr, 'jev-router: --models takes claude, fable or ollama, got "gpt"\n');
+  assert.equal(readFileSync(target, 'utf8'), readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'), 'a refused init writes nothing');
 
   const { XDG_CONFIG_HOME, ...noXdg } = box.env;
   assert.equal((await run(['init'], noXdg)).code, 0);

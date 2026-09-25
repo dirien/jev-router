@@ -9,16 +9,17 @@ address, `http://127.0.0.1:4000`. [configuration.md](configuration.md) covers th
 `jev-router setup` does all of this for Claude Code, as the README's [Quick start](../README.md#quick-start) shows.
 In order, it:
 
-1. asks which models Claude Code uses, unless you have a config already: Claude only (Haiku 4.5, Sonnet 5 and
-   Opus 5.5), or Ollama Cloud's `glm-5.3-flash` for the `fast` tier and Claude for the rest;
+1. asks which models Claude Code uses: Claude only (Haiku 4.5, Sonnet 5 and Opus 5.5), Claude with Fable 5.1 as a
+   fourth tier for deep work, or Ollama Cloud's `glm-5.3-flash` for the `fast` tier and Claude for the rest. It
+   doesn't ask when you have a config of your own; when your config is still an unchanged packaged one, Enter keeps it;
 1. asks for the keys that config needs for Claude Code: a Jev key (TypeSafe, or OpenRouter when you press Enter),
    and `OLLAMA_API_KEY` for the Ollama option. A key that's saved already stays when you press Enter. On a terminal,
    what you type isn't shown, and a key with a space or a control character in it is asked again;
 1. checks the Jev key with one real call (about $0.00003). A key that fails gets another try, and nothing is written
    until one works;
 1. asks whether to run the router in the background, when the machine has launchd or a systemd user session;
-1. writes `~/.config/jev-router/config.json` if it's new, and saves the keys in `~/.config/jev-router/env` (mode
-   0600), keeping the file's other lines;
+1. writes `~/.config/jev-router/config.json` if it's new or you picked other models, and saves the keys in
+   `~/.config/jev-router/env` (mode 0600), keeping the file's other lines;
 1. installs jev-router globally with npm when setup runs from npx, because a service must not run from npx's cache;
 1. installs and starts the service, and waits up to 15 seconds for the router to answer. On a re-run, launchd gets up
    to 45 seconds to unload the old agent, whose router may still finish its requests;
@@ -27,13 +28,15 @@ In order, it:
    token, and the backup is always readable only by you. A settings file or an env file that is a symbolic link, as in
    a dotfiles repository, stays a link: the file it points to is the one that changes.
 
-Setup is safe to run again. It keeps an existing config as it is, keeps saved keys when you press Enter, and restarts
-the service, so new keys take effect. Its options:
+Setup is safe to run again. It keeps your models and saved keys when you press Enter, and restarts the service, so
+new keys and a new config take effect. To switch models, run it again and pick others, or pass `--models`. Setup
+replaces only a config that is still an unchanged copy of a packaged one; a config you changed stays as it is, and
+setup says how to start over from a packaged one. Its options:
 
 | Option | What it does |
 | --- | --- |
 | `--yes`, `-y` | Answers every question with its default, and takes the keys from the environment (`TYPESAFE_API_KEY` and so on). It stops, without writing anything, when a key is missing or fails its check |
-| `--models claude\|ollama` | The config for a machine without one; the default is `claude` |
+| `--models claude\|fable\|ollama` | The packaged config to use: Claude only, Claude with Fable 5.1, or Ollama Cloud and Claude. It applies on a machine without a config, or with an unchanged packaged one; the default is `claude`, or the models you have |
 | `--service auto\|launchd\|systemd\|none` | `auto`, the default, picks launchd on macOS and systemd on Linux. There's no service on Windows, as root, in a Mac session without a GUI login (over SSH), or where `systemctl --user` doesn't answer, such as in a container |
 | `--no-claude-settings` | Installs the service, but leaves `~/.claude/settings.json` alone |
 
@@ -70,10 +73,11 @@ router token. `jev-router uninstall` reads that record: see [Turning it off](#tu
 To do each step yourself:
 
 1. Write the config. `jev-router init` copies the packaged default, which sends Claude Code's `fast` tier to Ollama
-   Cloud; `jev-router init --anthropic-only` keeps Claude Code on Claude models:
+   Cloud; `jev-router init --models claude` keeps Claude Code on Claude models, and `--models fable` adds Fable 5.1
+   for deep work:
 
    ```bash
-   jev-router init --anthropic-only
+   jev-router init --models claude
    ```
 
 1. Save your keys in `~/.config/jev-router/env`, as in [Keys](#keys).

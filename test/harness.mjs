@@ -19,6 +19,7 @@ export const BIN = fileURLToPath(new URL('../bin/jev-router.mjs', import.meta.ur
 export const FAKE_AGENT = fileURLToPath(new URL('./fakes/fake-agent.mjs', import.meta.url));
 export const DEFAULT_CONFIG = fileURLToPath(new URL('../config/default.json', import.meta.url));
 export const ANTHROPIC_ONLY_CONFIG = fileURLToPath(new URL('../config/anthropic-only.json', import.meta.url));
+export const ANTHROPIC_FABLE_CONFIG = fileURLToPath(new URL('../config/anthropic-fable.json', import.meta.url));
 export const CODEX_MODELS = fileURLToPath(new URL('../examples/codex/jev-models.json', import.meta.url));
 export const shipped = JSON.parse(readFileSync(DEFAULT_CONFIG, 'utf8'));
 

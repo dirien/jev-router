@@ -49,8 +49,9 @@ not with `sudo`: it sets up jev-router for the user who runs it, and refuses to 
 
 Setup asks three questions:
 
-1. **Which models Claude Code uses.** The default is Claude only: Haiku 4.5, Sonnet 5 and Opus 5.5. The other
-   option sends quick work to Ollama Cloud's `glm-5.3-flash`.
+1. **Which models Claude Code uses.** The default is Claude only: Haiku 4.5, Sonnet 5 and Opus 5.5. The second
+   option adds Fable 5.1 for deep work, as a fourth tier called `max`. The third sends quick work to Ollama Cloud's
+   `glm-5.3-flash`.
 1. **Your keys.** Jev needs a key from [TypeSafe](https://console.typesafe.ai) or [OpenRouter](https://openrouter.ai).
    The Ollama option also needs an Ollama key. Setup checks the Jev key with one call, which costs about $0.00003.
    There's no Anthropic key to enter: Claude Code keeps using your own Claude login.
@@ -64,8 +65,9 @@ Then setup:
   log in;
 - points Claude Code at the router in `~/.claude/settings.json`, after it keeps a backup of that file.
 
-Restart any Claude Code session that was already running. You can run setup again at any time: it keeps your config
-and your saved keys (press Enter), and restarts the router.
+Restart any Claude Code session that was already running. You can run setup again at any time. Press Enter to keep
+your models and your saved keys, or pick other models to switch: setup replaces the config it wrote, unless you
+changed it. Either way, it restarts the router.
 
 If Claude Code already goes to another gateway, such as a company LiteLLM with an `ANTHROPIC_AUTH_TOKEN`, setup leaves
 its settings alone and says what to remove first. Behind the router, Claude Code would send that gateway's credentials
@@ -96,18 +98,24 @@ To run each step yourself instead, see [Manual setup](docs/activation.md#manual-
 
 ## Tiers
 
-| Client | `fast` | `balanced` | `frontier` | `trusted` (sessions that contained a secret) |
-| --- | --- | --- | --- | --- |
-| Claude Code, setup's default (Claude only) | Anthropic `claude-haiku-4-5` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | Anthropic `claude-sonnet-5` |
-| Claude Code, setup's Ollama option | Ollama Cloud `glm-5.3-flash` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | Anthropic `claude-sonnet-5` |
-| Codex CLI | Ollama Cloud `glm-5.3-flash` | Ollama Cloud `kimi-k2.7-code` | OpenAI `gpt-6-astra` | OpenAI `gpt-6-sol` |
+| Client | `fast` | `balanced` | `frontier` | `max` | `trusted` (sessions that contained a secret) |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code, setup's default (Claude only) | Anthropic `claude-haiku-4-5` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | none | Anthropic `claude-sonnet-5` |
+| Claude Code, setup's Fable option | Anthropic `claude-haiku-4-5` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | Anthropic `claude-fable-5-1` | Anthropic `claude-sonnet-5` |
+| Claude Code, setup's Ollama option | Ollama Cloud `glm-5.3-flash` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | none | Anthropic `claude-sonnet-5` |
+| Codex CLI | Ollama Cloud `glm-5.3-flash` | Ollama Cloud `kimi-k2.7-code` | OpenAI `gpt-6-astra` | OpenAI `gpt-6-astra`, with the Fable option | OpenAI `gpt-6-sol` |
 
 Setup's default writes [`config/anthropic-only.json`](config/anthropic-only.json) to
 `~/.config/jev-router/config.json`. The Ollama option writes [`config/default.json`](config/default.json) instead,
 which changes only Claude Code's `fast` tier; the router also uses that file when you have no config. Claude Code's
-own background calls (session titles, topic checks, quota probes) go to `claude-haiku-4-5` in both. Codex routes the
-same way in both configs. The OpenAI model names come from Codex's bundled model catalog, so check them against your
-account.
+own background calls (session titles, topic checks, quota probes) go to `claude-haiku-4-5` in all three. The OpenAI
+model names come from Codex's bundled model catalog, so check them against your account.
+
+The Fable option writes [`config/anthropic-fable.json`](config/anthropic-fable.json): the Claude-only config plus
+the `max` tier. Messages Jev calls `deep` go to Fable 5.1, and so do `/model fable` and `#max`. A message that Jev
+thinks would change production systems, credentials, permissions or billing goes to the top tier, so it goes to
+Fable 5.1 too. Codex has no model above `gpt-6-astra` here, so its `max` tier is the same as `frontier`. The savings
+in `report` and the live view compare against running every request on Fable 5.1.
 
 ## Install
 
@@ -276,7 +284,7 @@ The router tracks each conversation as a **session**. It takes the session ID fr
 | Subagent, compaction, workflow | The session's tier | no |
 | `x-jev-tier` header or `JEV_ROUTER_TIER` | That tier | no |
 | `/model` switch to another model family in Claude Code | The family's tier from `modelPins` | no |
-| `#fast`, `#balanced` or `#frontier` as the first or last word you type | That tier | no |
+| `#fast`, `#balanced` or `#frontier` (and `#max` in the Fable config) as the first or last word you type | That tier | no |
 | Tool-loop step (no new human message) | The session's tier | no |
 | New human message | Jev's answer through the policy: freely for a new, idle or provisional session, and only upward otherwise | yes, once per message |
 
@@ -412,7 +420,7 @@ A `req` number pairs each `route` line with its `done` line.
 ## CLI
 
 ```text
-jev-router setup [--yes] [--models claude|ollama] [--service auto|launchd|systemd|none]
+jev-router setup [--yes] [--models claude|fable|ollama] [--service auto|launchd|systemd|none]
                  [--no-claude-settings]
 jev-router uninstall
 jev-router [serve] [--config <file>] [--env-file <file>] [--log-file <file>] [--host <h>] [--port <n>]
@@ -423,7 +431,7 @@ jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--u
                          [--force] [--] [codex args…]
 jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
 jev-router doctor [--config <file>] [--env-file <file>] [--live]
-jev-router init [--anthropic-only] [--force]
+jev-router init [--models claude|fable|ollama] [--force]
 jev-router report [<log.jsonl>]
 jev-router ui [<log.jsonl>] [--port <n>] [--ui-token <token>]
 jev-router version | help
@@ -431,18 +439,19 @@ jev-router version | help
 
 | Command | What it does |
 | --- | --- |
-| `setup` | Asks which models Claude Code uses and for their keys, checks the Jev key with one call, then saves them, runs the router in the background and points Claude Code at it. Safe to run again. `--yes` answers with the defaults and takes the keys from the environment |
+| `setup` | Asks which models Claude Code uses and for their keys, checks the Jev key with one call, then saves them, runs the router in the background and points Claude Code at it. Safe to run again, also to switch models. `--yes` answers with the defaults and takes the keys from the environment |
 | `uninstall` | Removes the service and what setup put in Claude Code's settings. Keeps the config, the keys and the logs |
 | `serve` | Runs the router in the foreground; it's the default command. `--ui` also serves the live view |
 | `launch` | Runs Claude Code or Codex through the router on the configured port, and starts one if none runs. `--ui` also serves the live view of a router it starts |
 | `env` | Prints shell exports for a running router: `eval "$(jev-router env claude)"` |
 | `doctor` | Checks the config, the env file, the keys, the log file, the service, Claude Code's settings and a running router. `--live` makes one Jev call (about $0.00003) |
-| `init` | Writes the user config. `--anthropic-only` sends every Claude Code tier to Anthropic |
+| `init` | Writes the user config from a packaged one: the Ollama Cloud and Claude one, or the one `--models` names. `--anthropic-only` is the same as `--models claude` |
 | `report` | Sums up requests, spend and savings from a router log |
 | `ui` | Serves the live view for a log that another process writes |
 
-`setup` also takes `--models claude|ollama` (the config for a machine without one), `--service auto|launchd|systemd|none`
-(`auto` picks launchd on macOS and systemd on Linux, when a user session is there) and `--no-claude-settings`.
+`setup` also takes `--models claude|fable|ollama` (the packaged config to write, on a machine without a config or
+with an unchanged packaged one), `--service auto|launchd|systemd|none` (`auto` picks launchd on macOS and systemd on
+Linux, when a user session is there) and `--no-claude-settings`.
 `JEV_ROUTER_CLAUDE_BIN` and `JEV_ROUTER_CODEX_BIN` point `launch` at a specific `claude` or `codex` binary.
 
 ## Configuration
@@ -455,8 +464,10 @@ The router reads the first config it finds:
 1. the packaged [`config/default.json`](config/default.json)
 
 `jev-router setup` writes `~/.config/jev-router/config.json` when there's none, from
-[`config/anthropic-only.json`](config/anthropic-only.json) or, with its Ollama option, from
-[`config/default.json`](config/default.json). `jev-router init` does the same without the rest of setup.
+[`config/anthropic-only.json`](config/anthropic-only.json), or from
+[`config/anthropic-fable.json`](config/anthropic-fable.json) or [`config/default.json`](config/default.json) with its
+Fable or Ollama option. Run again, it switches a config that is still an unchanged copy of one of them, and keeps any
+other. `jev-router init` writes one without the rest of setup.
 [docs/configuration.md](docs/configuration.md) documents every key, its default and its validation.
 
 | Key | Meaning |

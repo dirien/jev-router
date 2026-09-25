@@ -51,7 +51,8 @@ How we produced the results:
 
 Anthropic doesn't support routing Claude Code to non-Claude models through a gateway
 ([Claude Code docs](https://code.claude.com/docs/en/llm-gateway)). jev-router's default config sends Claude Code's
-`fast` tier to Ollama Cloud; `config/anthropic-only.json` keeps Claude Code on Haiku 4.5, Sonnet 5 and Opus 5.5.
+`fast` tier to Ollama Cloud; `config/anthropic-only.json` keeps Claude Code on Haiku 4.5, Sonnet 5 and Opus 5.5, and
+`config/anthropic-fable.json` adds Fable 5.1.
 LiteLLM and Jevonian can cross vendors too. gargpratyush/jev-router and Switchboard stay with each CLI's vendor.
 
 ### When Jev is asked
@@ -136,9 +137,11 @@ Two more differences:
 | gargpratyush/jev-router | The default fast tier; a live Haiku turn: not tested |
 | Switchboard | The default fast tier, sent without an effort parameter; a live Haiku turn: not tested |
 
-Fable 5.1 can serve a tier too. jev-router knows its output limit and that it takes system messages, pins `frontier`
-when you switch to it with `/model`, and routes a tier to it when the tier's target names `claude-fable-5-1`.
-Switchboard ships Fable 5.1 as its highest tier, and gargpratyush/jev-router offers it behind `JEV_ALLOW_FABLE=1`.
+Fable 5.1 can serve a tier too. jev-router ships it as an option: `config/anthropic-fable.json`, which setup writes
+for `--models fable`, adds a fourth tier, `max`, on `claude-fable-5-1` for Jev's `deep` option, `/model fable` and
+`#max`. The other configs pin `frontier` when you switch to Fable 5.1 with `/model`. jev-router knows Fable 5.1's
+output limit and that it takes system messages. Switchboard ships Fable 5.1 as its highest tier, and
+gargpratyush/jev-router offers it behind `JEV_ALLOW_FABLE=1`.
 
 ### Secrets
 

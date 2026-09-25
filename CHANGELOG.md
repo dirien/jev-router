@@ -7,6 +7,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+Fable 5.1 can take Claude Code's hardest work now. Setup offers a third choice of models, Claude with Fable 5.1, which
+adds a fourth tier, `max`, for the messages Jev calls deep. Run setup again to switch between the choices.
+
+### Added
+
+- `config/anthropic-fable.json`: the Claude-only config plus a `max` tier on `claude-fable-5-1`. Jev's `deep` option
+  goes there, and so do `/model fable` and a `#max` tag. A message Jev thinks would change production systems,
+  credentials, permissions or billing goes to the top tier, which is `max` in this config. Savings compare against
+  running every request on Fable 5.1. Codex's `max` tier is `gpt-6-astra`, like its `frontier` tier.
+- `jev-router setup --models fable`, and Claude with Fable 5.1 as the second answer to setup's models question. The
+  Ollama option moves from `2` to `3`.
+- `jev-router init --models claude|fable|ollama` writes any of the packaged configs. `--anthropic-only` still works, as
+  `--models claude`.
+
+### Changed
+
+- Running setup again asks for the models again, and Enter keeps the ones you have. Pick others, or pass `--models`, and
+  setup switches the config and restarts the router with it. It replaces the config only while it's an unchanged copy of
+  a packaged one; a config you changed, or one that `JEV_ROUTER_CONFIG` names, stays as it is, and setup says how to
+  start over from a packaged one.
+
 ## [1.5.0] - 2026-09-25
 
 Starting jev-router takes one command now. `jev-router setup` asks which models Claude Code uses and for the keys,

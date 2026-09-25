@@ -45,6 +45,7 @@ const REQUIRED = [
   'bin/jev-router.mjs',
   'config/default.json',
   'config/anthropic-only.json',
+  'config/anthropic-fable.json',
   'examples/claude-code.env',
   'examples/codex/jev.config.toml',
   'examples/codex/jev-models.json',
