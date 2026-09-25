@@ -20,7 +20,7 @@ machine with an env file; Docker Sandboxes are an optional variant.
 | Entry point | `bin/jev-router.mjs` calls `main(argv)` in `src/cli.mjs`, whose `HELP` is the usage `jev-router help` prints |
 | Server | `createRouter`, `describeConfig`, `report` and `VERSION` in `src/router.mjs` |
 | Live view | `serve --ui [<host>:]<port>` (or `JEV_ROUTER_UI`) feeds `createUiServer` (`src/ui.mjs`) in-process through `publish`; `jev-router ui [log]` feeds it with `LogTail` from a log file. It serves `ui/` (`index.html`, `app.css`, `app.js`, `favicon.svg`) plus server-sent events, on `127.0.0.1:4100` by default; `--ui-token` or `JEV_ROUTER_UI_TOKEN` makes it ask for a token. `ui/tsconfig.json` type-checks the browser code |
-| Modules | `src/config.mjs` defaults and validation; `src/jev.mjs` state, questions, channels, policy; `src/messages.mjs` human turns, wrapper tags, tier tags; `src/secrets.mjs` scanner and redaction; `src/sessions.mjs` persistent store; `src/usage.mjs` usage tap and prices; `src/logfile.mjs` log appends and rotation; `src/ui.mjs` live view server; `src/types.d.ts` shared JSDoc types, imported as `/** @import { Config } from './types.js' */` |
+| Modules | `src/config.mjs` defaults and validation; `src/jev.mjs` state, questions, channels, policy; `src/messages.mjs` human turns, wrapper tags, tier tags; `src/secrets.mjs` scanner and redaction; `src/sessions.mjs` persistent store; `src/usage.mjs` usage tap and prices; `src/logfile.mjs` log appends and rotation; `src/ui.mjs` live view server; `src/files.mjs` where files live (XDG paths, config lookup), programs on PATH, shell quoting; `src/net.mjs` addresses, ports and the `/healthz` probe; `src/envfile.mjs` loading the env file; `src/claude.mjs` Claude Code's variables and its settings file; `src/types.d.ts` shared JSDoc types, imported as `/** @import { Config } from './types.js' */` |
 | Configs | `config/default.json`, `config/anthropic-only.json`. Lookup: `--config`, `JEV_ROUTER_CONFIG`, `$XDG_CONFIG_HOME/jev-router/config.json` (`~/.config/jev-router/config.json`, written by `init`), then `config/default.json`. Every key: `docs/configuration.md` |
 | Keys | The environment, or an env file of `KEY=VALUE` lines named by `--env-file` or `JEV_ROUTER_ENV_FILE` (conventionally `~/.config/jev-router/env`, mode 0600), loaded with `process.loadEnvFile` before anything reads the environment. Variables already set win; `launch` keeps the file's variables away from the agent |
 | Log | JSON lines on stdout, and to `--log-file`, else `JEV_ROUTER_LOG_FILE`, else the config's `logFile`, through `appendLogLine` (`src/logfile.mjs`): a file rotates to `<file>.1` at `logMaxBytes` (50 MiB; 0 turns rotation off) |
@@ -175,7 +175,9 @@ network.
 <!-- AGENTS-GENERATED:START module-boundaries -->
 | Module | May import |
 | --- | --- |
-| `config`, `logfile`, `messages`, `secrets`, `sessions`, `ui`, `usage` | Node built-ins only, nothing from `src/` |
+| `config`, `files`, `logfile`, `messages`, `net`, `secrets`, `sessions`, `ui`, `usage` | Node built-ins only, nothing from `src/` |
+| `envfile` | `files` |
+| `claude` | `files`, `net` |
 | `jev` | `messages`, `secrets` |
 | `router` | `jev`, `messages`, `secrets`, `sessions`, `usage` |
 | `cli` | anything in `src/`; only `bin/jev-router.mjs` imports it |

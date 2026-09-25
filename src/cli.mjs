@@ -4,36 +4,45 @@
 // messages for people go to stderr.
 import { spawn } from 'node:child_process';
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import http from 'node:http';
 import { homedir, constants as osConstants } from 'node:os';
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { CLAUDE_SETTINGS, claudeVars, pointsAtRouter, settingsEnv } from './claude.mjs';
 import { loadConfig } from './config.mjs';
+import { agentEnv, loadEnvFile, looseFile } from './envfile.mjs';
+import {
+  ANTHROPIC_ONLY_CONFIG,
+  claudeSettingsPath,
+  configFile,
+  DEFAULT_CONFIG,
+  envValue,
+  errorCode,
+  errorMessage,
+  findProgram,
+  makeDirectory,
+  namedLogFile,
+  packaged,
+  routerLogPath,
+  shellQuote,
+  standardEnvFile,
+  userConfigPath,
+} from './files.mjs';
 import { JevClient } from './jev.mjs';
 import { appendLogLine } from './logfile.mjs';
+import { clientHost, isLoopback, LOOPBACK, parsePort, probe, TOKEN_HEADER, UI_PORT, urlHost } from './net.mjs';
 import { createRouter, describeConfig, report, VERSION } from './router.mjs';
 import { createUiServer } from './ui.mjs';
 
-/** @import { Config, Health, RouterServer, UiServer } from './types.js' */
+/** @import { Config, RouterServer, UiServer } from './types.js' */
+/** @import { EnvFile } from './envfile.mjs' */
 
 /**
  * @typedef {'ok' | 'warn' | 'FAIL' | 'hint' | 'info'} Status
  * @typedef {{ add: (status: Status, topic: string, text: string) => void, lines: string[], readonly failed: boolean }} Checklist
  */
 
-/** @param {string} path a path inside the package */
-const packaged = (path) => fileURLToPath(new URL(`../${path}`, import.meta.url));
-const DEFAULT_CONFIG = packaged('config/default.json');
-const ANTHROPIC_ONLY_CONFIG = packaged('config/anthropic-only.json');
 const CODEX_TEMPLATE = packaged('examples/codex/jev.config.toml');
 const CODEX_MODELS = packaged('examples/codex/jev-models.json');
-const LOOPBACK = '127.0.0.1';
-const UI_PORT = 4100;
-const TOKEN_HEADER = 'x-jev-router-token';
-// Claude Code can't learn a routed model's context window through a gateway, so it compacts well
-// before the smallest window among the tiers.
-const COMPACT_WINDOW = '160000';
 
 const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or Codex turn with Jev.
 
@@ -137,142 +146,8 @@ function readOption(arg, spec) {
   return { name, key: name.slice(2), kind: spec[name], inline: eq > 2 ? arg.slice(eq + 1) : undefined };
 }
 
-/**
- * @param {NodeJS.ProcessEnv} env
- * @param {string} name
- * @returns {string | undefined} the variable, with an empty one counted as unset
- */
-const envValue = (env, name) => env[name] || undefined;
-
-/**
- * An XDG base directory: the variable when it holds an absolute path (as the spec requires), else the default under $HOME.
- * @param {NodeJS.ProcessEnv} env
- * @param {'XDG_CONFIG_HOME' | 'XDG_STATE_HOME'} name
- * @param {string} fallback relative to $HOME
- */
-function xdgDir(env, name, fallback) {
-  const dir = envValue(env, name);
-  return dir && isAbsolute(dir) ? dir : join(homedir(), fallback);
-}
-
-/** @param {NodeJS.ProcessEnv} env */
-const userConfigPath = (env) => join(xdgDir(env, 'XDG_CONFIG_HOME', '.config'), 'jev-router', 'config.json');
-/** @param {NodeJS.ProcessEnv} env */
-const standardEnvFile = (env) => join(xdgDir(env, 'XDG_CONFIG_HOME', '.config'), 'jev-router', 'env');
-/** @param {NodeJS.ProcessEnv} env */
-const routerLogPath = (env) => join(xdgDir(env, 'XDG_STATE_HOME', join('.local', 'state')), 'jev-router', 'router.log');
-/**
- * A path as given, with a leading ~ for the home directory: launchd and systemd pass arguments
- * without a shell to expand it.
- * @param {string} path
- */
-const expandHome = (path) => resolve(path.replace(/^~(?=$|[/\\])/, () => homedir()));
-/**
- * Creates a directory (mode 0700) with its parents. One that can't be made is reported by what
- * then fails to write into it.
- * @param {string} dir
- */
-function makeDirectory(dir) {
-  try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  } catch {
-    // the log's own warning names the problem on the first line it can't write
-  }
-}
-
-/**
- * The log file named by `serve --log-file`, else by JEV_ROUTER_LOG_FILE. It wins over the config's logFile.
- * @param {string | undefined} flag
- * @param {NodeJS.ProcessEnv} env
- * @returns {string | undefined}
- */
-function namedLogFile(flag, env) {
-  const given = flag ?? envValue(env, 'JEV_ROUTER_LOG_FILE');
-  return given === undefined ? undefined : expandHome(given);
-}
 /** @param {NodeJS.ProcessEnv} env */
 const codexProfilePath = (env) => join(envValue(env, 'CODEX_HOME') ?? join(homedir(), '.codex'), 'jev.config.toml');
-
-/**
- * Picks the config file: --config, then JEV_ROUTER_CONFIG, then the user config if it exists, then the packaged default.
- * @param {string | undefined} flag
- * @param {NodeJS.ProcessEnv} env
- * @returns {{ path: string, source: string }}
- */
-function configFile(flag, env) {
-  const fromEnv = envValue(env, 'JEV_ROUTER_CONFIG');
-  if (flag) return { path: resolve(flag), source: '--config' };
-  if (fromEnv) return { path: resolve(fromEnv), source: 'JEV_ROUTER_CONFIG' };
-  const user = userConfigPath(env);
-  if (existsSync(user)) return { path: user, source: 'user config' };
-  return { path: DEFAULT_CONFIG, source: 'packaged default' };
-}
-
-/**
- * Variables Node reads only when it starts: an env file loaded later can set them, but they change
- * nothing. (NODE_OPTIONS isn't listed: Node itself applies it from a file named by --env-file.)
- * @type {ReadonlySet<string>}
- */
-const STARTUP_ONLY = new Set(['NODE_USE_ENV_PROXY', 'NODE_EXTRA_CA_CERTS', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY']);
-
-/**
- * @typedef {object} EnvFile
- * @property {string} path
- * @property {string} source `--env-file` or `JEV_ROUTER_ENV_FILE`
- * @property {string[]} names the variables it set; a variable that was set already keeps its value and isn't listed
- * @property {string[]} warnings what is wrong with it: a mode that lets other users at the keys, or settings it can't make
- */
-
-/**
- * A file error in a few words: the file's path is in the message around it already.
- * @param {unknown} err
- */
-function fileProblem(err) {
-  const code = errorCode(err);
-  if (code === 'ENOENT') return 'no such file';
-  if (code === 'EACCES') return 'permission denied';
-  return errorMessage(err);
-}
-
-/**
- * Loads the env file that --env-file or JEV_ROUTER_ENV_FILE names into the environment, with
- * Node's own loader: its KEY=VALUE lines are there before anything reads a key or a setting, and a
- * variable that is set already wins. The file holds API keys, so a mode that lets other users read
- * or change it gets a warning, as do variables that Node reads only when it starts.
- * @param {string | undefined} flag
- * @param {NodeJS.ProcessEnv} env
- * @returns {EnvFile | undefined} undefined when no env file is given
- */
-function loadEnvFile(flag, env) {
-  const given = flag ?? envValue(env, 'JEV_ROUTER_ENV_FILE');
-  if (given === undefined) return undefined;
-  const path = expandHome(given);
-  const source = flag === undefined ? 'JEV_ROUTER_ENV_FILE' : '--env-file';
-  const before = new Set(Object.keys(process.env));
-  let mode = 0;
-  try {
-    const info = statSync(path);
-    if (!info.isFile()) throw new Error('not a file');
-    mode = info.mode;
-    process.loadEnvFile(path);
-  } catch (err) {
-    throw new Error(`Cannot read env file ${path} (${source}): ${fileProblem(err)}`);
-  }
-  const names = Object.keys(process.env).filter((name) => !before.has(name));
-  // `env` is process.env unless a caller passed its own; it gets the file's variables too.
-  if (env !== process.env) for (const name of names) env[name] ??= process.env[name];
-  const warnings = [];
-  const loose = looseFile(path, mode);
-  if (loose) warnings.push(loose);
-  const late = names.filter((name) => STARTUP_ONLY.has(name.toUpperCase()));
-  if (late.length) {
-    const [they, have] = late.length === 1 ? ['it', 'has'] : ['them', 'have'];
-    warnings.push(
-      `${late.join(', ')} in ${path} ${have} no effect: Node reads ${they} only when it starts. Set ${they} where jev-router is started instead.`,
-    );
-  }
-  return { path, source, names, warnings };
-}
 
 /**
  * Loads the env file for a command, and says on stderr what is wrong with it.
@@ -284,32 +159,6 @@ function useEnvFile(flag, env) {
   const file = loadEnvFile(flag, env);
   for (const warning of file?.warnings ?? []) console.error(`jev-router: ${warning}`);
   return file;
-}
-
-/**
- * The warning for a file of keys that other users can read or change. Windows has no such mode bits.
- * @param {string} path
- * @param {number} mode the file's mode
- * @returns {string | undefined} undefined when only its owner can
- */
-function looseFile(path, mode) {
-  if (process.platform === 'win32' || (mode & 0o066) === 0) return undefined;
-  const verbs = [mode & 0o044 ? 'read' : '', mode & 0o022 ? 'change' : ''].filter(Boolean).join(' and ');
-  const octal = (mode & 0o777).toString(8).padStart(3, '0');
-  return `other users can ${verbs} ${path} (mode ${octal}), which holds API keys. Run: chmod 600 ${shellQuote(path)}`;
-}
-
-/**
- * The agent's environment under `launch`: the user's, without what the env file added. Those are
- * the router's keys, and every command the agent runs would see them.
- * @param {NodeJS.ProcessEnv} env
- * @param {EnvFile | undefined} file
- * @returns {NodeJS.ProcessEnv}
- */
-function agentEnv(env, file) {
-  if (!file?.names.length) return env;
-  const added = new Set(file.names);
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !added.has(name)));
 }
 
 /**
@@ -326,33 +175,6 @@ function settings(values, env) {
   const token = env.JEV_ROUTER_TOKEN ?? cfg.token;
   return { cfg, path, source, host, port, token };
 }
-
-/**
- * @param {string | number} value
- * @returns {number} a TCP port; 0 asks the OS for any free one
- */
-function parsePort(value) {
-  const port = typeof value === 'number' ? value : /^\d+$/.test(value) ? Number(value) : Number.NaN;
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`port must be a number from 0 to 65535, got "${value}"`);
-  return port;
-}
-
-/** @param {string} host */
-const urlHost = (host) => (host.includes(':') ? `[${host}]` : host);
-/**
- * The address a client on this machine uses for a router bound to `host`: one bound to every interface is reached on loopback.
- * @param {string} host
- */
-const clientHost = (host) => (host === '0.0.0.0' || host === '::' ? LOOPBACK : urlHost(host));
-/** @param {string} host */
-const isLoopback = (host) => ['127.0.0.1', 'localhost', '::1'].includes(host);
-/** @param {unknown} err */
-const errorMessage = (err) => (err instanceof Error ? err.message : String(err));
-/**
- * @param {unknown} err
- * @returns {string | undefined}
- */
-const errorCode = (err) => (err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : undefined);
 
 /**
  * Why a log line couldn't be written, in a few words.
@@ -612,29 +434,6 @@ async function launch(args, env) {
 }
 
 /**
- * Finds a program the way a shell does: a name with a slash is a path, anything else is looked up on PATH.
- * @param {string} name
- * @param {NodeJS.ProcessEnv} env
- * @returns {string | undefined} the executable's path
- */
-function findProgram(name, env) {
-  if (name.includes('/') || name.includes('\\')) return isExecutable(resolve(name)) ? resolve(name) : undefined;
-  const exts = process.platform === 'win32' ? (env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
-  const dirs = (env.PATH ?? '').split(delimiter).filter(Boolean);
-  return dirs.flatMap((dir) => exts.map((ext) => join(dir, `${name}${ext}`))).find(isExecutable);
-}
-
-/** @param {string} file */
-function isExecutable(file) {
-  try {
-    accessSync(file, constants.X_OK);
-    return statSync(file).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/**
  * @typedef {object} AgentRouter
  * @property {string} url where the agent sends requests
  * @property {boolean} reused whether it was already running
@@ -752,38 +551,6 @@ function runAgent(bin, args, env) {
 }
 
 /**
- * The variables Claude Code needs to use the router. Credentials stay the user's: the router
- * passes Claude Code's own login through to Anthropic, so ANTHROPIC_API_KEY is never set here.
- * @param {NodeJS.ProcessEnv} env
- * @param {string} url
- * @param {string | undefined} token
- * @returns {Record<string, string>}
- */
-function claudeVars(env, url, token) {
-  /** @type {Record<string, string>} */
-  const vars = { ANTHROPIC_BASE_URL: url, CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1' };
-  if (!env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) vars.CLAUDE_CODE_AUTO_COMPACT_WINDOW = COMPACT_WINDOW;
-  // Claude Code turns MCP tool search off for a base URL that isn't Anthropic's, and then sends every
-  // MCP tool's definition with every request: with a few MCP servers that is more than the compaction
-  // window, and Claude Code compacts on every turn. The router forwards tool_reference blocks as is.
-  if (!env.ENABLE_TOOL_SEARCH) vars.ENABLE_TOOL_SEARCH = 'true';
-  if (token) vars.ANTHROPIC_CUSTOM_HEADERS = withHeader(env.ANTHROPIC_CUSTOM_HEADERS, TOKEN_HEADER, token);
-  return vars;
-}
-
-/**
- * ANTHROPIC_CUSTOM_HEADERS holds one `Name: value` per line. The user's lines stay; an old router
- * token goes, because a repeated header reaches the router as "a, b" and fails the token check.
- * @param {string | undefined} existing
- * @param {string} name lower case
- * @param {string} value
- */
-function withHeader(existing, name, value) {
-  const lines = (existing ?? '').split(/\r?\n/).filter((line) => line.trim() && line.split(':', 1)[0].trim().toLowerCase() !== name);
-  return [...lines, `${name}: ${value}`].join('\n');
-}
-
-/**
  * A TOML basic string. JSON's escapes are valid TOML; DEL is the one character TOML also wants escaped.
  * @param {string} value
  */
@@ -839,12 +606,6 @@ function writeCodexProfile(env, url, token, force) {
 }
 
 /**
- * Quotes a value for a POSIX shell when it needs it.
- * @param {string} value
- */
-const shellQuote = (value) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`);
-
-/**
  * `jev-router env claude|codex`: prints what a shell needs to use the router, without starting one.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
@@ -881,43 +642,6 @@ function codexHelp(env, url) {
     `# Router:  ${url}/v1`,
     '# Run:     codex --profile jev',
   ];
-}
-
-/**
- * @typedef {{ answered: boolean, health?: Health }} Probe
- */
-/**
- * Asks whatever listens at `url` for jev-router's /healthz. It uses a plain agent because loopback
- * needs no proxy: with NODE_USE_ENV_PROXY=1 the default agent would send this to HTTP_PROXY.
- * @param {string} url
- * @returns {Promise<Probe>}
- */
-function probe(url) {
-  return new Promise((done) => {
-    const req = http.get(`${url}/healthz`, { agent: false, timeout: 1000 }, (res) => {
-      /** @type {Buffer[]} */
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('error', () => done({ answered: true }));
-      res.on('end', () => done({ answered: true, health: parseHealth(res.statusCode, Buffer.concat(chunks).toString()) }));
-    });
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', () => done({ answered: false }));
-  });
-}
-
-/**
- * @param {number | undefined} status
- * @param {string} text
- * @returns {Health | undefined} the health report, if a jev-router sent it
- */
-function parseHealth(status, text) {
-  try {
-    const body = JSON.parse(text);
-    return status === 200 && body?.ok === true && typeof body.jev === 'object' ? body : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -1034,54 +758,6 @@ function canWrite(path) {
 }
 
 /**
- * What Claude Code needs besides ANTHROPIC_BASE_URL to work well behind the router: the value
- * `launch` and `env` set, and why.
- * @type {Record<string, [value: string, why: string]>}
- */
-const CLAUDE_SETTINGS = {
-  CLAUDE_CODE_GATEWAY_HINT_HEADERS: ['1', "the router can't tell background calls and subagents from your own messages"],
-  CLAUDE_CODE_AUTO_COMPACT_WINDOW: [COMPACT_WINDOW, "Claude Code can't learn a routed model's context window through a gateway"],
-  ENABLE_TOOL_SEARCH: [
-    'true',
-    'behind a gateway Claude Code turns MCP tool search off and sends every MCP tool definition with every request',
-  ],
-};
-
-/**
- * The `env` block of Claude Code's settings file, where the always-on setup puts its variables.
- * @param {string} file
- * @returns {Record<string, string>}
- */
-function settingsEnv(file) {
-  try {
-    const block = JSON.parse(readFileSync(file, 'utf8'))?.env;
-    return block && typeof block === 'object'
-      ? Object.fromEntries(Object.entries(block).filter(([, v]) => typeof v === 'string' && v))
-      : {};
-  } catch {
-    return {}; // no settings file, or one this check can't read
-  }
-}
-
-/**
- * Whether a base URL reaches the router that the config and JEV_ROUTER_* describe.
- * @param {string} base
- * @param {Config} cfg
- * @param {NodeJS.ProcessEnv} env
- */
-function pointsAtRouter(base, cfg, env) {
-  try {
-    const url = new URL(base);
-    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-    const host = url.hostname.replace(/^\[|\]$/g, '');
-    const router = envValue(env, 'JEV_ROUTER_HOST') ?? cfg.host;
-    return port === parsePort(envValue(env, 'JEV_ROUTER_PORT') ?? cfg.port) && (isLoopback(host) || host === router);
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Claude Code pointed at the router, from this shell or its settings file, without the settings
  * that `launch` would set. Nothing is said when it isn't pointed at the router.
  * @param {Checklist} list
@@ -1089,7 +765,7 @@ function pointsAtRouter(base, cfg, env) {
  * @param {NodeJS.ProcessEnv} env
  */
 function checkClaudeCode(list, cfg, env) {
-  const file = join(envValue(env, 'CLAUDE_CONFIG_DIR') ?? join(homedir(), '.claude'), 'settings.json');
+  const file = claudeSettingsPath(env);
   const saved = settingsEnv(file);
   /** @param {string} name */
   const value = (name) => saved[name] ?? envValue(env, name);
