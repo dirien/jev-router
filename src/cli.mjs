@@ -3,18 +3,7 @@
 // read its log. What scripts consume (exports, reports, the router log under `serve`) goes to stdout,
 // messages for people go to stderr.
 import { spawn } from 'node:child_process';
-import {
-  accessSync,
-  appendFileSync,
-  chmodSync,
-  constants,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { homedir, constants as osConstants } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -22,6 +11,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { JevClient } from './jev.mjs';
+import { appendLogLine } from './logfile.mjs';
 import { createRouter, describeConfig, report, VERSION } from './router.mjs';
 import { createUiServer } from './ui.mjs';
 
@@ -312,19 +302,22 @@ const errorMessage = (err) => (err instanceof Error ? err.message : String(err))
 const errorCode = (err) => (err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : undefined);
 
 /**
- * The router's log: one JSON line per event, appended to each file (created with mode 0600).
- * @param {() => Array<string | null | undefined>} files looked up for every line, so a reloaded config's logFile applies
+ * The router's log: one JSON line per event, for `echo` and appended to each file (created with
+ * mode 0600). A file rotates to `<file>.1` before it would grow past `maxBytes`.
+ * @param {() => { files: Array<string | null | undefined>, maxBytes: number }} targets looked up for every line, so a
+ *   reloaded config's logFile and logMaxBytes apply
  * @param {(line: string) => void} [echo] also gets every line
  * @returns {(entry: Record<string, unknown>) => void}
  */
-function logger(files, echo) {
+function logger(targets, echo) {
   return (entry) => {
     const line = `${JSON.stringify(entry)}\n`;
     echo?.(line);
-    for (const file of new Set(files())) {
+    const { files, maxBytes } = targets();
+    for (const file of new Set(files)) {
       if (!file) continue;
       try {
-        appendFileSync(file, line, { mode: 0o600 });
+        appendLogLine(file, line, maxBytes);
       } catch {
         // logging must not break routing
       }
@@ -383,7 +376,7 @@ async function serve(args, env) {
   });
   const view = uiAddress ? createUiServer() : undefined;
   const toLog = logger(
-    () => [cfg.logFile],
+    () => ({ files: [cfg.logFile], maxBytes: cfg.logMaxBytes }),
     (line) => {
       if (!stdoutBroken) process.stdout.write(line);
     },
@@ -580,7 +573,7 @@ async function routerFor(cfg, host, port, env) {
   if (found?.health && !ownedByLaunch(env, port)) return { url, reused: true, version: found.health.version, stop: async () => undefined };
   const logFile = routerLogPath(env);
   mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
-  const log = logger(() => [logFile, cfg.logFile]);
+  const log = logger(() => ({ files: [logFile, cfg.logFile], maxBytes: cfg.logMaxBytes }));
   const server = createRouter({ ...cfg, host: LOOPBACK, port }, { log });
   let bound;
   try {
@@ -1007,7 +1000,7 @@ function init(args, env) {
 
 /**
  * `jev-router report [log]`: requests, spend and savings from a router log. Without an argument it
- * reads the config's logFile, else the log that `launch` writes.
+ * reads the config's logFile, else the log that `launch` writes, with the lines its last rotation kept.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
  * @returns {number}
@@ -1015,10 +1008,14 @@ function init(args, env) {
 function printReport(args, env) {
   const { values, rest } = parseArgs(args, { '--config': 'value' });
   if (rest.length > 1) throw new Error('Usage: jev-router report [<log.jsonl>]');
+  const [named] = rest;
   const launched = routerLogPath(env);
-  const file = rest[0] ?? loadConfig(configFile(values.config, env).path).logFile ?? (existsSync(launched) ? launched : undefined);
+  const file = named ?? loadConfig(configFile(values.config, env).path).logFile ?? (existsSync(launched) ? launched : undefined);
   if (!file) throw new Error('Usage: jev-router report <log.jsonl> (or set logFile in the config)');
-  process.stdout.write(`${JSON.stringify(report(readFileSync(file, 'utf8').split('\n')), null, 2)}\n`);
+  // The router's own log keeps the lines from before its last rotation in <file>.1.
+  const files = named === undefined && existsSync(`${file}.1`) ? [`${file}.1`, file] : [file];
+  const lines = files.flatMap((path) => readFileSync(path, 'utf8').split('\n'));
+  process.stdout.write(`${JSON.stringify(report(lines), null, 2)}\n`);
   return 0;
 }
 

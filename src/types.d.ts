@@ -130,7 +130,10 @@ export interface Config {
   maxSessions: number;
   /** Where session state survives restarts; `null` keeps it in memory. */
   stateFile: string | null;
+  /** A file every log line is appended to as well, besides stdout under `serve`. */
   logFile?: string | null;
+  /** A log file that would grow past this many bytes is renamed to `<file>.1` first; 0 never rotates. Defaults to 50 MiB. */
+  logMaxBytes: number;
   /** Tier names, cheapest first. */
   tiers: string[];
   defaultTier: string;

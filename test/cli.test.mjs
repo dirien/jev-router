@@ -581,6 +581,44 @@ test('serve logs JSON to stdout and the logFile, reloads on SIGHUP, and drains o
   assert.equal(await isListening(portOf(url)), false);
 });
 
+test('serve and launch rotate their log files at logMaxBytes without losing a line, and report reads both files', async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const logFile = join(box.root, 'rotating.log');
+  const config = writeConfig(join(box.root, 'rotate.json'), { logFile, logMaxBytes: 2000 }, { upstream: upstream.url });
+  const serving = start(['serve', '--config', config, '--port', '0'], box.env);
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router to listen');
+  for (let i = 0; i < 4; i += 1) assert.equal((await ask(url)).status, 200);
+  await waitFor(() => logEvents(serving.out.stdout).filter((event) => event === 'done').length === 4, 'the four done lines');
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
+  const kept = readFileSync(`${logFile}.1`, 'utf8') + readFileSync(logFile, 'utf8');
+  assert.ok(serving.out.stdout.endsWith(kept), 'the two files hold the newest lines in order, with none missing');
+  assert.ok(statSync(logFile).size <= 2000, 'the current file stays under the limit');
+  assert.equal(statSync(`${logFile}.1`).mode & 0o777, 0o600);
+  const summary = JSON.parse((await run(['report', '--config', config], box.env)).stdout);
+  assert.equal(summary.requests, logEvents(kept).filter((event) => event === 'route').length, 'the report reads the rotated file too');
+  assert.equal(
+    JSON.parse((await run(['report', logFile], box.env)).stdout).requests,
+    logEvents(readFileSync(logFile, 'utf8')).filter((e) => e === 'route').length,
+    'a file named on the command line is read alone',
+  );
+
+  const launchLog = join(box.root, 'launch-extra.log');
+  const launchConfig = writeConfig(
+    join(box.root, 'launch-rotate.json'),
+    { logFile: launchLog, logMaxBytes: 1500 },
+    { upstream: upstream.url },
+  );
+  const env = { ...box.env, JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT, FAKE_AGENT_REQUEST: '1', FAKE_CLIENT_KEY: CLIENT_KEY };
+  assert.equal((await run(['launch', 'claude', '--config', launchConfig, '--port', '0'], env)).code, 0);
+  const own = join(box.state, 'jev-router', 'router.log');
+  for (const file of [own, launchLog]) {
+    assert.ok(existsSync(`${file}.1`), `${file} rotated`);
+    assert.deepEqual(logEvents(readFileSync(`${file}.1`, 'utf8') + readFileSync(file, 'utf8')), ['config', 'warning', 'route', 'done']);
+  }
+});
+
 test('ui serves the live view of a log that may not exist yet, and stops on SIGTERM', async () => {
   const box = sandbox();
   const log = join(box.root, 'later.log');

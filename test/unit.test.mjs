@@ -2,11 +2,12 @@
 // the Jev client (against a fake fetch), config validation, session state, usage accounting and the report.
 
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { loadConfig, validateConfig } from '../src/config.mjs';
 import { applyPolicy, buildQuestions, buildState, hardenState, JevClient, tierProbabilities } from '../src/jev.mjs';
+import { appendLogLine } from '../src/logfile.mjs';
 import { clip, describeCode, harness, header, humanTurns, recentTools, stripWrappers, tierTag } from '../src/messages.mjs';
 import { report, requestKind, sessionKey } from '../src/router.mjs';
 import { findSecrets, mayContainSecret, redactBody, scrub } from '../src/secrets.mjs';
@@ -737,4 +738,53 @@ test('config validation reports malformed Jev channels instead of crashing', () 
     cfg.jev.channels = channels;
     assert.throws(() => validateConfig(cfg), /jev\.channels( must be an array|\[0\] must be an object)/, JSON.stringify(channels));
   }
+});
+
+test('the log file rotates to <file>.1 before a line would take it past logMaxBytes, and never loses a line', () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-log-`);
+  const file = `${dir}/router.log`;
+  const line = (/** @type {number} */ n) => `${JSON.stringify({ event: 'done', req: n, pad: 'x'.repeat(40) })}\n`;
+  const size = line(1).length;
+  const rotations = [1, 2, 3, 4, 5, 6, 7].map((n) => appendLogLine(file, line(n), 3 * size));
+  assert.deepEqual(rotations, [false, false, false, true, false, false, true], 'three lines fit, the fourth starts a new file');
+  assert.equal(readFileSync(`${file}.1`, 'utf8'), [4, 5, 6].map(line).join(''), 'one old file is kept, the one before it goes');
+  assert.equal(readFileSync(file, 'utf8'), line(7));
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+
+  const off = `${dir}/off.log`;
+  for (let n = 0; n < 5; n += 1) assert.equal(appendLogLine(off, line(n), 0), false, '0 never rotates');
+  assert.equal(readFileSync(off, 'utf8').length, 5 * size);
+  const big = `${dir}/big.log`;
+  assert.equal(appendLogLine(big, line(1), 10), false, 'a line longer than the limit still goes into an empty file');
+  assert.equal(appendLogLine(big, line(2), 10), true);
+  assert.equal(readFileSync(big, 'utf8'), line(2));
+
+  const stuck = `${dir}/stuck.log`;
+  writeFileSync(stuck, line(1));
+  mkdirSync(`${stuck}.1/busy`, { recursive: true }); // a directory that can't be replaced
+  assert.equal(appendLogLine(stuck, line(2), size), false, 'a rotation that fails keeps the line in the old file');
+  assert.equal(readFileSync(stuck, 'utf8'), line(1) + line(2));
+  const target = `${dir}/target.log`;
+  writeFileSync(target, line(1));
+  symlinkSync(target, `${dir}/link.log`);
+  assert.equal(appendLogLine(`${dir}/link.log`, line(2), size), false, 'a symbolic link is not rotated');
+  assert.ok(!existsSync(`${dir}/link.log.1`));
+  assert.throws(() => appendLogLine(`${dir}/no-such-dir/router.log`, line(1), size), /ENOENT/, 'a line that cannot be written throws');
+});
+
+test('config: logMaxBytes defaults to 50 MiB and takes 0 to never rotate; logFile must be a path', () => {
+  assert.equal(cfg.logMaxBytes, 50 * 1024 * 1024);
+  const { logMaxBytes, ...unset } = shipped;
+  assert.equal(validateConfig({ ...unset, stateFile: null }).logMaxBytes, 52428800, 'the default without the key');
+  assert.equal(validateConfig({ ...shipped, stateFile: null, logMaxBytes: 0 }).logMaxBytes, 0);
+  assert.equal(validateConfig({ ...shipped, stateFile: null, logMaxBytes: null }).logMaxBytes, 52428800, 'null is the default');
+  for (const bad of [-1, 1.5, '50MB'])
+    assert.throws(
+      () => validateConfig({ ...shipped, stateFile: null, logMaxBytes: bad }),
+      /logMaxBytes must be a whole number of bytes/,
+      String(bad),
+    );
+  for (const bad of [2, '', true])
+    assert.throws(() => validateConfig({ ...shipped, stateFile: null, logFile: bad }), /logFile must be a file path or null/, String(bad));
+  assert.equal(validateConfig({ ...shipped, stateFile: null, logFile: null }).logFile, null);
 });

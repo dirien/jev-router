@@ -65,6 +65,7 @@ export function validateConfig(input, env = process.env) {
   cfg.allowedHosts ??= [];
   cfg.maxBodyBytes ??= 32 * 1024 * 1024;
   cfg.maxSessions ??= 10000;
+  cfg.logMaxBytes ??= 50 * 1024 * 1024;
   cfg.sideCallModel ??= 'haiku';
   cfg.pinOnModelChange ??= true;
   if (cfg.stateFile === undefined) cfg.stateFile = `${env.XDG_STATE_HOME || `${homedir()}/.local/state`}/jev-router/sessions.jsonl`;
@@ -74,6 +75,9 @@ export function validateConfig(input, env = process.env) {
   need(Array.isArray(cfg.allowedHosts), 'allowedHosts must be an array of host[:port] strings');
   // The session store evicts while it holds more than maxSessions, so a negative limit loops forever.
   need(Number.isInteger(cfg.maxSessions) && cfg.maxSessions > 0, 'maxSessions must be a positive integer');
+  // A number would be taken for a file descriptor.
+  need(cfg.logFile == null || (typeof cfg.logFile === 'string' && cfg.logFile !== ''), 'logFile must be a file path or null');
+  need(Number.isInteger(cfg.logMaxBytes) && cfg.logMaxBytes >= 0, 'logMaxBytes must be a whole number of bytes, or 0 to never rotate');
 
   need(
     Array.isArray(cfg.tiers) && cfg.tiers.length > 0 && cfg.tiers.every((t) => typeof t === 'string'),
