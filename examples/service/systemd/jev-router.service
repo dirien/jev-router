@@ -22,12 +22,13 @@
 # Use:
 #
 #   systemctl --user status jev-router
-#   journalctl --user -u jev-router -f             # the log: JSON lines, and messages for people
+#   journalctl --user -u jev-router -f             # messages for people and startup errors
+#   jev-router report                              # requests, spend and savings, from the JSON log
 #   systemctl --user reload jev-router             # SIGHUP: re-read the config
 #   systemctl --user restart jev-router            # after an upgrade, or a change to the env file
 #
-# The journal keeps and rotates the log. For `jev-router report` without an argument, also set logFile
-# in the config; the router rotates that file at logMaxBytes.
+# The router writes its JSON log to ~/.local/state/jev-router/router.log and rotates it at logMaxBytes
+# (50 MiB by default); `jev-router report` and `jev-router ui` read that file without an argument.
 #
 # Uninstall:
 #
@@ -44,9 +45,13 @@ StartLimitBurst=5
 
 [Service]
 Environment="PATH=@PATH@"
-ExecStart=/usr/bin/env jev-router serve --ui 4100 --env-file "%h/.config/jev-router/env"
+ExecStart=/usr/bin/env jev-router serve --ui 4100 --env-file "%h/.config/jev-router/env" --log-file "%h/.local/state/jev-router/router.log"
 ExecReload=/bin/kill -HUP $MAINPID
+# The JSON lines are in the log file above; the journal gets the messages for people.
+StandardOutput=null
 Restart=on-failure
+# Node exits with 9 when the --env-file path doesn't exist: fix the path instead of restarting.
+RestartPreventExitStatus=9
 RestartSec=2
 SyslogIdentifier=jev-router
 

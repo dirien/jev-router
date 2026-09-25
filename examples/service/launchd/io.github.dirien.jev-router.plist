@@ -31,10 +31,12 @@
     launchctl kill HUP gui/$(id -u)/io.github.dirien.jev-router        (re-read the config)
     launchctl kickstart -k gui/$(id -u)/io.github.dirien.jev-router    (restart after an upgrade)
     tail -f ~/Library/Logs/jev-router/router.err.log                  (messages and startup errors)
-    jev-router report ~/Library/Logs/jev-router/router.log            (requests, spend and savings)
+    jev-router report                                                 (requests, spend and savings)
 
-  launchd never rotates the two log files. To keep a rotated log instead, set logFile in the config
-  (the router rotates it at logMaxBytes) and change StandardOutPath below to /dev/null.
+  The router writes its JSON log to ~/.local/state/jev-router/router.log and rotates it at logMaxBytes
+  (50 MiB by default); jev-router report and jev-router ui read that file without an argument. launchd
+  never rotates files, so it gets only the messages for people, which stay small. ExitTimeOut gives the
+  router's 30-second drain room: launchd's default of 20 seconds would cut streams short.
 
   Uninstall:
 
@@ -54,6 +56,8 @@
     <string>4100</string>
     <string>--env-file</string>
     <string>@HOME@/.config/jev-router/env</string>
+    <string>--log-file</string>
+    <string>@HOME@/.local/state/jev-router/router.log</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -67,8 +71,10 @@
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ExitTimeOut</key>
+  <integer>35</integer>
   <key>StandardOutPath</key>
-  <string>@HOME@/Library/Logs/jev-router/router.log</string>
+  <string>/dev/null</string>
   <key>StandardErrorPath</key>
   <string>@HOME@/Library/Logs/jev-router/router.err.log</string>
 </dict>
