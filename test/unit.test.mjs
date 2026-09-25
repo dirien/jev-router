@@ -415,12 +415,33 @@ test('config validation names each kind of problem', () => {
     [(c) => (c.surfaces.anthropic.side.foldSystemMessages = 'yes'), /surfaces\.anthropic\.side\.foldSystemMessages must be true or false/],
     [(c) => (c.surfaces.anthropic.side.omitBetas = 'context-1m'), /surfaces\.anthropic\.side\.omitBetas must be a list of beta names/],
     [(c) => (c.modelPins.opus = 'turbo'), /modelPins\.opus must be one of tiers/],
+    [(c) => (c.host = ''), /host must be an address or a host name/],
+    [(c) => (c.allowedHosts = ['localhost:4000', 4000]), /allowedHosts must be an array of host\[:port\] strings/],
+    [(c) => (c.allowedOrigins = 'https://app.example'), /allowedOrigins must be an array of origins/],
+    [(c) => (c.maxBodyBytes = '32mb'), /maxBodyBytes must be a whole number of bytes above 0/],
+    [(c) => (c.maxBodyBytes = 0), /maxBodyBytes must be a whole number of bytes above 0/],
+    [(c) => (c.sideCallModel = '('), /sideCallModel must be a regular expression/],
+    [(c) => (c.pinOnModelChange = 'false'), /pinOnModelChange must be true or false/],
+    [(c) => (c.policy.maxProvisional = -1), /policy\.maxProvisional must be a whole number, 0 or more/],
+    [(c) => (c.policy.idleResetMinutes = '10'), /policy\.idleResetMinutes must be a number of minutes/],
+    [(c) => (c.policy.failClosed = 'false'), /policy\.failClosed must be true or false/],
+    [(c) => (c.jev.deadlineMs = '2500'), /jev\.deadlineMs must be a whole number of milliseconds above 0/],
+    [(c) => (c.jev.requestChars = 0), /jev\.requestChars must be a whole number above 0/],
+    [(c) => (c.jev.stripCode = 'no'), /jev\.stripCode must be true or false/],
+    [(c) => (c.jev.guards = 1), /jev\.guards must be true or false/],
+    [(c) => (c.jev.channels[0].timeoutMs = 'fast'), /jev\.channels\[0\]\.timeoutMs must be a whole number of milliseconds above 0/],
   ];
   for (const [change, message] of cases) {
     const raw = structuredClone(shipped);
     change(raw);
     assert.throws(() => validateConfig({ ...raw, stateFile: null }), message, String(message));
   }
+  // A number would be taken for a file descriptor.
+  assert.throws(() => validateConfig({ ...shipped, stateFile: 5 }), /stateFile must be a file path or null/);
+  assert.equal(
+    validateConfig({ ...shipped, stateFile: null, policy: { ...shipped.policy, idleResetMinutes: 0.5 } }).policy.idleResetMinutes,
+    0.5,
+  );
 });
 
 /** @type {(request: string) => JevState} */

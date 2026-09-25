@@ -72,7 +72,20 @@ export function validateConfig(input, env = process.env) {
   if (typeof cfg.stateFile === 'string') cfg.stateFile = cfg.stateFile.replace(/^~(?=\/)/, homedir());
   if (typeof cfg.logFile === 'string') cfg.logFile = cfg.logFile.replace(/^~(?=\/)/, homedir());
   need(Number.isInteger(cfg.port) && cfg.port > 0 && cfg.port < 65536, 'port must be an integer between 1 and 65535');
-  need(Array.isArray(cfg.allowedHosts), 'allowedHosts must be an array of host[:port] strings');
+  need(typeof cfg.host === 'string' && cfg.host !== '', 'host must be an address or a host name');
+  need(
+    Array.isArray(cfg.allowedHosts) && cfg.allowedHosts.every((h) => typeof h === 'string'),
+    'allowedHosts must be an array of host[:port] strings',
+  );
+  need(
+    cfg.allowedOrigins === undefined || (Array.isArray(cfg.allowedOrigins) && cfg.allowedOrigins.every((o) => typeof o === 'string')),
+    'allowedOrigins must be an array of origins',
+  );
+  // A string would never be over the limit, and a limit of 0 or less refuses every request.
+  need(isCount(cfg.maxBodyBytes, 1), 'maxBodyBytes must be a whole number of bytes above 0');
+  need(cfg.stateFile === null || (typeof cfg.stateFile === 'string' && cfg.stateFile !== ''), 'stateFile must be a file path or null');
+  need(isRegExp(cfg.sideCallModel), 'sideCallModel must be a regular expression, such as "haiku"');
+  need(typeof cfg.pinOnModelChange === 'boolean', 'pinOnModelChange must be true or false');
   // The session store evicts while it holds more than maxSessions, so a negative limit loops forever.
   need(Number.isInteger(cfg.maxSessions) && cfg.maxSessions > 0, 'maxSessions must be a positive integer');
   // A number would be taken for a file descriptor.
@@ -116,6 +129,13 @@ function checkPolicy(input, tiers, need) {
     ...input,
   };
   need(MODES.has(policy.mode), 'policy.mode must be "ratchet" or "sticky"');
+  need(isCount(policy.maxProvisional, 0), 'policy.maxProvisional must be a whole number, 0 or more');
+  need(
+    typeof policy.idleResetMinutes === 'number' && policy.idleResetMinutes >= 0,
+    'policy.idleResetMinutes must be a number of minutes, 0 or more',
+  );
+  // The string "false" would turn it on.
+  need(typeof policy.failClosed === 'boolean', 'policy.failClosed must be true or false');
   policy.accept = { ...Object.fromEntries([...tiers].map((t) => [t, 0.6])), ...policy.accept };
   for (const [tier, p] of Object.entries(policy.accept)) {
     need(tiers.has(tier), `policy.accept names unknown tier "${tier}"`);
@@ -134,6 +154,10 @@ function checkPolicy(input, tiers, need) {
  */
 function checkJev(input, tiers, need) {
   const jev = { deadlineMs: 2500, requestChars: 4000, stripCode: true, guards: true, channels: [], ...input };
+  need(isCount(jev.deadlineMs, 1), 'jev.deadlineMs must be a whole number of milliseconds above 0');
+  need(isCount(jev.requestChars, 1), 'jev.requestChars must be a whole number above 0');
+  need(typeof jev.stripCode === 'boolean', 'jev.stripCode must be true or false');
+  need(typeof jev.guards === 'boolean', 'jev.guards must be true or false');
   need(Array.isArray(jev.channels), 'jev.channels must be an array');
   for (const [i, ch] of (Array.isArray(jev.channels) ? jev.channels : []).entries()) {
     if (!ch || typeof ch !== 'object') {
@@ -145,6 +169,8 @@ function checkJev(input, tiers, need) {
     need(isUrl(ch.baseUrl), `jev.channels[${i}].baseUrl must be an http(s) URL`);
     need(typeof ch.model === 'string' && ch.model, `jev.channels[${i}].model is required`);
     need(typeof ch.keyEnv === 'string' && ch.keyEnv, `jev.channels[${i}].keyEnv is required`);
+    // Anything else fails every Jev call, before it is made.
+    need(isCount(ch.timeoutMs, 1), `jev.channels[${i}].timeoutMs must be a whole number of milliseconds above 0`);
   }
   need(typeof jev.question === 'string' && jev.question.length > 0, 'jev.question is required');
   need(jev.options && typeof jev.options === 'object' && Object.keys(jev.options).length >= 2, 'jev.options needs at least two options');
@@ -199,6 +225,28 @@ function checkTarget(target, where, need) {
     target.omitBetas === undefined || (Array.isArray(target.omitBetas) && target.omitBetas.every((b) => typeof b === 'string')),
     `${where}.omitBetas must be a list of beta names`,
   );
+}
+
+/**
+ * @param {unknown} value
+ * @param {number} min
+ */
+function isCount(value, min) {
+  return Number.isInteger(value) && Number(value) >= min;
+}
+
+/**
+ * Whether a value compiles as a regular expression: sideCallModel is one, applied to every request without hint headers.
+ * @param {unknown} value
+ */
+function isRegExp(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    new RegExp(value, 'i');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** @param {unknown} value */
