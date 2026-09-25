@@ -1,7 +1,7 @@
 // The env file: KEY=value lines that hold the router's keys and settings, loaded with Node's own
 // loader before anything reads the environment.
-import { statSync } from 'node:fs';
-import { envValue, errorCode, errorMessage, expandHome, shellQuote } from './files.mjs';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
+import { envValue, errorCode, errorMessage, expandHome, shellQuote, standardEnvFile } from './files.mjs';
 
 /**
  * Variables Node reads only when it starts: an env file loaded later can set them, but they change
@@ -13,7 +13,8 @@ const STARTUP_ONLY = new Set(['NODE_USE_ENV_PROXY', 'NODE_EXTRA_CA_CERTS', 'HTTP
 /**
  * @typedef {object} EnvFile
  * @property {string} path
- * @property {string} source `--env-file` or `JEV_ROUTER_ENV_FILE`
+ * @property {string} source what named it: `--env-file`, `JEV_ROUTER_ENV_FILE`, or `default location` for the
+ *   standard file that is loaded when neither names one
  * @property {string[]} names the variables it set; a variable that was set already keeps its value and isn't listed
  * @property {string[]} warnings what is wrong with it: a mode that lets other users at the keys, or settings it can't make
  */
@@ -29,26 +30,44 @@ function fileProblem(err) {
   return errorMessage(err);
 }
 
+/** What names the standard env file in messages, when it's loaded because nothing else was named. */
+export const DEFAULT_SOURCE = 'default location';
+
 /**
- * Loads the env file that --env-file or JEV_ROUTER_ENV_FILE names into the environment, with
- * Node's own loader: its KEY=VALUE lines are there before anything reads a key or a setting, and a
- * variable that is set already wins. The file holds API keys, so a mode that lets other users read
- * or change it gets a warning, as do variables that Node reads only when it starts.
+ * The env file a command loads: the one --env-file or JEV_ROUTER_ENV_FILE names, else the standard
+ * file, `$XDG_CONFIG_HOME/jev-router/env`, when it exists.
  * @param {string | undefined} flag
  * @param {NodeJS.ProcessEnv} env
- * @returns {EnvFile | undefined} undefined when no env file is given
+ * @returns {{ path: string, source: string } | undefined} undefined when none is named and the standard file doesn't exist
+ */
+export function envFileFor(flag, env) {
+  const given = flag ?? envValue(env, 'JEV_ROUTER_ENV_FILE');
+  if (given !== undefined) return { path: expandHome(given), source: flag === undefined ? 'JEV_ROUTER_ENV_FILE' : '--env-file' };
+  const standard = standardEnvFile(env);
+  return existsSync(standard) ? { path: standard, source: DEFAULT_SOURCE } : undefined;
+}
+
+/**
+ * Loads the env file (see `envFileFor`) into the environment, with Node's own loader: its
+ * KEY=VALUE lines are there before anything reads a key or a setting, and a variable that is set
+ * already wins. The file holds API keys, so a mode that lets other users read or change it gets a
+ * warning, as do variables that Node reads only when it starts. A file that is named or found but
+ * can't be read stops the command.
+ * @param {string | undefined} flag
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {EnvFile | undefined} undefined when there is no env file to load
  */
 export function loadEnvFile(flag, env) {
-  const given = flag ?? envValue(env, 'JEV_ROUTER_ENV_FILE');
-  if (given === undefined) return undefined;
-  const path = expandHome(given);
-  const source = flag === undefined ? 'JEV_ROUTER_ENV_FILE' : '--env-file';
+  const found = envFileFor(flag, env);
+  if (!found) return undefined;
+  const { path, source } = found;
   const before = new Set(Object.keys(process.env));
   let mode = 0;
   try {
     const info = statSync(path);
     if (!info.isFile()) throw new Error('not a file');
     mode = info.mode;
+    accessSync(path, constants.R_OK); // process.loadEnvFile reports a file it may not read as missing
     process.loadEnvFile(path);
   } catch (err) {
     throw new Error(`Cannot read env file ${path} (${source}): ${fileProblem(err)}`);

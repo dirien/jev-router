@@ -3,13 +3,13 @@
 // read its log. What scripts consume (exports, reports, the router log under `serve`) goes to stdout,
 // messages for people go to stderr.
 import { spawn } from 'node:child_process';
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, constants as osConstants } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CLAUDE_SETTINGS, claudeVars, pointsAtRouter, settingsEnv } from './claude.mjs';
 import { loadConfig } from './config.mjs';
-import { agentEnv, loadEnvFile, looseFile } from './envfile.mjs';
+import { agentEnv, loadEnvFile } from './envfile.mjs';
 import {
   ANTHROPIC_ONLY_CONFIG,
   claudeSettingsPath,
@@ -24,7 +24,6 @@ import {
   packaged,
   routerLogPath,
   shellQuote,
-  standardEnvFile,
   userConfigPath,
 } from './files.mjs';
 import { JevClient } from './jev.mjs';
@@ -72,10 +71,11 @@ JEV_ROUTER_PORT override the config's host and port; the flags override both.
 JEV_ROUTER_UI works like --ui. With --ui-token, else $JEV_ROUTER_UI_TOKEN, the live view asks
 for that token: open the address serve or ui prints, which carries it.
 
-Keys: --env-file, else $JEV_ROUTER_ENV_FILE, names a file of KEY=VALUE lines (such as
-~/.config/jev-router/env, mode 600) that is loaded before anything reads the environment.
-Variables already set win. launch keeps the file's variables away from the agent. Proxy
-settings (HTTPS_PROXY, NODE_USE_ENV_PROXY) don't work from it: Node reads them at startup.
+Keys: a file of KEY=VALUE lines (mode 600) is loaded before anything reads the environment:
+--env-file, else $JEV_ROUTER_ENV_FILE, else $XDG_CONFIG_HOME/jev-router/env if it exists
+(~/.config by default). Variables already set win. launch keeps the file's variables away from
+the agent. Proxy settings (HTTPS_PROXY, NODE_USE_ENV_PROXY) don't work from it: Node reads them
+at startup.
 
 Log: serve writes JSON lines to stdout and to --log-file, else $JEV_ROUTER_LOG_FILE, else the
 config's logFile (its directory is created for --log-file and $JEV_ROUTER_LOG_FILE). The file
@@ -691,8 +691,8 @@ function checklist() {
 }
 
 /**
- * The env file that --env-file or JEV_ROUTER_ENV_FILE names, loaded so that the key checks see what
- * a service started with it sees. Without one, the usual place is checked for a file that isn't used.
+ * The env file every other command would load (--env-file, JEV_ROUTER_ENV_FILE or the standard
+ * file), loaded so that the key checks see what a router started with it sees.
  * @param {Checklist} list
  * @param {string | undefined} flag
  * @param {NodeJS.ProcessEnv} env
@@ -706,22 +706,11 @@ function checkEnvFile(list, flag, env) {
     list.add('FAIL', 'env-file', errorMessage(err));
     return undefined;
   }
-  if (file) {
-    const sets = file.names.length ? `sets ${file.names.join(', ')}` : 'sets nothing: its variables are all set already, and those win';
-    list.add('ok', 'env-file', `${file.path} (${file.source}) ${sets}`);
-    for (const warning of file.warnings) list.add('warn', 'env-file', warning);
-    return file;
-  }
-  const standard = standardEnvFile(env);
-  if (!existsSync(standard)) return undefined;
-  const loose = looseFile(standard, statSync(standard).mode);
-  if (loose) list.add('warn', 'env-file', loose);
-  list.add(
-    'hint',
-    'env-file',
-    `${standard} is not loaded here. Check the keys in it with: jev-router doctor --env-file ${shellQuote(standard)}`,
-  );
-  return undefined;
+  if (!file) return undefined;
+  const sets = file.names.length ? `sets ${file.names.join(', ')}` : 'sets nothing: its variables are all set already, and those win';
+  list.add('ok', 'env-file', `${file.path} (${file.source}) ${sets}`);
+  for (const warning of file.warnings) list.add('warn', 'env-file', warning);
+  return file;
 }
 
 /**

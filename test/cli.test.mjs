@@ -518,15 +518,16 @@ test('doctor checks the env file, the log file and Claude Code settings, and add
   const standard = join(box.config, 'jev-router', 'env');
   writeFileSync(standard, `TYPESAFE_API_KEY=${JEV_KEY}\n`);
   chmodSync(standard, 0o600);
-  const unused = await run(['doctor'], { ...env, TYPESAFE_API_KEY: JEV_KEY });
+  const found = await run(['doctor'], { ...env, TYPESAFE_API_KEY: JEV_KEY });
   assert.match(
-    unused.stdout,
+    found.stdout,
     new RegExp(
-      `^ {2}hint env-file {2}${literal(standard)} is not loaded here\\. Check the keys in it with: jev-router doctor --env-file ${literal(standard)}$`,
+      `^ {2}ok {3}env-file {2}${literal(standard)} \\(default location\\) sets nothing: its variables are all set already, and those win$`,
       'm',
     ),
   );
-  assert.doesNotMatch(unused.stdout, /other users can/, 'mode 600 is fine');
+  assert.doesNotMatch(found.stdout, /other users can/, 'mode 600 is fine');
+  rmSync(standard);
 
   const keys = { ...env, TYPESAFE_API_KEY: JEV_KEY };
   const nowhere = writeConfig(join(box.root, 'log-missing.json'), { logFile: join(box.root, 'nowhere', 'router.log') });
@@ -1075,6 +1076,88 @@ test('--env-file and JEV_ROUTER_ENV_FILE load the router keys first, set variabl
   const inHome = await run(['env', 'claude'], { ...box.env, JEV_ROUTER_ENV_FILE: '~/.config/jev-router/env' });
   assert.equal(inHome.code, 0, inHome.stderr);
   assert.match(inHome.stdout, new RegExp(`x-jev-router-token: ${fileToken}`));
+});
+
+test('with no env file named, serve, launch, env and doctor load $XDG_CONFIG_HOME/jev-router/env when it exists', async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const config = writeConfig(join(box.root, 'standard.json'), {}, { upstream: upstream.url });
+  const quiet = await run(['env', 'claude', '--port', '4555'], box.env);
+  assert.equal(quiet.code, 0, quiet.stderr);
+  assert.equal(
+    quiet.stderr,
+    'jev-router: nothing answers at http://127.0.0.1:4555 yet. Start a router with: jev-router serve\n',
+    'no file, no word',
+  );
+
+  const dir = join(box.config, 'jev-router');
+  const standard = join(dir, 'env');
+  mkdirSync(dir);
+  const fileKey = fake('file-', 'anthropic-', 'DO-NOT-PRINT');
+  const fileToken = fake('file-', 'router-', 'token');
+  writeFileSync(standard, `ANTHROPIC_API_KEY=${fileKey}\nJEV_ROUTER_TOKEN=${fileToken}\nTYPESAFE_API_KEY=${JEV_KEY}\n`);
+  chmodSync(standard, 0o600);
+
+  const exported = await run(['env', 'claude', '--port', '4555'], box.env);
+  assert.match(exported.stdout, new RegExp(`^export ANTHROPIC_CUSTOM_HEADERS='x-jev-router-token: ${fileToken}'$`, 'm'), 'env reads it');
+  assert.doesNotMatch(exported.stderr, /env file|chmod/);
+
+  const checked = await run(['doctor', '--config', config], { ...box.env, JEV_ROUTER_PORT: String(await freePort()) });
+  assert.equal(checked.code, 0, checked.stdout);
+  assert.match(
+    checked.stdout,
+    new RegExp(
+      `^ {2}ok {3}env-file {2}${literal(standard)} \\(default location\\) sets ANTHROPIC_API_KEY, JEV_ROUTER_TOKEN, TYPESAFE_API_KEY$`,
+      'm',
+    ),
+  );
+  assert.match(checked.stdout, /^ {2}ok {3}jev {7}typesafe: TYPESAFE_API_KEY is set$/m);
+
+  const env = { ...box.env, JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT, FAKE_AGENT_REQUEST: '1', FAKE_CLIENT_KEY: CLIENT_KEY };
+  const launched = await run(['launch', 'claude', '--config', config, '--port', '0'], env);
+  assert.equal(launched.code, 0, launched.stderr);
+  const agent = box.agent();
+  assert.equal(agent.env.ANTHROPIC_API_KEY, undefined, "the file's key stays with the router");
+  assert.equal(
+    agent.env.ANTHROPIC_CUSTOM_HEADERS,
+    `x-jev-router-token: ${fileToken}`,
+    'the token from the file reaches the agent as its header',
+  );
+  assert.equal(agent.request.status, 200, 'the router took the token from the file');
+  assert.equal(upstream.calls.at(-1)?.headers['x-api-key'], fileKey, 'and used the key from the file');
+
+  const serving = start(['serve', '--config', config, '--port', '0'], box.env);
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router to listen');
+  assert.equal((await ask(url)).status, 401, 'serve took the token from the file');
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
+  assert.ok(!`${serving.out.stdout}${serving.out.stderr}${launched.stderr}${checked.stdout}`.includes(fileKey), 'a key reached the output');
+
+  const named = join(box.root, 'named.env');
+  writeFileSync(named, 'JEV_ROUTER_PORT=4999\n');
+  const other = await run(['env', 'claude', '--env-file', named], box.env);
+  assert.match(other.stdout, /^export ANTHROPIC_BASE_URL=http:\/\/127\.0\.0\.1:4999$/m);
+  assert.doesNotMatch(other.stdout, /x-jev-router-token/, 'a named file is read instead of the standard one');
+
+  chmodSync(standard, 0o644);
+  assert.match(
+    (await run(['env', 'claude'], box.env)).stderr,
+    /other users can read .*jev-router\/env \(mode 644\)/,
+    'its mode is checked too',
+  );
+  if (process.getuid?.() !== 0) {
+    chmodSync(standard, 0);
+    const denied = await run(['env', 'claude'], box.env);
+    assert.deepEqual(
+      { code: denied.code, stderr: denied.stderr },
+      { code: 1, stderr: `jev-router: Cannot read env file ${standard} (default location): permission denied\n` },
+    );
+  }
+  rmSync(standard);
+  mkdirSync(standard);
+  const directory = await run(['doctor'], box.env);
+  assert.equal(directory.code, 1);
+  assert.match(directory.stdout, /^ {2}FAIL env-file {2}Cannot read env file .*jev-router\/env \(default location\): not a file$/m);
 });
 
 test('an env file that cannot be read stops the command, and one other users can read or that sets startup-only variables gets a warning', async () => {
