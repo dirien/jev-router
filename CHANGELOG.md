@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-25
+
 Fable 5.1 can take Claude Code's hardest work now. Setup offers a third choice of models, Claude with Fable 5.1, which
 adds a fourth tier, `max`, for the messages Jev rates most likely deep. Run setup again to switch between the choices.
 
@@ -313,7 +315,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/dirien/jev-router/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/dirien/jev-router/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/dirien/jev-router/compare/v1.3.3...v1.4.0
 [1.3.3]: https://github.com/dirien/jev-router/compare/v1.3.2...v1.3.3

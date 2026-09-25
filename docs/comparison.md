@@ -4,7 +4,7 @@
 
 | Project | Clients and upstreams | When Jev decides | Claude Code on a Haiku 4.5 tier | Pick it for |
 | --- | --- | --- | --- | --- |
-| jev-router 1.5.0 | Claude Code and Codex, each on its own protocol; Anthropic, OpenAI, Ollama Cloud | Once per human message; a session only moves up | Rejected fields dropped, `max_tokens` capped, system messages folded, 1M beta dropped (live) | Your own Claude Code and Codex sessions, with Claude, OpenAI or Ollama Cloud tiers |
+| jev-router 1.6.0 | Claude Code and Codex, each on its own protocol; Anthropic, OpenAI, Ollama Cloud | Once per human message; a session only moves up | Rejected fields dropped, `max_tokens` capped, system messages folded, 1M beta dropped (live) | Your own Claude Code and Codex sessions, with Claude, OpenAI or Ollama Cloud tiers |
 | LiteLLM 1.102.1 | Messages, Responses, Chat Completions; 100+ providers, with translation | Every request by default, tool-loop steps included (mock) | `max_tokens` capped, thinking converted; system messages passed through (mock) | A team gateway: virtual keys, budgets, spend tracking, an admin UI |
 | Jevonian 0.1.7 | Messages, Responses, Chat Completions, bridged; many providers | Every request; the model can change on any turn (mock) | Turns Jev sends to Haiku fail with a 400 (live) | Many clients and providers behind one local endpoint, with a dashboard |
 | gargpratyush/jev-router 0.3.0 | Claude Code to Anthropic, Codex to OpenAI | Each new user turn, unless a system message follows it (mock) | Thinking and effort dropped; `max_tokens` and system messages passed through (mock) | Same-vendor tiering, also on Windows; last commit 2026-09-19 |
@@ -18,7 +18,7 @@ the project's documentation, not tested. jev-router cells without a label come f
 
 | Project | Version | Released | Changes since our first look on 2026-09-24 |
 | --- | --- | --- | --- |
-| jev-router | 1.5.0 | This release | 1.3.3 plus the env file, the launchd and systemd services, log rotation, and `jev-router setup` to install them |
+| jev-router | 1.6.0 | This release | 1.3.3 plus the env file, the launchd and systemd services, log rotation, `jev-router setup` to install them, and Fable 5.1 as an optional fourth tier |
 | [LiteLLM](https://github.com/BerriAI/litellm) | 1.102.1 (PyPI) | 2026-09-23 | No newer stable release with the Jev classifier. Still open: a confidence gate for Jev route-downs ([#42387](https://github.com/BerriAI/litellm/pull/42387)) and five Jev issues |
 | [Jevonian](https://github.com/xinyao27/jevonian) | 0.1.7 (npm) | 2026-09-23 | None; the last commit is from 2026-09-23 |
 | [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router) | 0.3.0 (npm) | 2026-09-18 | None; the last commit is from 2026-09-19 |

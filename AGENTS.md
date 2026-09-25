@@ -35,7 +35,7 @@ variant.
 | Scripts | `scripts/smoke-package.mjs` (`npm run test:package`) and `scripts/release-notes.mjs` (a version's `CHANGELOG.md` section as release notes); type-checked and linted like `src/` |
 | Release | `.github/workflows/release.yml`, on `v*` tags: `npm run check` and the smoke test, a GitHub Release with the tarball and `SHA256SUMS`, the kit to GHCR, and npm only when the repository variable `NPM_PUBLISH` is `true`. Steps: `docs/releasing.md` |
 | Docs | `README.md` (users), `docs/activation.md`, `docs/configuration.md`, `docs/design.md` (why), `docs/comparison.md`, `docs/evaluation.md`, `docs/sandbox.md`, `docs/releasing.md` (maintainer), `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md` |
-| Version | `1.5.0`, in `package.json` (and `package-lock.json`) and in `VERSION` (`src/router.mjs`) |
+| Version | `1.6.0`, in `package.json` (and `package-lock.json`) and in `VERSION` (`src/router.mjs`) |
 
 ## Commands (verified 2026-09-25)
 

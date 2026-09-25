@@ -125,7 +125,7 @@ The [Quick start](#quick-start) installs jev-router for you. To install it yours
 
 ```bash
 npm install -g @ediri/jev-router                     # the newest release
-npm install -g @ediri/jev-router@1.5.0               # one release
+npm install -g @ediri/jev-router@1.6.0               # one release
 npm install -g github:dirien/jev-router#semver:^1    # the newest 1.x from GitHub, which needs git
 ```
 
@@ -337,7 +337,7 @@ agents with Jev, and lists a few more it didn't test. Its summary:
 
 | Project | Clients and upstreams | When Jev decides | Claude Code on a Haiku 4.5 tier | Pick it for |
 | --- | --- | --- | --- | --- |
-| jev-router 1.5.0 | Claude Code and Codex, each on its own protocol; Anthropic, OpenAI, Ollama Cloud | Once per human message; a session only moves up | Rejected fields dropped, `max_tokens` capped, system messages folded, 1M beta dropped (live) | Your own Claude Code and Codex sessions, with Claude, OpenAI or Ollama Cloud tiers |
+| jev-router 1.6.0 | Claude Code and Codex, each on its own protocol; Anthropic, OpenAI, Ollama Cloud | Once per human message; a session only moves up | Rejected fields dropped, `max_tokens` capped, system messages folded, 1M beta dropped (live) | Your own Claude Code and Codex sessions, with Claude, OpenAI or Ollama Cloud tiers |
 | LiteLLM 1.102.1 | Messages, Responses, Chat Completions; 100+ providers, with translation | Every request by default, tool-loop steps included (mock) | `max_tokens` capped, thinking converted; system messages passed through (mock) | A team gateway: virtual keys, budgets, spend tracking, an admin UI |
 | Jevonian 0.1.7 | Messages, Responses, Chat Completions, bridged; many providers | Every request; the model can change on any turn (mock) | Turns Jev sends to Haiku fail with a 400 (live) | Many clients and providers behind one local endpoint, with a dashboard |
 | gargpratyush/jev-router 0.3.0 | Claude Code to Anthropic, Codex to OpenAI | Each new user turn, unless a system message follows it (mock) | Thinking and effort dropped; `max_tokens` and system messages passed through (mock) | Same-vendor tiering, also on Windows; last commit 2026-09-19 |
@@ -372,7 +372,7 @@ jev-router doesn't need Docker Sandboxes. If your agents run in one, the
 [jev-router kit](sbx/jev-router-kit/spec.yaml) keeps the upstream keys on the host: you store them with
 `sbx secret set`, and the sandbox proxy adds them to outgoing requests. Three steps differ from a plain machine:
 
-- Create the sandbox with the kit: `sbx create --kit ghcr.io/dirien/jev-router-kit:1.5.0 claude <workspace>`.
+- Create the sandbox with the kit: `sbx create --kit ghcr.io/dirien/jev-router-kit:1.6.0 claude <workspace>`.
 - In the sandbox, install jev-router with the same `npm install -g` command, and start the router with
   `jev-router serve --ui 0.0.0.0:4100`, so the view can be forwarded. A sandbox has no service manager, and the kit
   provides the keys, so `jev-router setup` isn't needed there.
@@ -630,7 +630,7 @@ kit, and later the npm package. [docs/releasing.md](docs/releasing.md) has the s
 
 ## Status
 
-The current release is 1.5.0. The offline suite has 152 tests against mock upstreams and a mock Jev, and the package
+The current release is 1.6.0. The offline suite has 176 tests against mock upstreams and a mock Jev, and the package
 smoke test installs the packed package and runs it the way a user would.
 
 Live checks on 2026-09-24 ran Claude Code 2.1.281 through the router against Anthropic and found six problems, listed
