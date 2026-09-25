@@ -263,6 +263,7 @@ test('setup keeps an existing config and a saved key, and a second run restarts 
   assert.equal(second.code, 0, second.stderr);
   assert.notEqual(readFileSync(join(box.root, 'fake-service.pid'), 'utf8'), pid, 'the router was restarted');
   assert.match(second.stderr, /point at the router already\./);
+  assert.doesNotMatch(second.stderr, /Restart any Claude Code session/, 'nothing changed, so nothing to restart');
   assert.equal(box.calls().filter((call) => call.args[1] === 'restart').length, 2);
   assert.equal((await healthz(box.url)).ok, true);
 });
@@ -294,6 +295,32 @@ test('a Jev key that fails its check writes nothing: setup offers another try, a
   const ended = await setup(other, [], { input: '1\n' });
   assert.equal(ended.code, 1);
   assert.match(ended.stderr, /Setup needs answers, but the input ended\. Nothing was written\./);
+});
+
+test("when Jev doesn't answer, setup says to check the connection rather than the key", async () => {
+  const box = await setupBox();
+  mkdirSync(join(box.config, 'jev-router'));
+  const claudeOnly = JSON.parse(readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'));
+  const closed = await freePort();
+  claudeOnly.jev.channels = [
+    { name: 'mock', baseUrl: `http://127.0.0.1:${closed}`, model: 'jev-1.13.0', keyEnv: 'MOCK_JEV_KEY', timeoutMs: 1000 },
+  ];
+  writeFileSync(box.configFile, JSON.stringify(claudeOnly));
+  const noAnswer =
+    /Jev didn't answer, so the key wasn't checked\. Check the connection \(behind a proxy, set HTTPS_PROXY and NODE_USE_ENV_PROXY=1\)/;
+
+  const failed = await setup(box, ['--yes'], { env: { MOCK_JEV_KEY: GOOD } });
+  assert.equal(failed.code, 1);
+  assert.match(failed.stderr, /it didn't work: mock: ECONNREFUSED\nNothing was written\. Jev didn't answer/);
+  assert.match(failed.stderr, noAnswer);
+  assert.doesNotMatch(failed.stderr, /Check the key/);
+  assert.ok(!existsSync(box.envFile), 'no env file');
+
+  const declined = await setup(box, ['--service', 'none'], { input: `${GOOD}\nn\n` });
+  assert.equal(declined.code, 1);
+  assert.match(declined.stderr, new RegExp(`${noAnswer.source}\\.\\nTry again\\? \\[Y/n\\] n\\n`));
+  assert.ok(!existsSync(box.envFile), 'still no env file');
+  for (const result of [failed, declined]) assert.ok(!result.stderr.includes(GOOD));
 });
 
 test('Ctrl-C during a question stops setup with exit code 130, and nothing is written', async () => {

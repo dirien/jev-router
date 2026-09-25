@@ -333,13 +333,25 @@ async function workingJevKey(context) {
       return jev;
     }
     say(`it didn't work: ${answer.error}\n`);
+    const refused = keyRefused(answer.error);
     if (!prompter) {
-      say('Nothing was written. Check the key, then run setup again.\n');
+      say(`Nothing was written. ${refused ? 'Check the key' : NO_ANSWER}, then run setup again.\n`);
       return undefined;
     }
-    if (!(await prompter.confirm('Try another key?', true))) throw new PromptAbort('no Jev key worked', 1);
+    if (!refused) say(`${NO_ANSWER}.\n`);
+    if (!(await prompter.confirm(refused ? 'Try another key?' : 'Try again?', true))) throw new PromptAbort('no Jev key worked', 1);
   }
 }
+
+/** What to check when Jev didn't answer at all: the key was never looked at. */
+const NO_ANSWER =
+  "Jev didn't answer, so the key wasn't checked. Check the connection (behind a proxy, set HTTPS_PROXY and NODE_USE_ENV_PROXY=1)";
+
+/**
+ * Whether Jev turned the key down, rather than not answering: only then is the key the problem.
+ * @param {string} error the failed call's error, such as `typesafe: HTTP 401 invalid API key`
+ */
+const keyRefused = (error) => /\bHTTP 40[123]\b/.test(error);
 
 /**
  * @param {KeyContext} context
@@ -647,7 +659,8 @@ async function answers(url, since, ms) {
  * @param {Plan} plan
  * @param {Manifest} manifest changed in place
  * @param {NodeJS.ProcessEnv} env
- * @returns {{ text: string, pointed: boolean }} what happened, and whether Claude Code now uses the router
+ * @returns {{ text: string, pointed: boolean, changed?: boolean }} what happened, whether Claude Code now uses the
+ *   router, and whether the settings file changed
  */
 function pointClaude(plan, manifest, env) {
   const file = claudeSettingsPath(env);
@@ -668,7 +681,7 @@ function pointClaude(plan, manifest, env) {
   writeSettings(file, read, `${file}.jev-router.bak`);
   const backup = read.exists ? ` The old file is ${file}.jev-router.bak.` : '';
   const names = inWords(changes.map((change) => change.name));
-  return { text: `Claude Code's settings (${file}) now send it through the router: set ${names}.${backup}`, pointed: true };
+  return { text: `Claude Code's settings (${file}) now send it through the router: set ${names}.${backup}`, pointed: true, changed: true };
 }
 
 /**
@@ -740,13 +753,13 @@ function finishWithoutService(plan, env) {
  * The summary once the service runs.
  * @param {Plan} plan
  * @param {Command} command the global jev-router the service runs
- * @param {{ text: string, pointed: boolean }} settings what happened to Claude Code's settings
+ * @param {{ text: string, pointed: boolean, changed?: boolean }} settings what happened to Claude Code's settings
  */
-function finishWithService(plan, command, { text, pointed }) {
+function finishWithService(plan, command, { text, pointed, changed }) {
   const run = commandForm(plan, command);
   const ui = /** @type {{ host: string, port: number }} */ (parseUiAddress(plan.ui));
   say(`${text}\n`);
-  if (pointed) say("Restart any Claude Code session that's already running, so it picks up the settings.\n");
+  if (changed) say("Restart any Claude Code session that's already running, so it picks up the settings.\n");
   say(
     '\nDone. jev-router runs in the background and starts when you log in.\n' +
       `  Router     ${plan.url}\n` +
