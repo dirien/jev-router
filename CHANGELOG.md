@@ -28,9 +28,10 @@ the whole start. The repository and the Docker Sandboxes kit are public.
   It runs for the user who starts it, and refuses root on another user's behalf, through `sudo` or with their `HOME`.
 - Another gateway's credentials stay away from Anthropic. When Claude Code goes to another gateway
   (`ANTHROPIC_BASE_URL`) with credentials for it (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, custom headers, or an
-  `apiKeyHelper`), setup doesn't point it at the router, and `launch claude` and `env claude` refuse: behind the
-  router, Claude Code would send those credentials to Anthropic. They name the variables and where they're set, never
-  their values, and say what to remove.
+  `apiKeyHelper`), setup doesn't point it at the router, and `launch claude` and `env claude` refuse: behind the router,
+  Claude Code would send those credentials to Anthropic. They name the variables and where they're set, never their
+  values, and say what to remove. When such a gateway turns up in the shell after setup pointed Claude Code at the
+  router, `doctor` reports a FAIL line, and running setup again takes its own settings back out.
 - Run through npx, as `npx @ediri/jev-router setup` or `npx github:dirien/jev-router setup`, setup installs the package
   globally before it installs the service, because npm can delete its npx cache at any time. When `npm install -g`
   fails, it says what to do, and names 1.4.0's package when that one holds the command. The commands setup suggests are

@@ -202,6 +202,22 @@ export function writeSettings(file, { data, exists, mode }, backup) {
 }
 
 /**
+ * The settings to set or remove to undo what the manifest recorded.
+ * @param {{ env?: Record<string, { value: string, previous?: string }>, tokenHeader?: 'created' | 'added' }} record setup's
+ *   record of what it changed
+ * @param {Record<string, string>} block
+ * @returns {Record<string, string | undefined>}
+ */
+export function recordedValues(record, block) {
+  /** @type {Record<string, string | undefined>} */
+  const values = {};
+  for (const [name, { value, previous }] of Object.entries(record.env ?? {})) if (block[name] === value) values[name] = previous;
+  if (record.tokenHeader && hasTokenLine(block.ANTHROPIC_CUSTOM_HEADERS))
+    values.ANTHROPIC_CUSTOM_HEADERS = withoutHeader(block.ANTHROPIC_CUSTOM_HEADERS, TOKEN_HEADER).join('\n') || undefined;
+  return values;
+}
+
+/**
  * Whether a header list carries a router token line.
  * @param {string | undefined} headers
  */

@@ -50,15 +50,17 @@ The systemd unit goes where the user manager looks for units: under the `XDG_CON
 Setup runs for the user who starts it. As root through `sudo`, or as root with another user's `HOME`, it stops before
 it writes anything: it would leave files owned by root in that user's home. Run it as your own user, without `sudo`.
 
-When Claude Code already goes to another gateway, setup checks what it would carry there. A base URL in
-`settings.json` or in your shell that leads somewhere other than the router or Anthropic counts, unless it's the
-router address setup wrote itself. If Claude Code also carries credentials for it, setup never points Claude Code at
-the router, and says what to remove first: behind the router, Claude Code would send those credentials to Anthropic.
-The credentials are `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` or `ANTHROPIC_CUSTOM_HEADERS` lines other than the
-router token, in your shell or the settings file, and an `apiKeyHelper` in the settings file. Setup names them, never
-their values. Without credentials, setup asks before it replaces the base URL, the default is no, and `--yes` keeps
-it. `launch claude` and `env claude` refuse in the same case, and print the command that leaves the credentials
-out.
+When Claude Code already goes to another gateway, setup checks what it would carry there. A base URL in `settings.json`
+or in your shell that leads somewhere other than the router or Anthropic counts, unless it's the router address setup
+wrote itself. If Claude Code also carries credentials for it, setup never points Claude Code at the router, and says
+what to remove first: behind the router, Claude Code would send those credentials to Anthropic. The credentials are
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` or `ANTHROPIC_CUSTOM_HEADERS` lines other than the router token, in your
+shell or the settings file, and an `apiKeyHelper` in the settings file. Setup names them, never their values. Without
+credentials, setup asks before it replaces the base URL, the default is no, and `--yes` keeps it. `launch claude` and
+`env claude` refuse in the same case, and print the command that leaves the credentials out. When such a gateway and its
+credentials turn up in your shell after setup pointed Claude Code at the router, the settings file's address wins and
+the credentials go through the router: `doctor` reports that with a FAIL line, and running setup again takes its own
+settings back out of the file (or removes the file, if setup created it), so Claude Code goes to the gateway again.
 
 Setup records what it changed in Claude Code's settings in `~/.config/jev-router/setup.json`, with no keys and no
 router token. `jev-router uninstall` reads that record: see [Turning it off](#turning-it-off).

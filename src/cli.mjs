@@ -849,6 +849,17 @@ function checkClaudeCode(list, cfg, env) {
   const base = value('ANTHROPIC_BASE_URL');
   if (!base || !pointsAtRouter(base, cfg, env)) return undefined;
   const where = saved.ANTHROPIC_BASE_URL ? file : 'this shell';
+  const leak = gatewayLeak(env, envValue(env, 'JEV_ROUTER_HOST') ?? cfg.host, Number(envValue(env, 'JEV_ROUTER_PORT') ?? cfg.port));
+  if (leak) {
+    list.add(
+      'FAIL',
+      'claude',
+      `Claude Code uses the router (ANTHROPIC_BASE_URL in ${where}), and this shell also sends it to ${leak.base} with ` +
+        `${credentialsInWords(leak.credentials)}: through the router, those credentials go to Anthropic. ` +
+        'Remove them from your shell, or take the router out of Claude Code with: jev-router uninstall',
+    );
+    return saved.ANTHROPIC_BASE_URL ? 'settings' : 'shell';
+  }
   const missing = Object.entries(CLAUDE_SETTINGS).filter(([name]) => !value(name));
   if (!missing.length)
     list.add('ok', 'claude', `Claude Code uses the router (ANTHROPIC_BASE_URL in ${where}) with the gateway settings it needs`);

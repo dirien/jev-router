@@ -9,6 +9,7 @@ import {
   hasTokenLine,
   pointsAtRouter,
   readSettings,
+  recordedValues,
   settingsBlock,
   withoutHeader,
   writeSettings,
@@ -105,21 +106,6 @@ function undoSettings(manifest, env) {
       `The old file is ${file}.jev-router.bak. Restart any Claude Code session that's running.\n`,
   );
   return true;
-}
-
-/**
- * The settings to set or remove to undo what the manifest recorded.
- * @param {NonNullable<Manifest['claude']>} record
- * @param {Record<string, string>} block
- * @returns {Record<string, string | undefined>}
- */
-function recordedValues(record, block) {
-  /** @type {Record<string, string | undefined>} */
-  const values = {};
-  for (const [name, { value, previous }] of Object.entries(record.env ?? {})) if (block[name] === value) values[name] = previous;
-  if (record.tokenHeader && hasTokenLine(block.ANTHROPIC_CUSTOM_HEADERS))
-    values.ANTHROPIC_CUSTOM_HEADERS = withoutHeader(block.ANTHROPIC_CUSTOM_HEADERS, TOKEN_HEADER).join('\n') || undefined;
-  return values;
 }
 
 /**

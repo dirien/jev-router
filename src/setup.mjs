@@ -3,7 +3,7 @@
 // config, the env file, a launchd or systemd service, and, once the router answers, Claude Code's
 // settings. It is safe to run again. `jev-router uninstall` (uninstall.mjs) undoes it from the
 // manifest setup keeps.
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -15,6 +15,7 @@ import {
   foreignBaseUrl,
   hasTokenLine,
   readSettings,
+  recordedValues,
   settingsBlock,
   settingsSet,
   writeSettings,
@@ -652,6 +653,36 @@ async function planSettings(plan, prompter) {
 }
 
 /**
+ * Takes setup's own variables back out of Claude Code's settings when another gateway's credentials
+ * would ride through the router to Anthropic: an earlier setup pointed Claude Code at the router,
+ * and the settings file's address overrides the gateway the shell names. Only what setup recorded,
+ * and still holds the value setup wrote, is taken back.
+ * @param {Manifest} manifest changed in place: its record of the settings goes once they're taken back
+ * @returns {string | undefined} what happened, or undefined when the settings don't point at the router setup's way
+ */
+function revertForLeak(manifest) {
+  const record = manifest.claude;
+  const own = record?.env.ANTHROPIC_BASE_URL?.value;
+  if (!record || !own) return undefined;
+  const read = readSettings(record.file);
+  if ('problem' in read)
+    return `Claude Code's settings (${record.file}) still send it to the router, and setup can't change them: ${read.problem}. Remove ANTHROPIC_BASE_URL from them yourself.`;
+  if (settingsBlock(read.data).ANTHROPIC_BASE_URL !== own) return undefined;
+  const changes = changeSettingsEnv(read.data, recordedValues(record, settingsBlock(read.data)));
+  manifest.claude = undefined;
+  const names = inWords(changes.map((change) => change.name));
+  if (record.created && !Object.keys(read.data).length) {
+    rmSync(record.file, { force: true });
+    return `Claude Code's settings (${record.file}) sent it to the router, and so those credentials too: setup removed the file, which it had created. Restart any Claude Code session that's running.`;
+  }
+  writeSettings(record.file, read, `${record.file}.jev-router.bak`);
+  return (
+    `Claude Code's settings (${record.file}) sent it to the router, and so those credentials too: setup took ${names} back out. ` +
+    `The old file is ${record.file}.jev-router.bak. Restart any Claude Code session that's running.`
+  );
+}
+
+/**
  * Writes what the plan says, starts the service, and points Claude Code at it once it answers.
  * @param {Plan} plan
  * @param {NodeJS.ProcessEnv} env
@@ -681,7 +712,8 @@ async function carryOut(plan, env) {
     files: { config: plan.configPath, env: plan.envFile, log: plan.logFile },
     claude: readManifest(env)?.claude,
   };
-  const skip = service.settings && 'skip' in service.settings ? service.settings.skip : undefined;
+  let skip = service.settings && 'skip' in service.settings ? service.settings.skip : undefined;
+  if (skip && leaks(plan.gateway)) skip = [skip, revertForLeak(manifest)].filter(Boolean).join('\n');
   const settings = skip ? { file: '', outcome: { text: skip, pointed: false }, write: () => undefined } : pointClaude(plan, manifest, env);
   writeManifest(env, manifest); // first: whatever happens to settings.json next, uninstall can undo it
   finishWithService(plan, command, writeClaude(plan, settings));

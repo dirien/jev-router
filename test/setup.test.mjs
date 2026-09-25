@@ -846,6 +846,44 @@ test("setup never points Claude Code at the router while it carries another gate
   );
 });
 
+test('a gateway added to the shell after setup: doctor fails, and setup takes its own settings back out', async () => {
+  const gateway = { ANTHROPIC_BASE_URL: 'https://litellm.example.com', ANTHROPIC_AUTH_TOKEN: GATEWAY_TOKEN };
+  const failLine =
+    'FAIL claude    Claude Code uses the router (ANTHROPIC_BASE_URL in {settings}), and this shell also sends it to ' +
+    'https://litellm.example.com with ANTHROPIC_AUTH_TOKEN in this shell: through the router, those credentials go to Anthropic.';
+
+  const box = await setupBox();
+  const first = await setup(box, ['--yes', '--service', 'systemd'], { env: { TYPESAFE_API_KEY: GOOD } });
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(readJson(box.settings).env.ANTHROPIC_BASE_URL, box.url, 'setup pointed Claude Code at the router');
+  const doctor = await run(['doctor'], { ...box.env, ...gateway });
+  assert.equal(doctor.code, 1, doctor.stdout);
+  assert.ok(doctor.stdout.includes(failLine.replace('{settings}', box.settings)), doctor.stdout);
+  assert.match(doctor.stdout, /Not ready/);
+
+  const second = await setup(box, ['--yes', '--service', 'systemd'], { env: { ...gateway, TYPESAFE_API_KEY: GOOD } });
+  assert.equal(second.code, 0, second.stderr);
+  assert.ok(
+    second.stderr.includes(
+      `Claude Code's settings (${box.settings}) sent it to the router, and so those credentials too: ` +
+        'setup removed the file, which it had created.',
+    ),
+    second.stderr,
+  );
+  assert.ok(!existsSync(box.settings), 'Claude Code goes to the gateway again');
+  assert.equal(readJson(box.manifest).claude, undefined, 'nothing is left for uninstall to take back');
+  assert.doesNotMatch((await run(['doctor'], { ...box.env, ...gateway })).stdout, /FAIL claude/);
+
+  const own = await setupBox();
+  mkdirSync(join(own.home, '.claude'));
+  writeFileSync(own.settings, JSON.stringify({ model: 'opus', env: { OTHER: 'x' } }));
+  assert.equal((await setup(own, ['--yes', '--service', 'systemd'], { env: { TYPESAFE_API_KEY: GOOD } })).code, 0);
+  const taken = await setup(own, ['--yes', '--service', 'systemd'], { env: { ...gateway, TYPESAFE_API_KEY: GOOD } });
+  assert.equal(taken.code, 0, taken.stderr);
+  assert.match(taken.stderr, /setup took ANTHROPIC_BASE_URL, .*ENABLE_TOOL_SEARCH back out\. The old file is .*\.jev-router\.bak\./);
+  assert.deepEqual(readJson(own.settings), { model: 'opus', env: { OTHER: 'x' } }, 'the settings are as they were before setup');
+  for (const result of [doctor, second, taken]) assert.ok(!result.stdout.includes(GATEWAY_TOKEN) && !result.stderr.includes(GATEWAY_TOKEN));
+});
 test('a base URL from this shell without credentials gets the question, which says the settings file would override it', async () => {
   const box = await setupBox();
   const proxy = { ANTHROPIC_BASE_URL: 'https://proxy.example.com' };

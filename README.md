@@ -67,9 +67,10 @@ Then setup:
 Restart any Claude Code session that was already running. You can run setup again at any time: it keeps your config
 and your saved keys (press Enter), and restarts the router.
 
-If Claude Code already goes to another gateway, such as a company LiteLLM with an `ANTHROPIC_AUTH_TOKEN`, setup
-leaves its settings alone and says what to remove first. Behind the router, Claude Code would send that gateway's
-credentials to Anthropic.
+If Claude Code already goes to another gateway, such as a company LiteLLM with an `ANTHROPIC_AUTH_TOKEN`, setup leaves
+its settings alone and says what to remove first. Behind the router, Claude Code would send that gateway's credentials
+to Anthropic. If such a gateway turns up in your shell later, `jev-router doctor` says so, and running setup again takes
+the router back out of Claude Code's settings.
 
 - **Check it:** `jev-router doctor` lists the config, the keys, the service, and whether the router answers.
 - **Watch it:** open <http://127.0.0.1:4100>. Each message you write shows up with the model the router picked, and
