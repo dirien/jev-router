@@ -483,6 +483,88 @@ test('doctor shows a running router with its version and Jev channels, and spots
   assert.match(hung.stdout, new RegExp(`info router {4}nothing answers at http://127\\.0\\.0\\.1:${silentPort}`));
 });
 
+/** @param {string} text matched as it is in a regular expression */
+const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+test('doctor checks the env file, the log file and Claude Code settings, and adds no line for them on a plain machine', async () => {
+  const box = sandbox();
+  const env = { ...box.env, JEV_ROUTER_PORT: String(await freePort()) };
+  const plain = await run(['doctor'], { ...env, TYPESAFE_API_KEY: JEV_KEY });
+  assert.equal(plain.code, 0, plain.stdout);
+  assert.doesNotMatch(plain.stdout, /env-file|log {7}|claude {4}|proxy {5}/, 'no proxy, env file, log or Claude Code line without them');
+
+  const envFile = join(box.root, 'router.env');
+  writeFileSync(envFile, `TYPESAFE_API_KEY=${JEV_KEY}\nHTTPS_PROXY=http://proxy.example:3128\n`);
+  chmodSync(envFile, 0o640);
+  const withFile = await run(['doctor', '--env-file', envFile], env);
+  assert.equal(withFile.code, 0, withFile.stdout);
+  for (const line of [
+    new RegExp(`^ {2}ok {3}env-file {2}${literal(envFile)} \\(--env-file\\) sets HTTPS_PROXY, TYPESAFE_API_KEY$`, 'm'),
+    new RegExp(
+      `^ {2}warn env-file {2}other users can read ${literal(envFile)} \\(mode 640\\), which holds API keys\\. Run: chmod 600 `,
+      'm',
+    ),
+    /^ {2}warn env-file {2}HTTPS_PROXY in .* has no effect: Node reads it only when it starts\./m,
+    /^ {2}ok {3}jev {7}typesafe: TYPESAFE_API_KEY is set$/m,
+  ])
+    assert.match(withFile.stdout, line);
+  assert.doesNotMatch(withFile.stdout, /proxy {5}/, "a proxy from the env file is left to the file's own warning");
+  assert.ok(!withFile.stdout.includes(JEV_KEY), 'a key reached the output');
+  const broken = await run(['doctor'], { ...env, JEV_ROUTER_ENV_FILE: join(box.root, 'gone.env') });
+  assert.equal(broken.code, 1);
+  assert.match(broken.stdout, /^ {2}FAIL env-file {2}Cannot read env file .*gone\.env \(JEV_ROUTER_ENV_FILE\): no such file$/m);
+
+  mkdirSync(join(box.config, 'jev-router'), { recursive: true });
+  const standard = join(box.config, 'jev-router', 'env');
+  writeFileSync(standard, `TYPESAFE_API_KEY=${JEV_KEY}\n`);
+  chmodSync(standard, 0o600);
+  const unused = await run(['doctor'], { ...env, TYPESAFE_API_KEY: JEV_KEY });
+  assert.match(
+    unused.stdout,
+    new RegExp(
+      `^ {2}hint env-file {2}${literal(standard)} is not loaded here\\. Check the keys in it with: jev-router doctor --env-file ${literal(standard)}$`,
+      'm',
+    ),
+  );
+  assert.doesNotMatch(unused.stdout, /other users can/, 'mode 600 is fine');
+
+  const keys = { ...env, TYPESAFE_API_KEY: JEV_KEY };
+  const nowhere = writeConfig(join(box.root, 'log-missing.json'), { logFile: join(box.root, 'nowhere', 'router.log') });
+  assert.match(
+    (await run(['doctor', '--config', nowhere], keys)).stdout,
+    /^ {2}warn log {7}.*nowhere\/router\.log \(logFile\): .*nowhere doesn't exist, so nothing is logged there\./m,
+  );
+  const fine = writeConfig(join(box.root, 'log-fine.json'), { logFile: join(box.root, 'router.log'), logMaxBytes: 0 });
+  assert.match((await run(['doctor', '--config', fine], keys)).stdout, /^ {2}ok {3}log {7}.*router\.log \(logFile\); never rotates/m);
+  assert.match(
+    (await run(['doctor'], { ...keys, JEV_ROUTER_LOG_FILE: '~/logs/router.log' })).stdout,
+    /^ {2}ok {3}log {7}.*\/logs\/router\.log \(JEV_ROUTER_LOG_FILE\): serve creates .*\/logs; rotates at 50 MiB$/m,
+  );
+
+  const routerUrl = `http://127.0.0.1:${env.JEV_ROUTER_PORT}`;
+  const shell = await run(['doctor'], { ...keys, ANTHROPIC_BASE_URL: routerUrl, CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1' });
+  const hints = shell.stdout.split('\n').filter((line) => line.startsWith('  hint claude'));
+  assert.deepEqual(
+    hints.map((line) => /but (\w+) is not set/.exec(line)?.[1]),
+    ['CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'ENABLE_TOOL_SEARCH'],
+  );
+  assert.match(shell.stdout, /ANTHROPIC_BASE_URL in this shell\), but ENABLE_TOOL_SEARCH is not set: .*Set ENABLE_TOOL_SEARCH=true\.$/m);
+  mkdirSync(join(box.home, '.claude'), { recursive: true });
+  const settings = {
+    ANTHROPIC_BASE_URL: routerUrl,
+    CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1',
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '160000',
+    ENABLE_TOOL_SEARCH: 'true',
+  };
+  writeFileSync(join(box.home, '.claude', 'settings.json'), JSON.stringify({ env: settings }));
+  assert.match(
+    (await run(['doctor'], keys)).stdout,
+    /^ {2}ok {3}claude {4}Claude Code uses the router \(ANTHROPIC_BASE_URL in .*settings\.json\) with the gateway settings it needs$/m,
+  );
+  const direct = await run(['doctor'], { ...keys, HOME: join(box.root, 'other-home'), ANTHROPIC_BASE_URL: 'https://api.anthropic.com' });
+  assert.doesNotMatch(direct.stdout, /claude {4}/, 'Claude Code that goes to Anthropic directly gets no line');
+});
+
 test('doctor --live makes one Jev call through a local System One mock', async () => {
   const box = sandbox();
   const jev = await mock((_call, res) => json(res, 200, jevOptionsAnswer({ option: 'routine', model: 'jev-1.13.0-mock' })));

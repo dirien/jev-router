@@ -43,7 +43,7 @@ Usage:
   jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--] [claude args…]
   jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--force] [--] [codex args…]
   jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
-  jev-router doctor [--config <file>] [--live]
+  jev-router doctor [--config <file>] [--env-file <file>] [--live]
   jev-router init [--anthropic-only] [--force]
   jev-router report [<log.jsonl>]
   jev-router ui [<log.jsonl>] [--port <n>] [--ui-token <token>]
@@ -158,6 +158,8 @@ function xdgDir(env, name, fallback) {
 /** @param {NodeJS.ProcessEnv} env */
 const userConfigPath = (env) => join(xdgDir(env, 'XDG_CONFIG_HOME', '.config'), 'jev-router', 'config.json');
 /** @param {NodeJS.ProcessEnv} env */
+const standardEnvFile = (env) => join(xdgDir(env, 'XDG_CONFIG_HOME', '.config'), 'jev-router', 'env');
+/** @param {NodeJS.ProcessEnv} env */
 const routerLogPath = (env) => join(xdgDir(env, 'XDG_STATE_HOME', join('.local', 'state')), 'jev-router', 'router.log');
 /**
  * A path as given, with a leading ~ for the home directory: launchd and systemd pass arguments
@@ -218,6 +220,7 @@ const STARTUP_ONLY = new Set(['NODE_USE_ENV_PROXY', 'NODE_EXTRA_CA_CERTS', 'HTTP
  * @property {string} path
  * @property {string} source `--env-file` or `JEV_ROUTER_ENV_FILE`
  * @property {string[]} names the variables it set; a variable that was set already keeps its value and isn't listed
+ * @property {string[]} warnings what is wrong with it: a mode that lets other users at the keys, or settings it can't make
  */
 
 /**
@@ -258,16 +261,29 @@ function loadEnvFile(flag, env) {
   const names = Object.keys(process.env).filter((name) => !before.has(name));
   // `env` is process.env unless a caller passed its own; it gets the file's variables too.
   if (env !== process.env) for (const name of names) env[name] ??= process.env[name];
+  const warnings = [];
   const loose = looseFile(path, mode);
-  if (loose) console.error(`jev-router: ${loose}`);
+  if (loose) warnings.push(loose);
   const late = names.filter((name) => STARTUP_ONLY.has(name.toUpperCase()));
   if (late.length) {
     const [they, have] = late.length === 1 ? ['it', 'has'] : ['them', 'have'];
-    console.error(
-      `jev-router: ${late.join(', ')} in ${path} ${have} no effect: Node reads ${they} only when it starts. Set ${they} where jev-router is started instead.`,
+    warnings.push(
+      `${late.join(', ')} in ${path} ${have} no effect: Node reads ${they} only when it starts. Set ${they} where jev-router is started instead.`,
     );
   }
-  return { path, source, names };
+  return { path, source, names, warnings };
+}
+
+/**
+ * Loads the env file for a command, and says on stderr what is wrong with it.
+ * @param {string | undefined} flag
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {EnvFile | undefined}
+ */
+function useEnvFile(flag, env) {
+  const file = loadEnvFile(flag, env);
+  for (const warning of file?.warnings ?? []) console.error(`jev-router: ${warning}`);
+  return file;
 }
 
 /**
@@ -433,7 +449,7 @@ async function serve(args, env) {
     '--ui-token': 'value',
   });
   if (rest.length) throw new Error(`serve takes no arguments, got "${rest.join(' ')}"`);
-  loadEnvFile(values['env-file'], env);
+  useEnvFile(values['env-file'], env);
   const { cfg: loaded, path, host, port, token } = settings(values, env);
   // A service passes its log file on the command line, often in a directory that doesn't exist yet.
   const logFile = namedLogFile(values['log-file'], env);
@@ -559,7 +575,7 @@ async function launch(args, env) {
   if (!agent)
     throw new Error('Usage: jev-router launch claude|codex [--config <file>] [--env-file <file>] [--port <n>] [--] [agent args…]');
   const { values, flags, rest: agentArgs } = parseArgs(rest, agent.spec, { passthrough: true });
-  const file = loadEnvFile(values['env-file'], env);
+  const file = useEnvFile(values['env-file'], env);
   const { cfg, host, port, token } = settings(values, env);
   const wanted = envValue(env, agent.override) ?? agent.bin;
   const bin = findProgram(wanted, env);
@@ -829,7 +845,7 @@ async function printEnv(args, env) {
   const [agent, ...extra] = rest;
   if (!(agent === 'claude' || agent === 'codex') || extra.length)
     throw new Error('Usage: jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]');
-  loadEnvFile(values['env-file'], env);
+  useEnvFile(values['env-file'], env);
   const { host, port, token } = settings(values, env);
   if (port === 0) throw new Error('env needs the port the router listens on, not 0');
   const url = `http://${clientHost(host)}:${port}`;
@@ -902,18 +918,21 @@ function parseHealth(status, text) {
  * @returns {Promise<number>}
  */
 async function doctor(args, env) {
-  const { values, flags, rest } = parseArgs(args, { '--config': 'value', '--live': 'flag' });
-  if (rest.length) throw new Error('Usage: jev-router doctor [--config <file>] [--live]');
+  const { values, flags, rest } = parseArgs(args, { '--config': 'value', '--env-file': 'value', '--live': 'flag' });
+  if (rest.length) throw new Error('Usage: jev-router doctor [--config <file>] [--env-file <file>] [--live]');
   const list = checklist();
+  const file = checkEnvFile(list, values['env-file'], env); // first: it can hold the keys and the settings below
   const cfg = checkConfig(list, values.config, env);
   const major = Number(process.versions.node.split('.')[0]);
   list.add(major >= 22 ? 'ok' : 'warn', 'node', major >= 22 ? process.version : `${process.version}: jev-router needs Node 22 or newer`);
   if (cfg) {
     checkJevKeys(list, cfg, env);
     checkUpstreams(list, cfg, env);
+    checkLogFile(list, cfg, env);
   }
-  checkProxy(list, env);
+  checkProxy(list, env, file?.names ?? []);
   await checkRouter(list, cfg, env);
+  if (cfg) checkClaudeCode(list, cfg, env);
   if (cfg && flags.has('live')) await checkLive(list, cfg, env);
   const verdict = list.failed ? 'Not ready: fix the FAIL lines above.' : 'Ready. Start a session with: jev-router launch claude';
   process.stdout.write(`jev-router ${VERSION} doctor\n${list.lines.join('\n')}\n\n${verdict}\n`);
@@ -935,6 +954,147 @@ function checklist() {
       lines.push(`  ${status.padEnd(5)}${topic.padEnd(10)}${text.replaceAll('\n', `\n${' '.repeat(17)}`)}`);
     },
   };
+}
+
+/**
+ * The env file that --env-file or JEV_ROUTER_ENV_FILE names, loaded so that the key checks see what
+ * a service started with it sees. Without one, the usual place is checked for a file that isn't used.
+ * @param {Checklist} list
+ * @param {string | undefined} flag
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {EnvFile | undefined} the file loaded, if any
+ */
+function checkEnvFile(list, flag, env) {
+  let file;
+  try {
+    file = loadEnvFile(flag, env);
+  } catch (err) {
+    list.add('FAIL', 'env-file', errorMessage(err));
+    return undefined;
+  }
+  if (file) {
+    const sets = file.names.length ? `sets ${file.names.join(', ')}` : 'sets nothing: its variables are all set already, and those win';
+    list.add('ok', 'env-file', `${file.path} (${file.source}) ${sets}`);
+    for (const warning of file.warnings) list.add('warn', 'env-file', warning);
+    return file;
+  }
+  const standard = standardEnvFile(env);
+  if (!existsSync(standard)) return undefined;
+  const loose = looseFile(standard, statSync(standard).mode);
+  if (loose) list.add('warn', 'env-file', loose);
+  list.add(
+    'hint',
+    'env-file',
+    `${standard} is not loaded here. Check the keys in it with: jev-router doctor --env-file ${shellQuote(standard)}`,
+  );
+  return undefined;
+}
+
+/**
+ * The log file serve writes besides stdout: its directory has to exist, unless serve creates it.
+ * @param {Checklist} list
+ * @param {Config} cfg
+ * @param {NodeJS.ProcessEnv} env
+ */
+function checkLogFile(list, cfg, env) {
+  const named = namedLogFile(undefined, env);
+  const file = named ?? cfg.logFile;
+  if (!file) return;
+  const source = named ? 'JEV_ROUTER_LOG_FILE' : 'logFile';
+  const rotation = cfg.logMaxBytes ? `rotates at ${sizeInWords(cfg.logMaxBytes)}` : 'never rotates (logMaxBytes is 0)';
+  const dir = dirname(file);
+  if (!existsSync(dir)) {
+    if (named) list.add('ok', 'log', `${file} (${source}): serve creates ${dir}; ${rotation}`);
+    else list.add('warn', 'log', `${file} (${source}): ${dir} doesn't exist, so nothing is logged there. Create it, or change logFile.`);
+  } else if (!canWrite(existsSync(file) ? file : dir)) list.add('warn', 'log', `${file} (${source}): the router can't write it`);
+  else list.add('ok', 'log', `${file} (${source}); ${rotation}`);
+}
+
+/** @param {number} bytes */
+const sizeInWords = (bytes) => (bytes % 1048576 === 0 ? `${bytes / 1048576} MiB` : `${bytes} bytes`);
+
+/** @param {string} path */
+function canWrite(path) {
+  try {
+    accessSync(path, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What Claude Code needs besides ANTHROPIC_BASE_URL to work well behind the router: the value
+ * `launch` and `env` set, and why.
+ * @type {Record<string, [value: string, why: string]>}
+ */
+const CLAUDE_SETTINGS = {
+  CLAUDE_CODE_GATEWAY_HINT_HEADERS: ['1', "the router can't tell background calls and subagents from your own messages"],
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW: [COMPACT_WINDOW, "Claude Code can't learn a routed model's context window through a gateway"],
+  ENABLE_TOOL_SEARCH: [
+    'true',
+    'behind a gateway Claude Code turns MCP tool search off and sends every MCP tool definition with every request',
+  ],
+};
+
+/**
+ * The `env` block of Claude Code's settings file, where the always-on setup puts its variables.
+ * @param {string} file
+ * @returns {Record<string, string>}
+ */
+function settingsEnv(file) {
+  try {
+    const block = JSON.parse(readFileSync(file, 'utf8'))?.env;
+    return block && typeof block === 'object'
+      ? Object.fromEntries(Object.entries(block).filter(([, v]) => typeof v === 'string' && v))
+      : {};
+  } catch {
+    return {}; // no settings file, or one this check can't read
+  }
+}
+
+/**
+ * Whether a base URL reaches the router that the config and JEV_ROUTER_* describe.
+ * @param {string} base
+ * @param {Config} cfg
+ * @param {NodeJS.ProcessEnv} env
+ */
+function pointsAtRouter(base, cfg, env) {
+  try {
+    const url = new URL(base);
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    const host = url.hostname.replace(/^\[|\]$/g, '');
+    const router = envValue(env, 'JEV_ROUTER_HOST') ?? cfg.host;
+    return port === parsePort(envValue(env, 'JEV_ROUTER_PORT') ?? cfg.port) && (isLoopback(host) || host === router);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Claude Code pointed at the router, from this shell or its settings file, without the settings
+ * that `launch` would set. Nothing is said when it isn't pointed at the router.
+ * @param {Checklist} list
+ * @param {Config} cfg
+ * @param {NodeJS.ProcessEnv} env
+ */
+function checkClaudeCode(list, cfg, env) {
+  const file = join(envValue(env, 'CLAUDE_CONFIG_DIR') ?? join(homedir(), '.claude'), 'settings.json');
+  const saved = settingsEnv(file);
+  /** @param {string} name */
+  const value = (name) => saved[name] ?? envValue(env, name);
+  const base = value('ANTHROPIC_BASE_URL');
+  if (!base || !pointsAtRouter(base, cfg, env)) return;
+  const where = saved.ANTHROPIC_BASE_URL ? file : 'this shell';
+  const missing = Object.entries(CLAUDE_SETTINGS).filter(([name]) => !value(name));
+  if (!missing.length)
+    list.add('ok', 'claude', `Claude Code uses the router (ANTHROPIC_BASE_URL in ${where}) with the gateway settings it needs`);
+  for (const [name, [wanted, why]] of missing)
+    list.add(
+      'hint',
+      'claude',
+      `Claude Code uses the router (ANTHROPIC_BASE_URL in ${where}), but ${name} is not set: ${why}. Set ${name}=${wanted}.`,
+    );
 }
 
 /**
@@ -999,12 +1159,13 @@ function checkUpstreams(list, cfg, env) {
 /**
  * @param {Checklist} list
  * @param {NodeJS.ProcessEnv} env
+ * @param {string[]} fromFile variables the env file set: a proxy there never works, and its own line says so
  */
-function checkProxy(list, env) {
-  if (!(env.HTTPS_PROXY || env.https_proxy)) return;
-  if (env.NODE_USE_ENV_PROXY === '1')
-    list.add('ok', 'proxy', 'HTTPS_PROXY is set and NODE_USE_ENV_PROXY=1, so Jev and upstream calls use it');
-  else list.add('hint', 'proxy', 'HTTPS_PROXY is set, but Node ignores it without NODE_USE_ENV_PROXY=1');
+function checkProxy(list, env, fromFile) {
+  const proxy = ['HTTPS_PROXY', 'https_proxy'].find((name) => env[name] && !fromFile.includes(name));
+  if (!proxy) return;
+  if (env.NODE_USE_ENV_PROXY === '1') list.add('ok', 'proxy', `${proxy} is set and NODE_USE_ENV_PROXY=1, so Jev and upstream calls use it`);
+  else list.add('hint', 'proxy', `${proxy} is set, but Node ignores it without NODE_USE_ENV_PROXY=1`);
 }
 
 /**
