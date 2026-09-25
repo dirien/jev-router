@@ -7,7 +7,9 @@
 // --anthropic-only`, and `serve --port 0 --ui 127.0.0.1:0` with a mode 0600 env file (skipped with a
 // note when the version has no --env-file). While the router runs, it checks /healthz, the live
 // view's page and event stream, `env claude`, and `launch claude` with a stand-in agent; then that
-// SIGTERM stops the router cleanly. Nothing touches the network. Exits 1 on the first failed check.
+// SIGTERM stops the router cleanly. Last, `setup --yes --service none` checks the saved key against a
+// System One stand-in on loopback, and `uninstall` runs (both skipped with a note when the version
+// has no setup). Nothing touches the network. Exits 1 on the first failed check.
 //
 //   node scripts/smoke-package.mjs [--git] [--tarball <file.tgz>] [--keep]
 //
@@ -84,6 +86,32 @@ function run(command, args, { env = process.env, cwd = ROOT } = {}) {
   const result = spawnSync(command, args, { env, cwd, encoding: 'utf8', timeout: 180000 });
   if (result.error) throw new Error(`${command} ${args.join(' ')}: ${result.error.message}`);
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+/**
+ * Runs a command without blocking this process, which may have to answer the command's requests.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<Result>}
+ */
+function runAsync(command, args, env) {
+  return new Promise((done, fail) => {
+    const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const output = { stdout: '', stderr: '' };
+    child.stdout.setEncoding('utf8').on('data', (chunk) => {
+      output.stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => {
+      output.stderr += chunk;
+    });
+    const timer = setTimeout(() => child.kill('SIGKILL'), WAIT_MS);
+    child.on('error', fail);
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      done({ status, ...output });
+    });
+  });
 }
 
 /**
@@ -346,6 +374,77 @@ function checkClients(topic, bin, env, router) {
 }
 
 /**
+ * A System One stand-in on loopback that answers every call, so `setup` can check a key offline.
+ * @returns {Promise<{ url: string, calls: () => number, close: () => Promise<void> }>}
+ */
+async function jevStandIn() {
+  let calls = 0;
+  const answer = {
+    model: 'jev-smoke',
+    answers: {
+      tier: {
+        type: 'choice',
+        choice: 'routine',
+        confidence: 0.87,
+        probabilities: { mechanical: 0.03, routine: 0.9, complex: 0.04, deep: 0.03 },
+      },
+      alters_sensitive_state: { type: 'noul', noul: 0.02 },
+      routing_claim_present: { type: 'noul', noul: 0.01 },
+    },
+    usage: { input_tokens: 600, output_tokens: 80 },
+  };
+  const server = http.createServer((req, res) => {
+    calls += 1;
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(answer));
+    });
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', () => done(undefined)));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    calls: () => calls,
+    close: () => new Promise((done) => server.close(() => done(undefined))),
+  };
+}
+
+/**
+ * `setup --yes --service none` with the config's Jev channels on a local stand-in, then `uninstall`.
+ * @param {string} topic
+ * @param {string} bin
+ * @param {NodeJS.ProcessEnv} env
+ */
+async function checkSetup(topic, bin, env) {
+  if (!runOk(bin, ['help'], { env }).stdout.includes('jev-router setup')) {
+    note(topic, "setup: skipped, this version doesn't have it");
+    return;
+  }
+  const jev = await jevStandIn();
+  try {
+    const config = join(String(env.HOME), '.config', 'jev-router', 'config.json');
+    const cfg = JSON.parse(readFileSync(config, 'utf8'));
+    cfg.jev.channels = cfg.jev.channels.map((/** @type {Record<string, unknown>} */ channel) => ({ ...channel, baseUrl: jev.url }));
+    writeFileSync(config, JSON.stringify(cfg));
+    const setup = await runAsync(bin, ['setup', '--yes', '--service', 'none'], env);
+    if (setup.status !== 0 || jev.calls() !== 1)
+      throw new Error(`setup --yes exited with ${setup.status} after ${jev.calls()} Jev calls\n${setup.stderr.trim()}`);
+    if (!setup.stderr.includes('Start Claude Code through the router with: jev-router launch claude'))
+      throw new Error(`setup didn't say how to start Claude Code:\n${setup.stderr.trim()}`);
+    if (setup.stderr.includes(ENV_FILE_VALUE)) throw new Error('setup printed the key');
+    ok(topic, 'setup --yes --service none: checked the saved key with one Jev call, and kept the config');
+    const uninstall = await runAsync(bin, ['uninstall'], env);
+    if (uninstall.status !== 0 || !uninstall.stderr.includes(`npm uninstall -g ${PKG.name}`))
+      throw new Error(`uninstall exited with ${uninstall.status}:\n${uninstall.stderr.trim()}`);
+    ok(topic, 'uninstall: nothing to undo, and it names the command that removes the package');
+  } finally {
+    await jev.close();
+  }
+}
+
+/**
  * Installs one package source and runs the installed command through the no-sandbox flow.
  * @param {string} topic
  * @param {string} spec what npm installs
@@ -391,6 +490,7 @@ async function checkInstall(topic, spec, work) {
   } finally {
     if (server.child.exitCode === null && server.child.signalCode === null) server.child.kill('SIGKILL');
   }
+  if (envFile) await checkSetup(topic, bin, env);
 }
 
 /**
