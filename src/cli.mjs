@@ -27,6 +27,7 @@ import {
   errorCode,
   errorMessage,
   findProgram,
+  inPackage,
   MODEL_CHOICES,
   makeDirectory,
   namedLogFile,
@@ -1029,6 +1030,11 @@ function init(args, env) {
     throw new Error(`--anthropic-only is --models claude, not --models ${named}`);
   const source = PACKAGED_CONFIGS[named ?? (flags.has('anthropic-only') ? 'claude' : 'ollama')];
   const target = userConfigPath(env);
+  const inside = inPackage(target);
+  if (inside) {
+    console.error(`jev-router: ${target} leads into jev-router's own files (${inside}). Remove it first: rm ${shellQuote(target)}`);
+    return 1;
+  }
   if (existsSync(target) && !flags.has('force')) {
     console.error(`jev-router: ${target} already exists. Pass --force to overwrite it.`);
     return 1;

@@ -35,7 +35,8 @@ const MONO_FONT = `11px ${MONO}`;
  * @typedef {{ event: 'deciding', ts: number, session: string, turn: number | undefined }} DecidingEvent
  * @typedef {{ model: string, upstream: string, trusted: boolean }} Target
  * @typedef {{ event: 'config', ts: number, version: string, mode: string, tiers: string[], defaultTier: string,
- *   options: Record<string, string>, accept: Record<string, number>, sensitiveOverride: number | undefined,
+ *   options: Record<string, string>, accept: Record<string, number>, escalationCeiling: string | undefined,
+ *   sensitiveOverride: number | undefined,
  *   claimGuard: number | undefined, surfaces: Record<string, Record<string, Target>>,
  *   channels: Array<{ name: string, model: string, host: string }> }} ConfigEvent
  * @typedef {{ event: 'note', ts: number, level: 'info' | 'warn' | 'error', text: string, req: number | undefined }} NoteEvent
@@ -338,6 +339,7 @@ function normConfig(raw, ts) {
     defaultTier: str(raw.defaultTier),
     options,
     accept: numMap(raw.accept),
+    escalationCeiling: isString(raw.escalationCeiling) ? raw.escalationCeiling : undefined,
     sensitiveOverride: num(raw.sensitiveOverride),
     claimGuard: num(raw.claimGuard),
     surfaces: normSurfaces(raw.surfaces),
@@ -884,7 +886,8 @@ function explain(rec) {
       return `${up}Jev was ${pct(p)} sure: ${jev?.choice} → ${target}.`;
     case 'jev-escalated': {
       const bar = cfg?.accept[optionTier(jev?.choice ?? '') ?? ''];
-      return `${up}Jev leaned ${jev?.choice} (${pct(p)}), under the ${pct(bar)} bar, so the router took the more capable of its top two tiers: ${target}.`;
+      const ceiling = cfg?.escalationCeiling === route.tier ? `, going no higher than ${route.tier}` : '';
+      return `${up}Jev leaned ${jev?.choice} (${pct(p)}), under the ${pct(bar)} bar, so the router took the more capable of its top two tiers${ceiling}: ${target}.`;
     }
     case 'jev-keep':
       return `Jev rated this ${jev?.choice} (${pct(p)}), but the session keeps ${target}: the router never moves down mid-session.`;

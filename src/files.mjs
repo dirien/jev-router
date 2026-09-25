@@ -1,5 +1,7 @@
 // Where jev-router's files live, how programs are found on PATH, and how a file is replaced safely.
 // The commands share these rules, so a service, a shell and `doctor` agree on every path.
+
+import { createHash } from 'node:crypto';
 import {
   accessSync,
   chmodSync,
@@ -16,7 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** @import { Models } from './types.js' */
@@ -36,20 +38,49 @@ export const ANTHROPIC_FABLE_CONFIG = packaged('config/anthropic-fable.json');
 export const PACKAGED_CONFIGS = Object.freeze({ claude: ANTHROPIC_ONLY_CONFIG, fable: ANTHROPIC_FABLE_CONFIG, ollama: DEFAULT_CONFIG });
 /** @type {ReadonlyArray<Models>} */
 export const MODEL_CHOICES = ['claude', 'fable', 'ollama'];
+/**
+ * SHA-256 digests of every released version of each packaged config, so that a copy that setup or
+ * init wrote still counts as unchanged after an upgrade changed the packaged file. When a packaged
+ * config changes, add its new digest and keep the old ones: a unit test checks that the current
+ * files are listed.
+ * @type {Readonly<Record<Models, ReadonlyArray<string>>>}
+ */
+export const PACKAGED_DIGESTS = Object.freeze({
+  claude: ['4db622bf5f4cba5247a8a22269454a016bd40782a6b933171a8c40c93a39f60f'], // 1.4.0 to 1.6.0
+  fable: ['12eb9ef77f64da817417160b157e4f48789c7d610fb92b0b236254173e826e08'], // 1.6.0
+  ollama: ['b36d54b0047004c93ae3c2b829a3bcedcdb8b7c7a7c4609f2cbdfe0d25b63d45'], // 1.4.0 to 1.6.0
+});
 
 /**
- * The packaged config a file is an exact copy of: one that setup or init wrote and nobody has changed since.
+ * The packaged config a file is an unchanged copy of, from this release or an earlier one: one that
+ * setup or init wrote and nobody has changed since.
  * @param {string} path
+ * @param {Readonly<Record<Models, ReadonlyArray<string>>>} [digests]
  * @returns {Models | undefined} undefined for any other file, or one that can't be read
  */
-export function packagedModels(path) {
-  let text;
+export function packagedModels(path, digests = PACKAGED_DIGESTS) {
+  let digest;
   try {
-    text = readFileSync(path, 'utf8');
+    digest = createHash('sha256').update(readFileSync(path)).digest('hex');
   } catch {
     return undefined;
   }
-  return MODEL_CHOICES.find((name) => readFileSync(PACKAGED_CONFIGS[name], 'utf8') === text);
+  return MODEL_CHOICES.find((name) => digests[name].includes(digest));
+}
+
+/**
+ * Where a path really leads when that's inside jev-router's own package: a link to a packaged
+ * config, for example. Setup and init never write there; it would change the package itself.
+ * @param {string} path
+ * @returns {string | undefined} the resolved path, or undefined when it leads elsewhere or nowhere
+ */
+export function inPackage(path) {
+  try {
+    const target = realpathSync(path);
+    return target.startsWith(`${realpathSync(packaged(''))}${sep}`) ? target : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -141,6 +141,10 @@ function checkPolicy(input, tiers, need) {
     need(tiers.has(tier), `policy.accept names unknown tier "${tier}"`);
     need(isProbability(p), `policy.accept.${tier} must be a probability`);
   }
+  need(
+    policy.escalationCeiling === undefined || tiers.has(policy.escalationCeiling),
+    `policy.escalationCeiling "${policy.escalationCeiling}" is not one of tiers`,
+  );
   need(isProbability(policy.sensitiveOverride), 'policy.sensitiveOverride must be a probability');
   need(isProbability(policy.claimGuard), 'policy.claimGuard must be a probability');
   return policy;

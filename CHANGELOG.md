@@ -8,14 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 Fable 5.1 can take Claude Code's hardest work now. Setup offers a third choice of models, Claude with Fable 5.1, which
-adds a fourth tier, `max`, for the messages Jev calls deep. Run setup again to switch between the choices.
+adds a fourth tier, `max`, for the messages Jev rates most likely deep. Run setup again to switch between the choices.
 
 ### Added
 
-- `config/anthropic-fable.json`: the Claude-only config plus a `max` tier on `claude-fable-5-1`. Jev's `deep` option
-  goes there, and so do `/model fable` and a `#max` tag. A message Jev thinks would change production systems,
-  credentials, permissions or billing goes to the top tier, which is `max` in this config. Savings compare against
-  running every request on Fable 5.1. Codex's `max` tier is `gpt-6-astra`, like its `frontier` tier.
+- `config/anthropic-fable.json`: the Claude-only config plus a `max` tier on `claude-fable-5-1`. A message goes there
+  when `deep` is Jev's most likely answer, and so do `/model fable` and a `#max` tag. A message Jev thinks would change
+  production systems, credentials, permissions or billing goes to the top tier, which is `max` in this config. Otherwise
+  it routes like the Claude-only config. Savings compare against running every request on Fable 5.1. Codex's `max` tier
+  is `gpt-6-astra`, like its `frontier` tier.
+- `policy.escalationCeiling`: when Jev's most likely tier misses its bar, the router takes the more capable of Jev's two
+  most likely tiers, but no higher than this tier. Unset, as in the other packaged configs, it's the top tier, so their
+  routing doesn't change. The Fable config sets `frontier`, so an unsure message never jumps to Fable 5.1: with a fourth
+  tier, an answer 84% mechanical with the rest split between complex and deep would have gone there.
 - `jev-router setup --models fable`, and Claude with Fable 5.1 as the second answer to setup's models question. The
   Ollama option moves from `2` to `3`.
 - `jev-router init --models claude|fable|ollama` writes any of the packaged configs. `--anthropic-only` still works, as
@@ -24,15 +29,17 @@ adds a fourth tier, `max`, for the messages Jev calls deep. Run setup again to s
 ### Changed
 
 - Running setup again asks for the models again, and Enter keeps the ones you have. Pick others, or pass `--models`, and
-  setup switches the config and restarts the router with it. It replaces the config only while it's an unchanged copy of
-  a packaged one; a config you changed, or one that `JEV_ROUTER_CONFIG` names, stays as it is, and setup says how to
-  start over from a packaged one.
+  setup switches the config and restarts the service with it. It replaces the config only while it's an unchanged copy
+  of a packaged config, from this release or an earlier one; an edit saved while setup runs wins. A config you changed,
+  or one that `JEV_ROUTER_CONFIG` names, stays as it is, and setup prints the `init` command that starts over.
+- Setup and `init` never write through a link into jev-router's own package, such as a user config linked to a packaged
+  one: they say to remove the link instead.
 
 ### Fixed
 
 - A session whose tier the config no longer has, after a switch to another config, went on with the cheapest tier: after
   a switch away from the Fable config, a session on Fable 5.1 would have run its next tool steps on Haiku 4.5. It now
-  goes on with the config's top tier until Jev decides again.
+  goes on with the config's top tier, and the next message you write gets a fresh decision.
 
 ## [1.5.0] - 2026-09-25
 

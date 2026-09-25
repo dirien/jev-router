@@ -2,6 +2,7 @@
 // the Jev client (against a fake fetch), config validation, session state, usage accounting and the report.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
@@ -11,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -24,7 +26,7 @@ import { parseEnv } from 'node:util';
 import { changeSettingsEnv, readSettings, settingsBlock, settingsSet } from '../src/claude.mjs';
 import { loadConfig, validateConfig } from '../src/config.mjs';
 import { envFileFor, loadEnvFile, quoteEnvValue, setEnvValues } from '../src/envfile.mjs';
-import { MODEL_CHOICES, PACKAGED_CONFIGS, packagedModels, writeFileAtomic } from '../src/files.mjs';
+import { inPackage, MODEL_CHOICES, PACKAGED_CONFIGS, PACKAGED_DIGESTS, packagedModels, writeFileAtomic } from '../src/files.mjs';
 import { commandVersion, installSpec, LEGACY_PACKAGE, npxDirOf, origin, PACKAGE } from '../src/install.mjs';
 import { applyPolicy, buildQuestions, buildState, hardenState, JevClient, tierProbabilities } from '../src/jev.mjs';
 import { appendLogLine } from '../src/logfile.mjs';
@@ -254,6 +256,7 @@ test('the packaged configs validate; the Fable one is the Claude-only one plus a
   const expected = read('claude');
   expected.tiers.push('max');
   expected.policy.accept.max = 0.3;
+  expected.policy.escalationCeiling = 'frontier';
   expected.modelPins.fable = 'max';
   expected.jev.options.deep.tier = 'max';
   expected.surfaces.anthropic.max = { ...expected.surfaces.anthropic.frontier, model: 'claude-fable-5-1' };
@@ -262,27 +265,70 @@ test('the packaged configs validate; the Fable one is the Claude-only one plus a
   assert.deepEqual(read('fable'), expected);
 
   const fable = loadConfig(PACKAGED_CONFIGS.fable);
+  const claude = loadConfig(PACKAGED_CONFIGS.claude);
   /**
+   * @param {import('../src/types.js').Config} cfg
    * @param {[number, number, number, number]} p mechanical, routine, complex and deep
    * @param {number} [sensitive]
    */
-  const tier = ([mechanical, routine, complex, deep], sensitive = 0) =>
+  const tier = (cfg, [mechanical, routine, complex, deep], sensitive = 0) =>
     applyPolicy({
       answer: { probabilities: { mechanical, routine, complex, deep }, sensitive },
-      tiers: fable.tiers,
-      options: fable.jev.options,
-      policy: fable.policy,
-      reference: fable.defaultTier,
+      tiers: cfg.tiers,
+      options: cfg.jev.options,
+      policy: cfg.policy,
+      reference: cfg.defaultTier,
     }).tier;
-  assert.equal(tier([0.9, 0.08, 0.01, 0.01]), 'fast');
-  assert.equal(tier([0.05, 0.85, 0.08, 0.02]), 'balanced');
-  assert.equal(tier([0, 0.1, 0.8, 0.1]), 'frontier');
-  assert.equal(tier([0, 0.05, 0.3, 0.65]), 'max');
-  assert.equal(tier([0, 0.15, 0.45, 0.4]), 'frontier', 'Fable 5.1 only when Jev leans deep');
-  assert.equal(tier([0.05, 0.85, 0.08, 0.02], 0.9), 'max', 'the risk override goes to the top tier');
+  /** @type {Array<[[number, number, number, number], string]>} */
+  const cases = [
+    [[0.9, 0.08, 0.01, 0.01], 'fast'],
+    [[0.05, 0.85, 0.08, 0.02], 'balanced'],
+    [[0, 0.1, 0.8, 0.1], 'frontier'],
+    [[0, 0.15, 0.45, 0.4], 'frontier'],
+    // Jev unsure: the router takes the more capable of its top two, but no higher than Opus 5.5.
+    [[0.1, 0.5, 0.15, 0.25], 'frontier'],
+    [[0.84, 0, 0.08, 0.08], 'frontier'],
+  ];
+  for (const [p, expectedTier] of cases) {
+    assert.equal(tier(fable, p), expectedTier, `${p} with Fable`);
+    assert.equal(tier(claude, p), expectedTier, `${p}: the Fable config routes like the Claude-only one`);
+  }
+  assert.equal(tier(fable, [0, 0.05, 0.3, 0.65]), 'max', 'Fable 5.1 when deep is the most likely answer');
+  assert.equal(tier(fable, [0.2, 0.2, 0.25, 0.35]), 'max', 'even under its bar: nothing above it to escalate to');
+  assert.equal(tier(fable, [0.05, 0.85, 0.08, 0.02], 0.9), 'max', 'the risk override goes to the top tier');
 });
 
-test('packagedModels names the packaged config a file is an unchanged copy of', () => {
+test('policy.escalationCeiling caps the unsure path, and only that', () => {
+  /**
+   * @param {string | undefined} escalationCeiling
+   * @param {Record<string, number>} probabilities
+   */
+  const decide = (escalationCeiling, probabilities) =>
+    applyPolicy({
+      answer: { probabilities },
+      tiers: cfg.tiers,
+      options: cfg.jev.options,
+      policy: { ...cfg.policy, escalationCeiling },
+      reference: cfg.defaultTier,
+    });
+  const unsure = { mechanical: 0.5, routine: 0.1, complex: 0.4, deep: 0 };
+  assert.deepEqual(
+    [undefined, 'frontier', 'balanced', 'fast'].map((ceiling) => decide(ceiling, unsure).tier),
+    ['frontier', 'frontier', 'balanced', 'fast'],
+  );
+  assert.equal(decide('balanced', unsure).reason, 'jev-escalated');
+  assert.equal(decide('fast', unsure).reason, 'jev', "no step up at all: Jev's pick stands");
+  assert.equal(decide('fast', { mechanical: 0, routine: 0.1, complex: 0.9, deep: 0 }).tier, 'frontier', "Jev's top pick isn't capped");
+});
+
+test('packagedModels knows unchanged copies of every released packaged config, and inPackage links into the package', () => {
+  /** @param {string} file */
+  const digest = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+  for (const name of MODEL_CHOICES)
+    assert.ok(
+      PACKAGED_DIGESTS[name].includes(digest(PACKAGED_CONFIGS[name])),
+      `config for --models ${name} changed: add its new digest to PACKAGED_DIGESTS in src/files.mjs, and keep the old ones`,
+    );
   const dir = mkdtempSync(`${tmpdir()}/jev-packaged-`);
   for (const name of MODEL_CHOICES) {
     copyFileSync(PACKAGED_CONFIGS[name], `${dir}/${name}.json`);
@@ -291,6 +337,13 @@ test('packagedModels names the packaged config a file is an unchanged copy of', 
   writeFileSync(`${dir}/edited.json`, `${readFileSync(PACKAGED_CONFIGS.claude, 'utf8')} `);
   assert.equal(packagedModels(`${dir}/edited.json`), undefined, 'one byte more is a change');
   assert.equal(packagedModels(`${dir}/missing.json`), undefined);
+  const older = { claude: [digest(`${dir}/edited.json`)], fable: [], ollama: [] };
+  assert.equal(packagedModels(`${dir}/edited.json`, older), 'claude', 'a copy of an older release counts too');
+
+  symlinkSync(PACKAGED_CONFIGS.claude, `${dir}/linked.json`);
+  assert.equal(inPackage(`${dir}/linked.json`), realpathSync(PACKAGED_CONFIGS.claude));
+  assert.equal(inPackage(`${dir}/claude.json`), undefined);
+  assert.equal(inPackage(`${dir}/missing.json`), undefined);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -471,6 +524,7 @@ test('config validation names each kind of problem', () => {
     [(c) => (c.policy.mode = 'eager'), /policy\.mode must be "ratchet" or "sticky"/],
     [(c) => (c.policy.accept.turbo = 0.5), /policy\.accept names unknown tier "turbo"/],
     [(c) => (c.policy.claimGuard = 1.5), /policy\.claimGuard must be a probability/],
+    [(c) => (c.policy.escalationCeiling = 'top'), /policy\.escalationCeiling "top" is not one of tiers/],
     [(c) => (c.jev.channels = [{ baseUrl: 'https://jev.example' }]), /jev\.channels\[0\]\.name is required/],
     [(c) => (c.jev.channels = [{ name: 'x', baseUrl: 'https://jev.example' }]), /jev\.channels\[0\]\.model is required/],
     [(c) => (c.jev.channels = [{ name: 'x', baseUrl: 'https://jev.example', model: 'm' }]), /jev\.channels\[0\]\.keyEnv is required/],

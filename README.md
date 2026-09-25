@@ -67,7 +67,7 @@ Then setup:
 
 Restart any Claude Code session that was already running. You can run setup again at any time. Press Enter to keep
 your models and your saved keys, or pick other models to switch: setup replaces the config it wrote, unless you
-changed it. Either way, it restarts the router.
+changed it. It restarts the background service, so a switch takes effect right away.
 
 If Claude Code already goes to another gateway, such as a company LiteLLM with an `ANTHROPIC_AUTH_TOKEN`, setup leaves
 its settings alone and says what to remove first. Behind the router, Claude Code would send that gateway's credentials
@@ -112,10 +112,12 @@ own background calls (session titles, topic checks, quota probes) go to `claude-
 model names come from Codex's bundled model catalog, so check them against your account.
 
 The Fable option writes [`config/anthropic-fable.json`](config/anthropic-fable.json): the Claude-only config plus
-the `max` tier. Messages Jev calls `deep` go to Fable 5.1, and so do `/model fable` and `#max`. A message that Jev
-thinks would change production systems, credentials, permissions or billing goes to the top tier, so it goes to
-Fable 5.1 too. Codex has no model above `gpt-6-astra` here, so its `max` tier is the same as `frontier`. The savings
-in `report` and the live view compare against running every request on Fable 5.1.
+the `max` tier. A message goes to Fable 5.1 when `deep` is Jev's most likely answer, and so do `/model fable` and
+`#max`. A message that Jev thinks would change production systems, credentials, permissions or billing goes to the
+top tier, so it goes to Fable 5.1 too. When Jev is unsure, the router still takes the more capable of its two most
+likely tiers, but no higher than Opus 5.5 (`policy.escalationCeiling`): apart from those cases, the Fable config
+routes like the Claude-only one. Codex has no model above `gpt-6-astra` here, so its `max` tier is the same as
+`frontier`. The savings in `report` and the live view compare against running every request on Fable 5.1.
 
 ## Install
 
@@ -466,8 +468,8 @@ The router reads the first config it finds:
 `jev-router setup` writes `~/.config/jev-router/config.json` when there's none, from
 [`config/anthropic-only.json`](config/anthropic-only.json), or from
 [`config/anthropic-fable.json`](config/anthropic-fable.json) or [`config/default.json`](config/default.json) with its
-Fable or Ollama option. Run again, it switches a config that is still an unchanged copy of one of them, and keeps any
-other. `jev-router init` writes one without the rest of setup.
+Fable or Ollama option. Run again, it switches a config that is still an unchanged copy of one of them, from this
+release or an earlier one, and keeps any other. `jev-router init` writes one without the rest of setup.
 [docs/configuration.md](docs/configuration.md) documents every key, its default and its validation.
 
 | Key | Meaning |
@@ -475,6 +477,7 @@ other. `jev-router init` writes one without the rest of setup.
 | `tiers`, `defaultTier` | Tier names, cheapest first, and the tier a new session gets when Jev can't decide |
 | `policy.mode` | `ratchet` (default) re-decides at each human message and only moves up; `sticky` decides once per session |
 | `policy.accept` | Minimum probability per tier. Cheap tiers need more; below it, the more capable of the top two wins |
+| `policy.escalationCeiling` | The most capable tier that the step up after a missed bar can reach; unset, the top tier. The Fable config sets `frontier` |
 | `policy.sensitiveOverride`, `policy.claimGuard` | Guard thresholds |
 | `policy.maxProvisional`, `policy.idleResetMinutes`, `policy.failClosed` | Retries after Jev failures, the idle reset, and whether unvetted sessions use trusted targets |
 | `jev.channels` | Ordered System One channels, each with `baseUrl`, `model` (pin a version such as `jev-1.13.0`), `keyEnv` and `timeoutMs` |

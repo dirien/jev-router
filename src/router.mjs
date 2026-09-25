@@ -192,8 +192,10 @@ export function createRouter(
     const key = sessionKey(headers, body);
     const stored = sessions.get(key.id);
     // A tier the config no longer has, after a switch to another config, counts as its top tier:
-    // a session in the middle of a task never lands on a cheaper model than it had.
-    const entry = stored && !cfg.tiers.includes(stored.tier) ? { ...stored, tier: cfg.tiers[cfg.tiers.length - 1] } : stored;
+    // a session in the middle of a task never lands on a cheaper model than it had. Its model
+    // changed, so its prompt cache is cold anyway, and the next human turn is decided afresh.
+    const entry =
+      stored && !cfg.tiers.includes(stored.tier) ? { ...stored, tier: cfg.tiers[cfg.tiers.length - 1], freshNext: true } : stored;
     const kind = requestKind(headers);
     const turns = humanTurns(body);
     const latest = turns.at(-1);
@@ -1175,6 +1177,7 @@ export function describeConfig(cfg) {
     defaultTier: cfg.defaultTier,
     options: Object.fromEntries(Object.entries(cfg.jev.options).map(([name, option]) => [name, option.tier])),
     accept: cfg.policy.accept,
+    escalationCeiling: cfg.policy.escalationCeiling,
     sensitiveOverride: cfg.policy.sensitiveOverride,
     claimGuard: cfg.policy.claimGuard,
     surfaces,

@@ -72,6 +72,11 @@ export interface Policy {
   mode: 'ratchet' | 'sticky';
   /** The probability a tier needs before Jev's top pick is taken as is. */
   accept: Record<string, number>;
+  /**
+   * The most capable tier that Jev's unsure path reaches: when the top pick misses its bar, the
+   * more capable of the top two, but no higher than this. Unset, it's the top tier.
+   */
+  escalationCeiling?: string;
   /** From this probability of altering sensitive state, a request gets the top tier. */
   sensitiveOverride: number;
   /** From this probability of a routing claim, a request can't go below the reference tier. */
@@ -433,6 +438,8 @@ export type ConfigSummary = {
   /** Each Jev option's tier. */
   options: Record<string, string>;
   accept: Record<string, number>;
+  /** Set when the config caps Jev's unsure path below the top tier. */
+  escalationCeiling?: string;
   sensitiveOverride: number;
   claimGuard: number;
   /** Per surface, each tier's target plus `side` and `trusted`. */

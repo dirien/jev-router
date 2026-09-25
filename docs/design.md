@@ -117,7 +117,9 @@ guards ride in the same request, which costs a few tokens and no latency.
   easy one to a strong model costs money on one message. So a cheap tier needs more certainty: `policy.accept` is
   0.85 for `fast`, 0.6 for `balanced` and 0.3 for `frontier`. Below the bar, the router takes the more capable of
   Jev's top two tiers. Simulated on the same data, that rule at 0.8 raises exact matches from 95.0% to 97.5% and
-  halves under-routing without adding any over-routing.
+  halves under-routing without adding any over-routing. The misses were one tier too cheap, and the benchmark had
+  three tiers, so that step can go too far when a fourth tier costs 2.5 times the third:
+  `policy.escalationCeiling` caps it, and the Fable config caps it at `frontier`.
 - **Probabilities, not `confidence`.** The thresholds read the summed probability per tier. An out-of-distribution
   calibration study found that thresholding on Jev's `confidence` field "was never better than the max probability
   and sometimes much worse", and that Jev is well calibrated in domain but overconfident when a label encodes your

@@ -30,8 +30,10 @@ In order, it:
 
 Setup is safe to run again. It keeps your models and saved keys when you press Enter, and restarts the service, so
 new keys and a new config take effect. To switch models, run it again and pick others, or pass `--models`. Setup
-replaces only a config that is still an unchanged copy of a packaged one; a config you changed stays as it is, and
-setup says how to start over from a packaged one. Its options:
+replaces only a config that is still an unchanged copy of a packaged one, from this release or an earlier one, and
+never writes through a link into jev-router's own package. A config you changed stays as it is, and setup prints the
+`init` command that starts over from a packaged one. Without the service, a router that already runs keeps the old
+models until it restarts. Its options:
 
 | Option | What it does |
 | --- | --- |

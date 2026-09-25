@@ -13,6 +13,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -52,12 +53,17 @@ const BAD = fake('bad-', 'jev-key-', 'DO-NOT-PRINT');
 const OLLAMA = fake('ol-', 'setup-', 'DO-NOT-PRINT');
 const ROUTER_TOKEN = fake('router-', 'setup-', 'token');
 
+/** Runs once at the next Jev call, while setup checks the key: a test's way to act in the middle of setup. */
+/** @type {(() => void) | undefined} */
+let duringKeyCheck;
 /** One System One mock for every test: a key that holds "good" gets an answer, any other a 401. */
-const jev = await mock((call, res) =>
-  String(call.headers.authorization).includes('good-')
+const jev = await mock((call, res) => {
+  duringKeyCheck?.();
+  duringKeyCheck = undefined;
+  return String(call.headers.authorization).includes('good-')
     ? json(res, 200, jevOptionsAnswer({ option: 'routine', model: 'jev-1.13.0-mock' }))
-    : json(res, 401, { detail: { message: 'invalid key' } }),
-);
+    : json(res, 401, { detail: { message: 'invalid key' } });
+});
 
 /**
  * A sandbox for setup: the fake service tools and jev-router on PATH, a free port for the router
@@ -272,8 +278,8 @@ test('setup keeps an existing config and a saved key, and a second run restarts 
   assert.match(
     first.stderr,
     new RegExp(
-      `^Config: ${box.configFile} \\(user config\\), kept as it is: it has changes of your own, so --models leaves it alone\\. ` +
-        'To replace it with the packaged ollama config, run jev-router init --models ollama --force, then setup again\\.$',
+      `^Config: ${box.configFile} \\(user config\\), kept as it is: it isn't one of the packaged configs\\. ` +
+        'To start over from the packaged ollama config, run jev-router init --models ollama --force, then setup again\\.$',
       'm',
     ),
   );
@@ -285,6 +291,12 @@ test('setup keeps an existing config and a saved key, and a second run restarts 
 
   const second = await setup(box, ['--service', 'systemd'], { input: '\n\n' });
   assert.equal(second.code, 0, second.stderr);
+  assert.ok(
+    second.stderr.includes(
+      "kept as it is: it isn't one of the packaged configs. To start over from a packaged one, run jev-router init --models claude|fable|ollama --force, then setup again.\n",
+    ),
+    'the way back, without --models too',
+  );
   assert.notEqual(readFileSync(join(box.root, 'fake-service.pid'), 'utf8'), pid, 'the router was restarted');
   assert.match(second.stderr, /point at the router already\./);
   assert.doesNotMatch(second.stderr, /Restart any Claude Code session/, 'nothing changed, so nothing to restart');
@@ -354,6 +366,43 @@ test('setup --models fable writes the Fable config, and a second run switches an
     /^Config: .*mine\.json \(JEV_ROUTER_CONFIG\), kept as it is; --models doesn't change a config that JEV_ROUTER_CONFIG names\.$/m,
   );
   assert.equal(readFileSync(mine, 'utf8'), readFileSync(ANTHROPIC_FABLE_CONFIG, 'utf8'));
+});
+
+test("setup never writes into jev-router's own files, keeps an edit made while it runs, and says a running router keeps its models", async () => {
+  const linked = await setupBox();
+  mkdirSync(join(linked.config, 'jev-router'));
+  symlinkSync(ANTHROPIC_ONLY_CONFIG, linked.configFile);
+  const packagedText = readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8');
+  const kept = await setup(linked, ['--yes', '--service', 'none', '--models', 'fable'], { env: { TYPESAFE_API_KEY: GOOD } });
+  assert.equal(kept.code, 0, kept.stderr);
+  assert.ok(
+    kept.stderr.includes(
+      `kept as it is: it leads into jev-router's own files (${realpathSync(ANTHROPIC_ONLY_CONFIG)}), which setup never changes. ` +
+        `To pick models, remove it (rm ${linked.configFile}), then run setup again.\n`,
+    ),
+    kept.stderr,
+  );
+  const init = await run(['init', '--models', 'fable', '--force'], linked.env);
+  assert.equal(init.code, 1);
+  assert.match(init.stderr, /leads into jev-router's own files \(.*\)\. Remove it first: rm /);
+  assert.equal(readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'), packagedText, 'the package is untouched');
+  assert.ok(lstatSync(linked.configFile).isSymbolicLink());
+
+  const box = await setupBox();
+  const first = await setup(box, ['--yes', '--service', 'none'], { env: { TYPESAFE_API_KEY: GOOD } });
+  assert.equal(first.code, 0, first.stderr);
+  const switched = await setup(box, ['--yes', '--service', 'none', '--models', 'fable']);
+  assert.equal(switched.code, 0, switched.stderr);
+  assert.match(switched.stderr, new RegExp(`^Switched ${box.configFile} from Claude only to Claude with Fable 5\\.1\\.$`, 'm'));
+  assert.match(switched.stderr, /^A router that's already running keeps using Claude only until it restarts\.$/m);
+
+  const edited = readFileSync(box.configFile, 'utf8').replace('"idleResetMinutes": 10', '"idleResetMinutes": 20');
+  duringKeyCheck = () => writeFileSync(box.configFile, edited);
+  const raced = await setup(box, ['--yes', '--service', 'none', '--models', 'claude']);
+  assert.equal(raced.code, 0, raced.stderr);
+  assert.match(raced.stderr, new RegExp(`^Kept ${box.configFile}: it changed while setup ran\\.$`, 'm'));
+  assert.doesNotMatch(raced.stderr, /keeps using/, 'nothing switched');
+  assert.equal(readFileSync(box.configFile, 'utf8'), edited, 'the edit wins');
 });
 
 test('a Jev key that fails its check writes nothing: setup offers another try, and --yes exits 1', async () => {

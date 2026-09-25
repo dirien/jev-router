@@ -13,6 +13,7 @@
       "frontier": 0.3,
       "max": 0.3
     },
+    "escalationCeiling": "frontier",
     "sensitiveOverride": 0.7,
     "claimGuard": 0.5,
     "maxProvisional": 3,

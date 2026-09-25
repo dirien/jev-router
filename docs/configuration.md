@@ -18,8 +18,10 @@ The router uses the first of these that exists:
 [`config/anthropic-only.json`](../config/anthropic-only.json) by default (`--models claude`), from
 [`config/anthropic-fable.json`](../config/anthropic-fable.json) with its Fable option (`--models fable`), or from the
 packaged default with its Ollama option (`--models ollama`). Run again, setup asks again, and Enter keeps what you have.
-It replaces the config only when it's still an unchanged copy of a packaged one, so nothing you changed is lost; any
-other config, and one that `JEV_ROUTER_CONFIG` names, stays as it is. `jev-router init` writes the packaged default
+It replaces the config only when it's still an unchanged copy of a packaged one, from this release or an earlier one,
+so nothing you changed is lost; any other config, and one that `JEV_ROUTER_CONFIG` names, stays as it is, and setup
+prints the `init` command that starts over. Neither setup nor `init` writes through a link into jev-router's own
+package. `jev-router init` writes the packaged default
 as a starting point, and `jev-router init --models <name>` another packaged config (`--anthropic-only` is
 `--models claude`); `init` doesn't overwrite an existing file unless you pass `--force`.
 
@@ -37,13 +39,15 @@ ignored, not rejected, so a misspelled optional key keeps its default without a 
 
 All three share the Jev channels, the rubric, the prices and the policy's thresholds. The Fable config differs from
 the Anthropic-only one only where the `max` tier needs it: the tier itself with a `policy.accept` of 0.3, the `deep`
-option, `modelPins.fable`, and `baselineModel`, which is Fable 5.1, so savings compare against running everything on
-Fable 5.1. The risk override (`policy.sensitiveOverride`) sends a request to the top tier, which is `max` there. The
+option, `modelPins.fable`, a `policy.escalationCeiling` of `frontier`, and `baselineModel`, which is Fable 5.1, so
+savings compare against running everything on Fable 5.1. The ceiling keeps the step up after a missed bar on Opus
+5.5, so a message reaches Fable 5.1 only when `deep` is Jev's most likely answer, or through a pin, a `#max` tag or
+the risk override (`policy.sensitiveOverride`), which sends a request to the top tier, `max` there. The
 OpenAI model names come from Codex's bundled model catalog; check them against your account.
 
 A session keeps its tier across a config change. When the new config lacks that tier, as `max` after a switch from
-the Fable config to another, the session goes on with the new config's top tier, never a cheaper one, until Jev
-decides afresh.
+the Fable config to another, the session goes on with the new config's top tier, never a cheaper one. Its model
+changed, so its prompt cache is cold anyway: the next message you write gets a fresh decision, which may go down.
 
 ## Server keys
 
@@ -104,6 +108,7 @@ then `logFile`, then the log that `launch` writes. `report` reads `<file>.1` too
 | --- | --- | --- | --- |
 | `policy.mode` | `"ratchet"` | `"ratchet"` or `"sticky"` | `ratchet` asks Jev at every new human message and only moves a session up. `sticky` asks once per session |
 | `policy.accept` | `0.6` for every tier | Each value a probability from 0 to 1, keyed by a name in `tiers` | The probability Jev's most likely tier needs to be taken as is. Shipped: `fast` 0.85, `balanced` 0.6, `frontier` 0.3, and `max` 0.3 in the Fable config |
+| `policy.escalationCeiling` | the top tier | One of `tiers` | When Jev's most likely tier misses its bar, the router takes the more capable of Jev's two most likely tiers, but no higher than this one. A tier above it serves only a message that Jev rates most likely for it, a pin, a tag or the risk override. The Fable config sets `frontier` |
 | `policy.sensitiveOverride` | `0.7` | A probability | When `alters_sensitive_state` reaches this, the request goes to the top tier |
 | `policy.claimGuard` | `0.5` | A probability | When `routing_claim_present` reaches this, the decision can't go below the reference tier |
 | `policy.maxProvisional` | `3` | A whole number, 0 or more | How many failed Jev attempts a new session allows before its fallback tier sticks |
@@ -334,6 +339,7 @@ Invalid router config:
 | `defaultTier` | `defaultTier "…" is not one of tiers` |
 | `policy.mode` | `policy.mode must be "ratchet" or "sticky"` |
 | `policy.accept` | `policy.accept names unknown tier "…"`, `policy.accept.<tier> must be a probability` |
+| `policy.escalationCeiling` | `policy.escalationCeiling "…" is not one of tiers` |
 | Guard thresholds | `policy.sensitiveOverride must be a probability`, `policy.claimGuard must be a probability` |
 | Other policy keys | `policy.maxProvisional must be a whole number, 0 or more`, `policy.idleResetMinutes must be a number of minutes, 0 or more`, `policy.failClosed must be true or false` |
 | `jev` settings | `jev.deadlineMs must be a whole number of milliseconds above 0`, `jev.requestChars must be a whole number above 0`, `jev.stripCode must be true or false`, `jev.guards must be true or false` |

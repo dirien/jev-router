@@ -821,9 +821,16 @@ test('the Fable config sends deep work, /model fable and #max to Fable 5.1; afte
   // The Claude-only config has no max tier. A session that was on it goes on with the top tier the
   // config has, Opus 5.5: falling back to the cheapest tier would put its tool steps on Haiku 4.5.
   server.reload(testConfig({}, packagedConfig('anthropic-only')));
-  const after = await delta(() => post(url, '/v1/messages', { ...claudeCodeToolTurn('s-fable', text), stream: false }, h));
+  const toolTurn = { ...claudeCodeToolTurn('s-fable', text), stream: false };
+  const after = await delta(() => post(url, '/v1/messages', toolTurn, h));
   assert.equal(after.anthropic[0].body.model, 'claude-opus-5-5');
   assert.equal(after.result.headers.get('x-jev-tier'), 'frontier');
+  // Its model changed, so its cache is cold: the next message is decided afresh, and may go down.
+  reset(plans.a, { option: 'mechanical', probability: 0.95 });
+  const next = cc('s-fable', 'Fix the typo in the README.', { history: [...toolTurn.messages, { role: 'assistant', content: 'Done.' }] });
+  const fresh = await delta(() => post(url, '/v1/messages', next, h));
+  assert.equal(fresh.result.headers.get('x-jev-reason'), 'jev');
+  assert.equal(fresh.anthropic[0].body.model, 'claude-haiku-4-5');
 });
 
 test('a client that leaves during the Jev call costs no upstream request', async () => {

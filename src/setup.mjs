@@ -29,6 +29,7 @@ import {
   errorCode,
   errorMessage,
   hasControlCharacter,
+  inPackage,
   MODEL_CHOICES,
   NO_ENV_FILE,
   namedLogFile,
@@ -315,9 +316,11 @@ async function ask(options, env, prompter, signal) {
  */
 async function chooseConfig(options, env, prompter) {
   const found = configFile(undefined, env);
-  const current = found.source === 'user config' ? packagedModels(found.path) : undefined;
+  const user = found.source === 'user config';
+  const inside = user ? inPackage(found.path) : undefined;
+  const current = user && !inside ? packagedModels(found.path) : undefined;
   if (found.source !== 'packaged default' && !current) {
-    say(`Config: ${found.path} (${found.source}), kept as it is${keptNote(found.source, options.models)}.\n\n`);
+    say(`Config: ${found.path} (${found.source}), kept as it is${keptNote(found, options.models, inside)}.\n\n`);
     return { cfg: loadConfig(found.path), configPath: found.path };
   }
   const models = options.models ?? (prompter ? await askModels(prompter, current) : (current ?? 'claude'));
@@ -327,16 +330,22 @@ async function chooseConfig(options, env, prompter) {
 }
 
 /**
- * Why --models didn't change the config setup keeps, and how to change it.
- * @param {string} source where the config came from, as `configFile` says
- * @param {Models | undefined} models
+ * Why setup keeps a config as it is, and how to change it.
+ * @param {{ path: string, source: string }} found the config, and where it came from, as `configFile` says
+ * @param {Models | undefined} models what --models asked for
+ * @param {string | undefined} inside where the config leads, when that's inside jev-router's package
  */
-function keptNote(source, models) {
-  if (!models) return '';
-  if (source !== 'user config') return `; --models doesn't change a config that ${source} names`;
+function keptNote(found, models, inside) {
+  if (found.source !== 'user config') return models ? `; --models doesn't change a config that ${found.source} names` : '';
+  if (inside)
+    return (
+      `: it leads into jev-router's own files (${inside}), which setup never changes. ` +
+      `To pick models, remove it (rm ${shellQuote(found.path)}), then run setup again`
+    );
+  const from = models ? `the packaged ${models} config` : 'a packaged one';
   return (
-    ': it has changes of your own, so --models leaves it alone. ' +
-    `To replace it with the packaged ${models} config, run jev-router init --models ${models} --force, then setup again`
+    ": it isn't one of the packaged configs. " +
+    `To start over from ${from}, run jev-router init --models ${models ?? MODEL_CHOICES.join('|')} --force, then setup again`
   );
 }
 
@@ -764,18 +773,12 @@ async function carryOut(plan, env) {
 }
 
 /**
- * Writes the config for a machine that has none, or the one it switches to, and the keys and router settings that changed.
- * @param {Plan} plan
+ * Writes the keys and router settings that changed, then the config for a machine without one, or
+ * the one it switches to. The keys go first: the new config may need one, and an extra key doesn't
+ * disturb the old config.
+ * @param {Plan} plan its `models` and `replaces` go when the config changed while setup ran
  */
 function writeFiles(plan) {
-  if (plan.models) {
-    writeFileAtomic(plan.configPath, readFileSync(PACKAGED_CONFIGS[plan.models], 'utf8'), 0o600);
-    say(
-      plan.replaces
-        ? `Switched ${plan.configPath} from ${MODELS[plan.replaces].short} to ${MODELS[plan.models].short}.\n`
-        : `Wrote ${plan.configPath} (${MODELS[plan.models].what}).\n`,
-    );
-  } else say(`Kept ${plan.configPath}.\n`);
   const names = Object.keys(plan.keys);
   const router = Object.entries(plan.routerVariables).map(([name, value]) => `${name}=${value}`);
   const loose = existsSync(plan.envFile) && looseFile(plan.envFile, statSync(plan.envFile).mode);
@@ -783,6 +786,23 @@ function writeFiles(plan) {
   if (names.length) say(`Saved ${inWords(names)} in ${plan.envFile}, readable only by you.\n`);
   else say(`Kept the keys in ${plan.envFile}${loose ? ', and made it readable only by you' : ''}.\n`);
   if (router.length) say(`Saved ${inWords(router)} there too, so every jev-router command finds the router.\n`);
+  if (!plan.models) {
+    say(`Kept ${plan.configPath}.\n`);
+    return;
+  }
+  // An edit saved while setup asked its questions wins over the switch.
+  if (plan.replaces && packagedModels(plan.configPath) !== plan.replaces) {
+    say(`Kept ${plan.configPath}: it changed while setup ran.\n`);
+    plan.models = undefined;
+    plan.replaces = undefined;
+    return;
+  }
+  writeFileAtomic(plan.configPath, readFileSync(PACKAGED_CONFIGS[plan.models], 'utf8'), 0o600);
+  say(
+    plan.replaces
+      ? `Switched ${plan.configPath} from ${MODELS[plan.replaces].short} to ${MODELS[plan.models].short}.\n`
+      : `Wrote ${plan.configPath} (${MODELS[plan.models].what}).\n`,
+  );
 }
 
 /**
@@ -1018,6 +1038,7 @@ function finishWithoutService(plan, env) {
         `Watch it live at http://127.0.0.1:${UI_PORT} with: ${run} launch claude --ui ${UI_PORT}\n`,
     );
   say(`Check it: ${run} doctor\n`);
+  if (plan.replaces) say(`A router that's already running keeps using ${MODELS[plan.replaces].short} until it restarts.\n`);
   if (leftover)
     say(
       `The ${MANAGER_NAMES[leftover.manager]} from an earlier setup is still installed (${leftover.file}); ${run} uninstall removes it.\n`,

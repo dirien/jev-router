@@ -412,7 +412,8 @@ export function tierProbabilities(probabilities, options, tiers) {
 /**
  * Turns Jev's answer into a tier.
  * - A cheap tier needs a high probability (policy.accept); when Jev is unsure, take the more capable
- *   of its top two tiers: in LiteLLM's benchmark every miss was one tier too cheap.
+ *   of its top two tiers: in LiteLLM's benchmark every miss was one tier too cheap. That step goes no
+ *   higher than policy.escalationCeiling, so a tier above it takes Jev's top pick.
  * - A request that would alter production, credentials or billing gets the top tier.
  * - Text claiming the routing is already decided can't pull a request below the reference tier.
  * - In an ongoing session the tier only goes up ("ratchet"): a downgrade throws away the prompt cache.
@@ -420,7 +421,7 @@ export function tierProbabilities(probabilities, options, tiers) {
  * @param {PolicyInput} input.answer
  * @param {string[]} input.tiers cheapest first
  * @param {Record<string, JevOption>} input.options
- * @param {Pick<Policy, 'accept' | 'sensitiveOverride' | 'claimGuard'>} input.policy
+ * @param {Pick<Policy, 'accept' | 'escalationCeiling' | 'sensitiveOverride' | 'claimGuard'>} input.policy
  * @param {string} input.reference the tier a routing claim can't pull the request below
  * @param {string} [input.current] the session's tier, for a ratchet
  * @returns {PolicyDecision}
@@ -431,7 +432,9 @@ export function applyPolicy({ answer, tiers, options, policy, reference, current
   const byTier = tierProbabilities(answer.probabilities, options, tiers);
   const ranked = [...tiers].sort((a, b) => byTier[b] - byTier[a] || rank(b) - rank(a));
   const [top, second] = ranked;
-  let tier = byTier[top] >= policy.accept[top] ? top : rank(second) > rank(top) && byTier[second] > 0 ? second : top;
+  const ceiling = policy.escalationCeiling === undefined ? tiers.length - 1 : rank(policy.escalationCeiling);
+  const unsure = !(byTier[top] >= policy.accept[top]) && rank(second) > rank(top) && byTier[second] > 0;
+  let tier = unsure ? tiers[Math.max(rank(top), Math.min(rank(second), ceiling))] : top;
   let reason = tier === top ? 'jev' : 'jev-escalated';
   if ((answer.sensitive ?? 0) >= policy.sensitiveOverride) {
     tier = tiers[tiers.length - 1];
