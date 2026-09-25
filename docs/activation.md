@@ -1,15 +1,84 @@
 # Activating jev-router
 
 This guide connects Claude Code and the Codex CLI to jev-router on your own machine, keeps the router running as a
-service, and shows how to check that routing works and how to turn it off again. It assumes you installed jev-router
-with `npm install -g github:dirien/jev-router#semver:^1` and ran `jev-router init`, as in the README's
-[Quick start](../README.md#quick-start). The examples use the default address, `http://127.0.0.1:4000`.
-[configuration.md](configuration.md) covers the config itself.
+service, and shows how to check that routing works and how to turn it off again. The examples use the default
+address, `http://127.0.0.1:4000`. [configuration.md](configuration.md) covers the config itself.
+
+## Setup
+
+`jev-router setup` does all of this for Claude Code, as the README's [Quick start](../README.md#quick-start) shows.
+In order, it:
+
+1. asks which models Claude Code uses, unless you have a config already: Claude only (Haiku 4.5, Sonnet 5 and
+   Opus 5.5), or Ollama Cloud's `glm-5.3-flash` for the `fast` tier and Claude for the rest;
+1. asks for the keys that config needs for Claude Code: a Jev key (TypeSafe, or OpenRouter when you press Enter),
+   and `OLLAMA_API_KEY` for the Ollama option. A key that's saved already stays when you press Enter. On a terminal,
+   what you type isn't shown;
+1. checks the Jev key with one real call (about $0.00003). A key that fails gets another try, and nothing is written
+   until one works;
+1. asks whether to run the router in the background, when the machine has launchd or a systemd user session;
+1. writes `~/.config/jev-router/config.json` if it's new, and saves the keys in `~/.config/jev-router/env` (mode
+   0600), keeping the file's other lines;
+1. installs jev-router globally with npm when setup runs from npx, because a service must not run from npx's cache;
+1. installs and starts the service, and waits up to 15 seconds for the router to answer;
+1. merges the router's variables into the `env` block of `~/.claude/settings.json`, after a backup to
+   `settings.json.jev-router.bak`.
+
+Setup is safe to run again. It keeps an existing config as it is, keeps saved keys when you press Enter, and restarts
+the service, so new keys take effect. Its options:
+
+| Option | What it does |
+| --- | --- |
+| `--yes`, `-y` | Answers every question with its default, and takes the keys from the environment (`TYPESAFE_API_KEY` and so on). It stops, without writing anything, when a key is missing or fails its check |
+| `--models claude\|ollama` | The config for a machine without one; the default is `claude` |
+| `--service auto\|launchd\|systemd\|none` | `auto`, the default, picks launchd on macOS and systemd on Linux. There's no service on Windows, as root, or where `systemctl --user` doesn't answer, such as in a container |
+| `--no-claude-settings` | Installs the service, but leaves `~/.claude/settings.json` alone |
+
+Setup honors `JEV_ROUTER_CONFIG`, `JEV_ROUTER_ENV_FILE`, `JEV_ROUTER_LOG_FILE`, `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT`
+and `JEV_ROUTER_UI`. The service gets the config, env file and log file setup used, with absolute paths, and the
+host, port and live view address as flags, because a service doesn't see your shell. For the same reason, a
+`JEV_ROUTER_TOKEN` belongs in the env file, which the service reads.
+
+Setup records what it changed in Claude Code's settings in `~/.config/jev-router/setup.json`, with no keys and no
+router token. `jev-router uninstall` reads that record: see [Turning it off](#turning-it-off).
+
+## Manual setup
+
+To do each step yourself:
+
+1. Write the config. `jev-router init` copies the packaged default, which sends Claude Code's `fast` tier to Ollama
+   Cloud; `jev-router init --anthropic-only` keeps Claude Code on Claude models:
+
+   ```bash
+   jev-router init --anthropic-only
+   ```
+
+1. Save your keys in `~/.config/jev-router/env`, as in [Keys](#keys).
+1. Check the setup. `doctor` loads the env file the way the router will, and says what's missing:
+
+   ```bash
+   jev-router doctor
+   ```
+
+1. Start the router with its live view, and leave it running, or run it [as a service](#run-the-router-as-a-service):
+
+   ```bash
+   jev-router serve --ui 4100
+   ```
+
+1. In a second terminal, point Claude Code at the router and start it, or pick another way in
+   [Claude Code](#claude-code):
+
+   ```bash
+   eval "$(jev-router env claude)"
+   claude
+   ```
 
 ## Keys
 
 The router reads its keys from environment variables. On a plain machine, keep them in an env file that only you
-can read, `~/.config/jev-router/env`, with one `KEY=value` line per key:
+can read, `~/.config/jev-router/env`, with one `KEY=value` line per key. `jev-router setup` writes it for you; to
+write it yourself:
 
 ```bash
 touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
@@ -31,23 +100,25 @@ OPENAI_API_KEY=...
 
 How the router loads the file:
 
-- `serve`, `launch`, `env` and `doctor` take `--env-file <file>`. Without the flag, they load the file that
-  `JEV_ROUTER_ENV_FILE` names, if any.
+- `serve`, `launch`, `env`, `doctor` and `setup` load `~/.config/jev-router/env` (`$XDG_CONFIG_HOME/jev-router/env`)
+  when it exists. `--env-file <file>`, or else `JEV_ROUTER_ENV_FILE`, names another file instead; there's no need to
+  name the usual one.
 - A variable that's already set in the environment wins over the file.
 - A leading `~` is expanded, because launchd and systemd start the router without a shell.
 - The router warns when other users can read or change the file, and prints the `chmod` that fixes it.
 - Proxy settings (`HTTPS_PROXY`, `NODE_USE_ENV_PROXY` and the like) and `NODE_EXTRA_CA_CERTS` have no effect from the
   file, because Node reads them only when it starts. Set them in the environment the router starts with; the router
   warns when the file sets them.
-- A missing file stops the command before jev-router runs: Node checks the path itself, prints
-  `node: <path>: not found`, and exits with status 9.
+- A file that's named but missing stops the command. For `--env-file`, Node checks the path itself, prints
+  `node: <path>: not found`, and exits with status 9 before jev-router runs. A missing `~/.config/jev-router/env`
+  is fine.
 - The file is read once, at startup. After you change a key, restart the router; `SIGHUP` reloads only the config.
 - `launch` keeps the file's variables out of the agent's environment, so the commands Claude Code or Codex runs don't
   see the keys from the file.
 
 The file can also hold the router's other settings, such as `JEV_ROUTER_TOKEN` or `JEV_ROUTER_UI_TOKEN`. If you'd
-rather keep the keys in your shell environment, export them before you start the router, and leave out
-`--env-file`.
+rather keep the keys in your shell environment, export them before you start the router; a service started by setup
+reads only the file.
 
 ## Claude Code
 
@@ -67,13 +138,15 @@ Anthropic and to no other host. Requests that the router sends to Ollama Cloud o
 ### One-shot launch
 
 ```bash
-jev-router launch claude --env-file ~/.config/jev-router/env                 # router on 127.0.0.1:4000
-jev-router launch claude --env-file ~/.config/jev-router/env --port 4001     # another port
-jev-router launch claude --env-file ~/.config/jev-router/env -- --continue   # arguments after -- go to claude
+jev-router launch claude                   # router on 127.0.0.1:4000
+jev-router launch claude --port 4001       # another port
+jev-router launch claude --ui 4100         # also serve the live view on http://127.0.0.1:4100
+jev-router launch claude -- --continue     # arguments after -- go to claude
 ```
 
 `launch claude` reuses a router that already answers on the port. If none does, it starts one inside its own
-process, with the keys from the env file, and that router logs to `~/.local/state/jev-router/router.log`. Then it runs
+process, with the keys from the env file, and that router logs to `~/.local/state/jev-router/router.log`. With
+`--ui`, that router also serves the live view, whose address `launch` prints before Claude Code starts. Then it runs
 `claude` with the variables above and exits with Claude Code's exit code. Set `JEV_ROUTER_CLAUDE_BIN` to run a
 specific `claude` binary.
 
@@ -87,13 +160,14 @@ With the router already running in another terminal or as a service, load the va
 Claude Code as usual:
 
 ```bash
-jev-router serve --ui 4100 --env-file ~/.config/jev-router/env   # terminal 1, unless it runs as a service
-eval "$(jev-router env claude)"                                  # terminal 2
+jev-router serve --ui 4100         # terminal 1, unless it runs as a service
+eval "$(jev-router env claude)"    # terminal 2
 claude
 ```
 
 `jev-router env claude` prints `export` lines for the variables in the table, and warns when nothing answers on the
-port yet. Pass the same `--port`, `--config` or `--env-file` as the router uses, so the address and the token match.
+port yet. Pass the same `--port`, `--config` or `--env-file` as the router uses, if any, so the address and the token
+match.
 Every `claude` you start from that shell then goes through the router. To stop, open a new shell or unset the
 variables:
 
@@ -111,8 +185,8 @@ source "$(npm root -g)/@ediri/jev-router/examples/claude-code.env"
 
 ### Persistent settings.json
 
-To send every Claude Code session through the router, add an `env` block to `~/.claude/settings.json`, keeping the
-keys the file already has:
+`jev-router setup` does this for you, and `jev-router uninstall` undoes it. To send every Claude Code session through
+the router by hand, add an `env` block to `~/.claude/settings.json`, keeping the keys the file already has:
 
 ```json
 {
@@ -137,7 +211,7 @@ doesn't bypass it.
 `jev-router doctor` reads the block (without changing the file). When `ANTHROPIC_BASE_URL` there, or in your shell,
 points at the router, it names each of the other three variables that's missing.
 
-To undo it, delete those keys from the `env` block and restart Claude Code. With `jq`:
+To undo it, run `jev-router uninstall`, or delete those keys from the `env` block and restart Claude Code. With `jq`:
 
 ```bash
 jq 'del(.env.ANTHROPIC_BASE_URL, .env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, .env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, .env.ENABLE_TOOL_SEARCH,
@@ -150,9 +224,12 @@ jq 'del(.env.ANTHROPIC_BASE_URL, .env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, .env.CLA
 ### Codex launch
 
 ```bash
-jev-router launch codex --env-file ~/.config/jev-router/env           # writes or refreshes the profile, then runs codex --profile jev
-jev-router launch codex --env-file ~/.config/jev-router/env --force   # rewrites the profile first
+jev-router launch codex            # writes or refreshes the profile, then runs codex --profile jev
+jev-router launch codex --force    # rewrites the profile first
 ```
+
+Setup asks only for Claude Code's keys. Add Codex's, `OLLAMA_API_KEY` and `OPENAI_API_KEY`, to
+`~/.config/jev-router/env`, then run `jev-router setup` again, so a router running as a service picks them up.
 
 `launch codex` writes the `jev` profile to `~/.codex/jev.config.toml` (`$CODEX_HOME/jev.config.toml` when
 `CODEX_HOME` is set). A profile it wrote and nobody edited is refreshed whenever the router's port or token changes; a
@@ -205,10 +282,12 @@ A service keeps one router running for all your clients, independent of any term
 Session state persists in `~/.local/state/jev-router/sessions.jsonl`, so a restart doesn't move live sessions to
 another model.
 
-The package ships a template for each system, under `$(npm root -g)/@ediri/jev-router/examples/service/`. Both run
-`jev-router serve --ui 4100 --env-file ~/.config/jev-router/env --log-file ~/.local/state/jev-router/router.log`:
-the router on `http://127.0.0.1:4000`, the live view on `http://127.0.0.1:4100`, and the keys from your env file. The
-commands below come from each template's header.
+`jev-router setup` installs the service, and `jev-router uninstall` removes it. This section is the manual route.
+The package ships a template for each system, under `$(npm root -g)/@ediri/jev-router/examples/service/`, and setup
+writes its service from the same templates. Both run
+`jev-router serve --ui 4100 --config ~/.config/jev-router/config.json --env-file ~/.config/jev-router/env --log-file ~/.local/state/jev-router/router.log`:
+the router on `http://127.0.0.1:4000`, the live view on `http://127.0.0.1:4100`, your config (so run
+`jev-router init` first), and the keys from your env file. The commands below come from each template's header.
 
 `jev-router` starts with `#!/usr/bin/env node`, and a service reads neither your shell profile nor its `PATH`. So the
 install commands write the directories that hold `jev-router` and `node` into the service file, which is why
@@ -232,6 +311,7 @@ Install:
 
 ```bash
 command -v jev-router node                   # both must print a path
+jev-router init                              # writes ~/.config/jev-router/config.json
 mkdir -p ~/.config/jev-router ~/Library/Logs/jev-router ~/Library/LaunchAgents
 touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
 # Put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, ...
@@ -271,11 +351,12 @@ Install:
 
 ```bash
 command -v jev-router node                     # both must print a path
+jev-router init                                # writes ~/.config/jev-router/config.json
 mkdir -p ~/.config/jev-router ~/.config/systemd/user
 touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
 # Put your keys in ~/.config/jev-router/env, one KEY=value per line: TYPESAFE_API_KEY, OLLAMA_API_KEY, ...
 unit="$(npm root -g)/@ediri/jev-router/examples/service/systemd/jev-router.service"
-path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
+path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/bin:/bin"
 sed "s|@PATH@|$path|" "$unit" > ~/.config/systemd/user/jev-router.service
 systemctl --user daemon-reload
 systemctl --user enable --now jev-router
@@ -294,7 +375,8 @@ systemctl --user restart jev-router            # after an upgrade, or a change t
 
 The unit restarts the router when it fails, and gives up after five failed starts within a minute, for example on a
 broken config. It doesn't restart on exit status 9, which is Node's answer to an `--env-file` path that doesn't
-exist: fix the path, then start the unit again.
+exist: fix the path, then start the unit again. A user service runs while you're logged in;
+`loginctl enable-linger "$USER"` keeps it running after you log out.
 
 Uninstall:
 
@@ -311,14 +393,14 @@ follow [sandbox.md](sandbox.md).
 
 ## Verifying
 
-1. **`jev-router doctor --env-file ~/.config/jev-router/env`** checks the config, the env file and its mode, the keys
-   each target needs, the log file, Claude Code's settings, and whether a router answers.
-   `jev-router doctor --live` also makes one real Jev call, which costs about $0.00003.
+1. **`jev-router doctor`** checks the config, the env file and its mode, the keys each target needs, the log file, the
+   service, Claude Code's settings, and whether a router answers. `jev-router doctor --live` also makes one real Jev
+   call, which costs about $0.00003.
 1. **In Claude Code**, `/status` shows `http://127.0.0.1:4000` as the API base URL.
 1. **Health.** `curl -s http://127.0.0.1:4000/healthz` returns `"ok": true`, `jev.configured: true`, and one entry
    per Jev channel with its call and error counts.
-1. **The live view**, at `http://127.0.0.1:4100` when the router runs with `--ui 4100`, shows each request as it
-   arrives.
+1. **The live view**, at `http://127.0.0.1:4100` when the router runs as setup's service or with `--ui 4100`, shows
+   each request as it arrives.
 1. **The log.** Each request writes a `route` line with `tier`, `reason`, `model` and `upstream`, and, on a new
    human message, a `jev` object with the channel, probabilities and latency. `reason: "jev"` means Jev decided;
    `side-call`, `sticky` and `subagent` mean the request followed a rule without asking Jev.
@@ -367,11 +449,16 @@ For Codex, run `jev-router launch codex` and try two sessions:
 | Symptom | Likely cause and fix |
 | --- | --- |
 | Claude Code can't connect to the API | Nothing listens on the port in `ANTHROPIC_BASE_URL`. Start the router, or remove the settings. |
+| Setup says a jev-router already answers on the port | A router you started yourself, with `jev-router serve` or `launch`, holds the port, and the service would fail next to it. Stop that router and run setup again, or pick another port with `JEV_ROUTER_PORT`. |
+| Setup says the router didn't answer within 15 seconds | The service started, but its router didn't come up. Read `~/Library/Logs/jev-router/router.err.log` (macOS) or `journalctl --user -u jev-router` (Linux). Claude Code's settings stay as they were until the router answers. |
+| Setup's `npm install -g` fails with `EACCES` | npm may not write to its global directory, as with a system Node. Use a Node version manager (nvm, fnm, or Homebrew on a Mac), or `npm config set prefix ~/.local` with `~/.local/bin` on PATH, or install with `sudo`. Then run setup again: it keeps your config and keys. |
+| Setup's `npm install -g` fails with `EEXIST` | jev-router 1.4.0 or older, then called `@dirien/jev-router`, owns the `jev-router` command. Run `npm uninstall -g @dirien/jev-router`, then setup again. |
+| Setup says there's no background service | The machine has no launchd or systemd user session, as in a container. Start sessions with `jev-router launch claude`. |
 | `node: <path>: not found`, exit status 9 | The `--env-file` path doesn't exist. Check the path; a systemd unit doesn't restart on this. |
 | A warning that other users can read or change the env file | Run the `chmod 600` the warning prints. |
 | A warning that a variable in the env file has no effect | Proxy settings and `NODE_EXTRA_CA_CERTS` work only in the environment the router starts with: your shell, or the service file. |
-| `reason: "no-jev"` in the log | No Jev channel has a key in the router's environment. Check the file with `jev-router doctor --env-file ~/.config/jev-router/env`, and make sure the router starts with that `--env-file`. |
-| A changed key has no effect | The env file is read at startup, and `SIGHUP` reloads only the config. Restart the router. |
+| `reason: "no-jev"` in the log | No Jev channel has a key in the router's environment. Check the env file with `jev-router doctor`, and restart the router after you change it. |
+| A changed key has no effect | The env file is read at startup, and `SIGHUP` reloads only the config. Restart the router, or run `jev-router setup` again, which restarts its service. |
 | `reason: "fallback:default"` or `"fallback:keep"` with a `jev.error` | Jev didn't answer. `/healthz` shows each channel's `lastError`. `HTTP 401` or `403` means a wrong key, and `HTTP 402` an OpenRouter account without credits. A failing channel is skipped for 30 seconds after a timeout and for 5 minutes after a 401, 402 or 403. |
 | A warning that Claude Code requests carry no request class | `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` isn't set, or Claude Code is older than 2.1.273. Background calls can't be told apart reliably without it. |
 | Claude Code compacts on every message | `ENABLE_TOOL_SEARCH=true` is missing. `jev-router doctor` says so when Claude Code points at the router. |
@@ -392,6 +479,12 @@ For Codex, run `jev-router launch codex` and try two sessions:
 
 ## Turning it off
 
+- **`setup`:** run `jev-router uninstall`. It stops and removes the service, and takes out of Claude Code's settings
+  what setup put there, restoring a value setup replaced. It changes only variables that still hold setup's value,
+  and backs up `settings.json` first. Without setup's record, it removes only a base URL that points at the router,
+  and gateway settings that hold exactly setup's values. It keeps your config, keys and logs, prints the command that
+  deletes them, and ends with the one that removes jev-router: `npm uninstall -g @ediri/jev-router`. Running it twice
+  is fine.
 - **`launch`:** nothing to undo. Plain `claude` and `codex` don't go through the router.
 - **Shell variables:** open a new shell, or run the `unset` line from
   [Environment for the current shell](#environment-for-the-current-shell).

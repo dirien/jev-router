@@ -7,11 +7,11 @@ and it covers only what changes in a sandbox:
 
 | | On your machine | In a Docker Sandbox |
 | --- | --- | --- |
-| Keys | `~/.config/jev-router/env`, loaded with `--env-file` | Stored on the host with `sbx secret set`. The kit declares them, and the sandbox proxy adds them to outgoing requests, so they never enter the sandbox |
-| Install | `npm install -g github:dirien/jev-router#semver:^1` | The same command, inside the sandbox |
-| Router | `jev-router serve --ui 4100 --env-file …` | `jev-router serve --ui 0.0.0.0:4100`, inside the sandbox |
+| Keys | `~/.config/jev-router/env`, which `jev-router setup` writes | Stored on the host with `sbx secret set`. The kit declares them, and the sandbox proxy adds them to outgoing requests, so they never enter the sandbox |
+| Install | `npx github:dirien/jev-router setup`, or `npm install -g github:dirien/jev-router#semver:^1` | The `npm install -g` command, inside the sandbox |
+| Router | A launchd or systemd service that `jev-router setup` installs | `jev-router serve --ui 0.0.0.0:4100`, inside the sandbox |
 | Live view | `http://127.0.0.1:4100` | The same address, once `sbx ports` forwards it to the host |
-| Claude Code settings | `eval "$(jev-router env claude)"` or `~/.claude/settings.json` | `-e` options of `sbx run` |
+| Claude Code settings | `~/.claude/settings.json`, which `jev-router setup` writes | `-e` options of `sbx run` |
 
 ```mermaid
 flowchart LR
@@ -55,15 +55,11 @@ sbx create --name jev-router --kit ghcr.io/dirien/jev-router-kit:1.4.0 claude "$
 Leave out the `printf … |` part to type a key at a prompt instead.
 
 The release workflow publishes the kit to GHCR for every release: `:1.4.0` pins this release, and `:latest` follows
-the newest one. The GHCR package stays private until its owner makes it public. Until then, sign in with
-`docker login ghcr.io` and a token that can read packages, or have sbx read the kit from git:
+the newest one. The package is public, so pulling it needs no login. sbx can also read the kit from git:
 
 ```bash
 sbx create --name jev-router --kit "git+https://github.com/dirien/jev-router.git#ref=v1.4.0&dir=sbx/jev-router-kit" claude "$WS"
 ```
-
-While the repository is private, use `git+ssh://git@github.com/dirien/jev-router.git#ref=v1.4.0&dir=sbx/jev-router-kit`
-instead.
 
 The kit, [`sbx/jev-router-kit/spec.yaml`](../sbx/jev-router-kit/spec.yaml), declares the four keys as proxy-managed
 services. Inside the sandbox each key variable holds the placeholder `proxy-managed`, and the proxy writes the real
@@ -79,13 +75,6 @@ bindings:
   typesafe:     { apiKey: { domains: [api.typesafe.ai] } }
   ollama-cloud: { apiKey: { domains: [ollama.com] } }
   openai:       { apiKey: { domains: [api.openai.com] } }
-```
-
-While the repository is private, npm inside the sandbox needs access to GitHub too. Docker Sandboxes can add a GitHub
-token to the sandbox's git traffic; store one for this sandbox (not run yet with this kit):
-
-```bash
-sbx secret set github --sandbox jev-router -t "$(gh auth token)"
 ```
 
 ## 2. In the sandbox: install jev-router and start the router
@@ -111,7 +100,8 @@ Node's built-in `fetch` uses the sandbox proxy only when `NODE_USE_ENV_PROXY=1`.
 proxy, no key gets injected, and every upstream answers 401. If npm can't write to its global directory, run the
 install with `sudo`.
 
-There's no env file here: the kit already puts the key variables in the sandbox's environment. It sets both Jev key
+There's no env file here, and no `jev-router setup`: the kit already puts the key variables in the sandbox's
+environment, and a sandbox has no service manager. It sets both Jev key
 variables, though, so the router treats both channels as configured. If you stored only one Jev key, delete the other
 channel from `jev.channels` in `~/.config/jev-router/config.json` now. Otherwise the router spends a failed attempt on
 it every five minutes.
@@ -184,8 +174,7 @@ These are the problems specific to a sandbox. [activation.md](activation.md#trou
 | Symptom | Likely cause and fix |
 | --- | --- |
 | sbx refuses the kit's source | `kit.allowedSources` doesn't include `ghcr.io/dirien/` or `github.com/dirien/`. Run the `sbx settings set` line from step 1. |
-| sbx can't pull the kit from GHCR | The package is still private. Run `docker login ghcr.io` with a token that can read packages, or use the git reference. |
-| `npm install` inside the sandbox asks for a username or can't find the repository | The repository is private and the sandbox has no GitHub credentials. See the end of step 1. |
+| `npm install` inside the sandbox can't reach GitHub | The network policy blocks it. The kit allows `github.com` and `codeload.github.com`; run `sbx policy log jev-router` on the host to see what was blocked. |
 | `reason: no-jev` | No channel has a key in the router's environment, so the kit isn't attached. Run `sbx kit add jev-router ghcr.io/dirien/jev-router-kit:1.4.0` on the host; this recreates the container. |
 | `reason: fallback:default` and a `jev.error` | Jev didn't answer. Check the channel errors in `/healthz`, then run `sbx policy log jev-router` on the host. A 402 means OpenRouter has no credits; a 401 means the key isn't injected. |
 | Every upstream answers 401, but the `curl` probes in step 2 pass | `NODE_USE_ENV_PROXY` isn't `1` in the router's shell, so Node's `fetch` bypasses the proxy. |

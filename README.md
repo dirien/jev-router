@@ -21,42 +21,116 @@ SSE included, stream back byte for byte. Node.js 22 or newer is all it needs: th
 you don't need Docker or a clone of this repository.
 
 > **Boundary:** Anthropic doesn't support routing Claude Code to non-Claude models through a gateway
-> ([Claude Code docs](https://code.claude.com/docs/en/llm-gateway)). The default config sends Claude Code's fast
-> tier to Ollama Cloud; `jev-router init --anthropic-only` keeps Claude Code on Claude models.
+> ([Claude Code docs](https://code.claude.com/docs/en/llm-gateway)). `jev-router setup` keeps Claude Code on Claude
+> models unless you pick its Ollama Cloud option.
+
+## Quick start
+
+jev-router is a small server that runs on your machine. Claude Code sends its requests to it instead of to
+Anthropic. For each message you write, the router asks Jev which model the work needs, and forwards the request to
+that model. `jev-router setup` runs the router in the background, so you don't have to start it yourself.
+
+Once the package is on npm, two commands will do it:
+
+```bash
+npx @ediri/jev-router setup
+claude
+```
+
+The package isn't on npm yet. Until it is, run setup from GitHub. This needs git, and the first download is slower:
+
+```bash
+npx github:dirien/jev-router setup
+claude
+```
+
+You can also install jev-router first, then run setup:
+
+```bash
+npm install -g github:dirien/jev-router#semver:^1
+jev-router setup
+claude
+```
+
+Don't run `npx jev-router` or `npm install -g jev-router`. Without the `@ediri/` scope, that name belongs to an
+unrelated project, [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router).
+
+### What setup does
+
+Setup asks three questions:
+
+1. **Which models Claude Code uses.** The default is Claude only: Haiku 4.5, Sonnet 5 and Opus 5.5. The other
+   option sends quick work to Ollama Cloud's `glm-5.3-flash`.
+1. **Your keys.** Jev needs a key from [TypeSafe](https://console.typesafe.ai) or [OpenRouter](https://openrouter.ai).
+   The Ollama option also needs an Ollama key. Setup checks the Jev key with one call, which costs about $0.00003.
+   There's no Anthropic key to enter: Claude Code keeps using your own Claude login.
+1. **Whether to run the router in the background.** Press Enter for yes.
+
+Then setup:
+
+- saves your keys in `~/.config/jev-router/env`, a file only you can read;
+- installs jev-router with npm, if you ran setup through npx, because the background service needs a copy that stays;
+- starts the router as a launchd agent on macOS, or a systemd user service on Linux, and starts it again whenever you
+  log in;
+- points Claude Code at the router in `~/.claude/settings.json`, after it keeps a backup of that file.
+
+Restart any Claude Code session that was already running. You can run setup again at any time: it keeps your config
+and your saved keys (press Enter), and restarts the router.
+
+- **Check it:** `jev-router doctor` lists the config, the keys, the service, and whether the router answers.
+- **Watch it:** open <http://127.0.0.1:4100>. Each message you write shows up with the model the router picked, and
+  why.
+- **Upgrade:** once the package is on npm, `npx @ediri/jev-router@latest setup` installs the newest version and
+  restarts the router. Until then, run `npm install -g github:dirien/jev-router#semver:^1` again, then
+  `jev-router setup`.
+- **Undo it:** `jev-router uninstall` stops the router and takes setup's changes back out of Claude Code's settings.
+  It keeps your config, keys and logs, and prints the command that deletes them.
+
+### Without a background service
+
+Setup can't install a service on a machine without launchd or a systemd user session, such as a container. There,
+and when you answer no, it saves your keys and stops. Then start Claude Code through the router for one session:
+
+```bash
+jev-router launch claude              # through npx: npx github:dirien/jev-router launch claude
+jev-router launch claude --ui 4100    # the same, with the live view on http://127.0.0.1:4100
+```
+
+`launch` starts a router for the session and stops it when Claude Code exits. Setup prints the exact command for
+the way you installed jev-router.
+
+To run each step yourself instead, see [Manual setup](docs/activation.md#manual-setup).
 
 ## Tiers
 
 | Client | `fast` | `balanced` | `frontier` | `trusted` (sessions that contained a secret) |
 | --- | --- | --- | --- | --- |
-| Claude Code | Ollama Cloud `glm-5.3-flash` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | Anthropic `claude-sonnet-5` |
+| Claude Code, setup's default (Claude only) | Anthropic `claude-haiku-4-5` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | Anthropic `claude-sonnet-5` |
+| Claude Code, setup's Ollama option | Ollama Cloud `glm-5.3-flash` | Anthropic `claude-sonnet-5` | Anthropic `claude-opus-5-5` | Anthropic `claude-sonnet-5` |
 | Codex CLI | Ollama Cloud `glm-5.3-flash` | Ollama Cloud `kimi-k2.7-code` | OpenAI `gpt-6-astra` | OpenAI `gpt-6-sol` |
 
-Claude Code's own background calls (session titles, topic checks, quota probes) go to `claude-haiku-4-5`. The
-Anthropic-only config, [`config/anthropic-only.json`](config/anthropic-only.json), sends Claude Code's `fast` tier
-to Haiku 4.5 instead, so Claude Code uses Haiku 4.5, Sonnet 5 and Opus 5.5. Codex routes the same way in both
-configs. The OpenAI model names come from Codex's bundled model catalog, so check them against your account.
+Setup's default writes [`config/anthropic-only.json`](config/anthropic-only.json) to
+`~/.config/jev-router/config.json`. The Ollama option writes [`config/default.json`](config/default.json) instead,
+which changes only Claude Code's `fast` tier; the router also uses that file when you have no config. Claude Code's
+own background calls (session titles, topic checks, quota probes) go to `claude-haiku-4-5` in both. Codex routes the
+same way in both configs. The OpenAI model names come from Codex's bundled model catalog, so check them against your
+account.
 
 ## Install
 
-Install jev-router from GitHub with npm:
+The [Quick start](#quick-start) installs jev-router for you. To install it yourself, or to pin a version:
 
 ```bash
-npm install -g github:dirien/jev-router#semver:^1
+npm install -g github:dirien/jev-router#semver:^1    # the newest 1.x release
+npm install -g github:dirien/jev-router#v1.4.0       # one release, by its tag
 ```
 
-`#semver:^1` picks the newest 1.x release. To pin a version, name its tag instead:
-`npm install -g github:dirien/jev-router#v1.4.0`. To update, run the install command again.
+To update, run the install command again. Once the package is on npm, `npm install -g @ediri/jev-router` will work
+too.
 
 Up to 1.4.0 the package was called `@dirien/jev-router`. If you installed one of those versions, run
 `npm uninstall -g @dirien/jev-router` before you install a newer one: npm won't replace a command that another
 package owns.
-
-While the repository is private, npm needs git access to it: run `gh auth setup-git` once for HTTPS, or use an SSH
-key that GitHub knows.
-
-jev-router isn't on the npm registry yet. Once it's published, `npm install -g @ediri/jev-router` will work too.
-Don't run `npm install -g jev-router`: that package is an unrelated project,
-[gargpratyush/jev-router](https://github.com/gargpratyush/jev-router).
 
 What else you need:
 
@@ -65,83 +139,28 @@ What else you need:
 | Node.js | 22 or newer, on macOS or Linux |
 | Jev | A [TypeSafe](https://console.typesafe.ai) API key, an [OpenRouter](https://openrouter.ai) key with credits, or both for failover |
 | Anthropic | Your Claude login. The router passes it through, so there's no Anthropic key to set |
-| Ollama Cloud | An API key for Claude Code's `fast` tier in the default config, and for Codex's `fast` and `balanced` tiers |
+| Ollama Cloud | An API key for Claude Code's `fast` tier with setup's Ollama option, and for Codex's `fast` and `balanced` tiers |
 | OpenAI | An API key for Codex's `frontier` and `trusted` tiers. You don't need one if you only use Claude Code |
 | Claude Code | 2.1.273 or newer, for the gateway hint headers (request shapes taken from 2.1.281) |
 | Codex CLI | 0.134.0 or newer, for profile files (request shapes taken from 0.156.1) |
 
-To remove jev-router, first remove the service if you installed one (see [Run it as a service](#run-it-as-a-service)),
-then run `npm uninstall -g @ediri/jev-router`. Your config, keys and session state stay in `~/.config/jev-router`
-and `~/.local/state/jev-router` until you delete them.
-
-## Quick start
-
-These steps set up jev-router on a Mac or Linux machine and send Claude Code through it.
-
-1. Write the config:
-
-   ```bash
-   jev-router init
-   ```
-
-   `init` copies the packaged default to `~/.config/jev-router/config.json`. To keep Claude Code on Claude models
-   (Haiku 4.5, Sonnet 5 and Opus 5.5), run `jev-router init --anthropic-only` instead.
-
-1. Create a file for your keys that only you can read:
-
-   ```bash
-   touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
-   ```
-
-   Open it in an editor and add one `KEY=value` line per key:
-
-   ```text
-   TYPESAFE_API_KEY=...
-   OLLAMA_API_KEY=...
-   OPENAI_API_KEY=...
-   ```
-
-   Jev needs `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, or both. `OLLAMA_API_KEY` is for the tiers on Ollama Cloud,
-   and `OPENAI_API_KEY` for Codex's OpenAI tiers. With `--anthropic-only` and only Claude Code, the Jev key is all
-   you need.
-
-1. Check the setup. `doctor` loads the file the way the router will, and says what's missing:
-
-   ```bash
-   jev-router doctor --env-file ~/.config/jev-router/env
-   ```
-
-1. Start the router with its live view, and leave it running:
-
-   ```bash
-   jev-router serve --ui 4100 --env-file ~/.config/jev-router/env
-   ```
-
-   The router listens on `http://127.0.0.1:4000` and prints its log as JSON lines. The live view is at
-   `http://127.0.0.1:4100`.
-
-1. In a second terminal, point Claude Code at the router and start it:
-
-   ```bash
-   eval "$(jev-router env claude)"
-   claude
-   ```
-
-In Claude Code, `/status` now shows the router as the API base URL. Each message you write appears in the live view
-with the tier the router picked and why. To keep the router running without a terminal, see
-[Run it as a service](#run-it-as-a-service).
+To remove jev-router, run `jev-router uninstall`, then `npm uninstall -g @ediri/jev-router`. Your config, keys and
+session state stay in `~/.config/jev-router` and `~/.local/state/jev-router` until you delete them.
 
 ## Use it with Claude Code
 
-Claude Code needs four environment variables to work through the router. You can set them in three ways:
+`jev-router setup` points every Claude Code session at the router. Claude Code needs four environment variables to
+work through the router, and there are three ways to set them:
 
+- **For every session.** Setup puts them in the `env` block of `~/.claude/settings.json` and runs the router as a
+  service. While the router is down, Claude Code can't connect.
 - **For one run.** `jev-router launch claude` sets them for one Claude Code session and exits with Claude Code's exit
-  code. If no router answers on the port, it starts one inside its own process; pass
-  `--env-file ~/.config/jev-router/env` so that router has your keys. Claude Code doesn't get the file's variables.
+  code. If no router answers on the port, it starts one inside its own process, with the keys from
+  `~/.config/jev-router/env`. Claude Code doesn't get the file's variables.
 - **For one shell.** With the router running, `eval "$(jev-router env claude)"` exports them, and every `claude` you
   start from that shell goes through the router.
-- **For every session.** Put them in the `env` block of `~/.claude/settings.json`, and
-  [run the router as a service](#run-it-as-a-service). While the router is down, Claude Code can't connect.
+
+This is what setup adds to `~/.claude/settings.json`, next to the keys the file already has:
 
 ```json
 {
@@ -161,6 +180,10 @@ Claude Code needs four environment variables to work through the router. You can
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000` | Claude Code can't learn the routed model's context window through a gateway. 160,000 tokens compacts before the smallest window among the tiers |
 | `ENABLE_TOOL_SEARCH=true` | Behind any gateway, Claude Code turns MCP tool search off and sends every MCP tool definition with every request. In a live test with a few MCP servers, that was about 200,000 tokens per request, more than the compaction window, so Claude Code compacted on every message |
 
+Setup doesn't overwrite a compaction window or a tool search setting you already have. When the router has a token,
+setup also adds it to `ANTHROPIC_CUSTOM_HEADERS`. When `ANTHROPIC_BASE_URL` already points somewhere else, such as a
+company gateway, setup asks before it replaces it, and `--yes` keeps it.
+
 You don't need an Anthropic API key: the router passes Claude Code's own login to Anthropic and to no other host. If
 the router's environment has an `ANTHROPIC_API_KEY`, the router uses that key for every Anthropic request instead,
 and the key pays.
@@ -172,13 +195,16 @@ covers a router token, undoing each setup, and troubleshooting.
 ## Use it with Codex
 
 ```bash
-jev-router launch codex --env-file ~/.config/jev-router/env
+jev-router launch codex
 ```
 
 `launch codex` writes a `jev` profile to `~/.codex/jev.config.toml` and runs `codex --profile jev`. Like
 `launch claude`, it uses the router on the port or starts one, and arguments after `--` go to `codex`. A profile that
 `launch` wrote is refreshed when the router's port or token changes; a profile you edited is kept, and `--force`
 replaces it. Once the profile exists, plain `codex --profile jev` works too while a router runs.
+
+Setup asks only for the keys Claude Code needs. Codex also needs `OLLAMA_API_KEY` and `OPENAI_API_KEY`: add them to
+`~/.config/jev-router/env`, one `KEY=value` line each, and run `jev-router setup` again so the router picks them up.
 
 The profile talks to one virtual model, `jev-auto`, from
 [`examples/codex/jev-models.json`](examples/codex/jev-models.json). Codex shapes every request from the model's
@@ -188,46 +214,20 @@ profile up by hand, see [Codex profile by hand](docs/activation.md#codex-profile
 
 ## Run it as a service
 
-A service keeps one router running for all your sessions. It starts when you log in and restarts the router if it
-fails. The package ships a template for launchd and one for systemd, and each template's header has the commands
-below. Both run `jev-router serve --ui 4100` with the keys from `~/.config/jev-router/env`.
+`jev-router setup` installs the service for you: a launchd agent on macOS
+(`~/Library/LaunchAgents/io.github.dirien.jev-router.plist`) or a systemd user unit on Linux
+(`~/.config/systemd/user/jev-router.service`). It keeps one router running for all your sessions, starts when you
+log in, and restarts the router if it fails. It runs `jev-router serve --ui 4100` with your config, your env file and
+the log file.
 
-A service doesn't read your shell profile, so the install commands write the directories that hold `jev-router` and
-`node` into the service file. Run them again after you reinstall jev-router under another Node.js, for example with
-nvm.
-
-On macOS, install a LaunchAgent:
-
-```bash
-command -v jev-router node                   # both must print a path
-mkdir -p ~/.config/jev-router ~/Library/Logs/jev-router ~/Library/LaunchAgents
-touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
-plist="$(npm root -g)/@ediri/jev-router/examples/service/launchd/io.github.dirien.jev-router.plist"
-path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/bin:/bin"
-sed -e "s|@HOME@|$HOME|g" -e "s|@PATH@|$path|g" "$plist" > ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
-plutil -lint ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.dirien.jev-router.plist
-```
-
-On Linux, install a systemd user unit:
-
-```bash
-command -v jev-router node                     # both must print a path
-mkdir -p ~/.config/jev-router ~/.config/systemd/user
-touch ~/.config/jev-router/env && chmod 600 ~/.config/jev-router/env
-unit="$(npm root -g)/@ediri/jev-router/examples/service/systemd/jev-router.service"
-path="$(dirname "$(command -v jev-router)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
-sed "s|@PATH@|$path|" "$unit" > ~/.config/systemd/user/jev-router.service
-systemctl --user daemon-reload
-systemctl --user enable --now jev-router
-loginctl enable-linger "$USER"                 # optional: keep it running while you're logged out
-```
+Setup writes the service from the templates in the package, under `examples/service/`, which are also the manual
+route. [docs/activation.md](docs/activation.md#run-the-router-as-a-service) has the commands to install, reload,
+restart and remove each service by hand. `jev-router uninstall` removes the service setup installed.
 
 The router's JSON log goes to `~/.local/state/jev-router/router.log` and rotates at 50 MiB. `jev-router report` and
 `jev-router ui` read that file without an argument. Messages for people, such as startup errors, go to
 `~/Library/Logs/jev-router/router.err.log` on macOS, and to the journal (`journalctl --user -u jev-router`) on Linux.
-[docs/activation.md](docs/activation.md#run-the-router-as-a-service) has the commands to reload, restart and remove
-each service.
+On Linux, the service runs while you're logged in; `loginctl enable-linger` keeps it running after you log out.
 
 ## Watch routing live
 
@@ -250,12 +250,12 @@ category and the fast tier to Haiku 4.5 streams across the flow while the rest o
   compaction shows the prompt whose decision it runs on; a background call shows that it always takes `side`.
   Escape, or **Back to live**, follows the traffic again.
 
-`serve --ui` (or `JEV_ROUTER_UI`) takes a port or `host:port`. The view gets every log entry from the router
-in-process and needs no log file. It listens on loopback unless you give it an address. The service templates start
-it on port 4100.
+The service that setup installs serves the view on port 4100. `serve --ui` and `launch --ui` (or `JEV_ROUTER_UI`)
+take a port or `host:port`, and `launch` prints the view's address before Claude Code starts. The view gets every log
+entry from the router in-process and needs no log file. It listens on loopback unless you give it an address.
 
-For a router started without `--ui`, such as one that `launch` started, `jev-router ui [<log.jsonl>] [--port <n>]`
-serves the same view on `http://127.0.0.1:4100` by following the router's log.
+For a router started without `--ui`, `jev-router ui [<log.jsonl>] [--port <n>]` serves the same view on
+`http://127.0.0.1:4100` by following the router's log.
 
 - **A token for the view.** Set `JEV_ROUTER_UI_TOKEN`, or pass `--ui-token`, and the view asks for that token. The
   router prints an address that ends in `?token=`; open it, and the page keeps the token in a cookie. Prefer the
@@ -351,8 +351,8 @@ Where jev-router does better:
   click any request to see Jev's answer, each tier's threshold and the guards.
 - **Secrets stay with trusted upstreams.** A scanner checks every human message. A hit keeps the session on its
   trusted target, and untrusted targets get the secrets redacted.
-- **It runs as a service.** Session tiers survive a restart, `SIGHUP` reloads the config, and one router serves every
-  Claude Code session that `settings.json` points at it.
+- **It runs as a service.** `jev-router setup` installs it in one command. Session tiers survive a restart, `SIGHUP`
+  reloads the config, and one router serves every Claude Code session that `settings.json` points at it.
 
 For a team gateway with virtual keys and budgets, many clients behind one endpoint, or same-vendor tiering on
 Windows, another project fits better. [When to pick something else](docs/comparison.md#when-to-pick-something-else)
@@ -366,12 +366,12 @@ jev-router doesn't need Docker Sandboxes. If your agents run in one, the
 
 - Create the sandbox with the kit: `sbx create --kit ghcr.io/dirien/jev-router-kit:1.4.0 claude <workspace>`.
 - In the sandbox, install jev-router with the same `npm install -g` command, and start the router with
-  `jev-router serve --ui 0.0.0.0:4100`, so the view can be forwarded.
+  `jev-router serve --ui 0.0.0.0:4100`, so the view can be forwarded. A sandbox has no service manager, and the kit
+  provides the keys, so `jev-router setup` isn't needed there.
 - On the host, forward the view with `sbx ports <name> --publish 4100:4100`, and pass Claude Code's four variables
   to `sbx run` with `-e`.
 
-[docs/sandbox.md](docs/sandbox.md) has the full steps, including how to use the kit from git while its GHCR package
-is private.
+[docs/sandbox.md](docs/sandbox.md) has the full steps, including how to use the kit from git instead of GHCR.
 
 ## Operations
 
@@ -414,10 +414,15 @@ A `req` number pairs each `route` line with its `done` line.
 ## CLI
 
 ```text
+jev-router setup [--yes] [--models claude|ollama] [--service auto|launchd|systemd|none]
+                 [--no-claude-settings]
+jev-router uninstall
 jev-router [serve] [--config <file>] [--env-file <file>] [--log-file <file>] [--host <h>] [--port <n>]
                    [--ui [<host>:]<port>] [--ui-token <token>]
-jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--] [claude args…]
-jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--force] [--] [codex args…]
+jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--ui [<host>:]<port>]
+                         [--] [claude args…]
+jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--ui [<host>:]<port>]
+                         [--force] [--] [codex args…]
 jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
 jev-router doctor [--config <file>] [--env-file <file>] [--live]
 jev-router init [--anthropic-only] [--force]
@@ -428,14 +433,18 @@ jev-router version | help
 
 | Command | What it does |
 | --- | --- |
+| `setup` | Asks which models Claude Code uses and for their keys, checks the Jev key with one call, then saves them, runs the router in the background and points Claude Code at it. Safe to run again. `--yes` answers with the defaults and takes the keys from the environment |
+| `uninstall` | Removes the service and what setup put in Claude Code's settings. Keeps the config, the keys and the logs |
 | `serve` | Runs the router in the foreground; it's the default command. `--ui` also serves the live view |
-| `launch` | Runs Claude Code or Codex through the router on the configured port, and starts one if none runs |
+| `launch` | Runs Claude Code or Codex through the router on the configured port, and starts one if none runs. `--ui` also serves the live view of a router it starts |
 | `env` | Prints shell exports for a running router: `eval "$(jev-router env claude)"` |
-| `doctor` | Checks the config, the env file, the keys, the log file, Claude Code's settings and a running router. `--live` makes one Jev call (about $0.00003) |
+| `doctor` | Checks the config, the env file, the keys, the log file, the service, Claude Code's settings and a running router. `--live` makes one Jev call (about $0.00003) |
 | `init` | Writes the user config. `--anthropic-only` sends every Claude Code tier to Anthropic |
 | `report` | Sums up requests, spend and savings from a router log |
 | `ui` | Serves the live view for a log that another process writes |
 
+`setup` also takes `--models claude|ollama` (the config for a machine without one), `--service auto|launchd|systemd|none`
+(`auto` picks launchd on macOS and systemd on Linux, when a user session is there) and `--no-claude-settings`.
 `JEV_ROUTER_CLAUDE_BIN` and `JEV_ROUTER_CODEX_BIN` point `launch` at a specific `claude` or `codex` binary.
 
 ## Configuration
@@ -447,9 +456,10 @@ The router reads the first config it finds:
 1. `$XDG_CONFIG_HOME/jev-router/config.json` (`~/.config/jev-router/config.json` by default)
 1. the packaged [`config/default.json`](config/default.json)
 
-`jev-router init` writes the packaged config to `~/.config/jev-router/config.json` for you to edit (`--anthropic-only`
-starts from [`config/anthropic-only.json`](config/anthropic-only.json)). [docs/configuration.md](docs/configuration.md)
-documents every key, its default and its validation.
+`jev-router setup` writes `~/.config/jev-router/config.json` when there's none, from
+[`config/anthropic-only.json`](config/anthropic-only.json) or, with its Ollama option, from
+[`config/default.json`](config/default.json). `jev-router init` does the same without the rest of setup.
+[docs/configuration.md](docs/configuration.md) documents every key, its default and its validation.
 
 | Key | Meaning |
 | --- | --- |
@@ -467,22 +477,24 @@ documents every key, its default and its validation.
 | `host`, `port`, `token`, `allowedHosts`, `allowedOrigins`, `maxBodyBytes`, `maxSessions`, `stateFile` | Server settings |
 | `logFile`, `logMaxBytes` | A file for the JSON log besides stdout, and the size at which it rotates (50 MiB; `0` never rotates) |
 
-Keys come from the environment, or from an env file of `KEY=value` lines such as `~/.config/jev-router/env`:
+Keys come from the environment, or from an env file of `KEY=value` lines, `~/.config/jev-router/env`, which setup
+writes:
 
-- `serve`, `launch`, `env` and `doctor` load the file named by `--env-file`, else by `JEV_ROUTER_ENV_FILE`.
+- `serve`, `launch`, `env`, `doctor` and `setup` load that file when it exists. `--env-file`, or
+  `JEV_ROUTER_ENV_FILE`, names another one.
 - Variables that are already set win over the file. A leading `~` in the path is expanded, for services that start
   without a shell.
 - The router warns when other users can read or change the file.
 - Proxy settings and `NODE_EXTRA_CA_CERTS` have no effect from the file, because Node reads them only when it starts.
-- A missing file stops the command before jev-router runs: Node prints `node: <path>: not found` and exits with
-  status 9.
+- A file that is named but missing stops the command. For `--env-file`, Node prints `node: <path>: not found` and
+  exits with status 9 before jev-router runs.
 
 | Environment variable | Meaning |
 | --- | --- |
 | `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY` | Jev channel keys (the shipped channels' `keyEnv`) |
 | `OLLAMA_API_KEY`, `OPENAI_API_KEY` | Upstream keys for Ollama Cloud and OpenAI |
 | `ANTHROPIC_API_KEY` | Optional. Without it, Claude Code's own login goes to Anthropic |
-| `JEV_ROUTER_ENV_FILE` | The env file to load, when `--env-file` isn't given |
+| `JEV_ROUTER_ENV_FILE` | The env file to load instead of `~/.config/jev-router/env`, when `--env-file` isn't given; setup writes the keys there |
 | `JEV_ROUTER_CONFIG` | Config file, after `--config` |
 | `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | Listen address, overriding the config |
 | `JEV_ROUTER_LOG_FILE` | The log file for `serve`, when `--log-file` isn't given; `report` and `ui` read it too |
@@ -490,6 +502,7 @@ Keys come from the environment, or from an env file of `KEY=value` lines such as
 | `JEV_ROUTER_UI`, `JEV_ROUTER_UI_TOKEN` | The live view's address, like `--ui`, and its token, like `--ui-token` |
 | `JEV_ROUTER_TIER` | Pin every session to one tier |
 | `JEV_ROUTER_CLAUDE_BIN`, `JEV_ROUTER_CODEX_BIN` | The `claude` and `codex` binaries `launch` runs |
+| `JEV_ROUTER_SETUP_WAIT` | How many seconds setup waits for the service's router to answer (15) |
 | `JEV_BASE_URL`, `JEV_MODEL`, `JEV_API_KEY` | Add an extra System One channel in front of the configured ones |
 
 ## Security and privacy
@@ -501,9 +514,10 @@ Keys come from the environment, or from an env file of `KEY=value` lines such as
 - **Keys stay with their hosts.** Each key comes from the environment variable its target or Jev channel names, and
   goes only to that host. Upstream redirects are refused, so a key can't follow one. Your Claude login is forwarded
   only to targets marked `clientAuth` (Anthropic).
-- **Keys at rest.** Keep them in `~/.config/jev-router/env` with mode 0600, or in your shell environment. `serve`,
-  `launch`, `env` and `doctor` warn when other users can read or change the env file. `launch` keeps the file's
-  variables out of the agent's environment, so the commands the agent runs don't see those keys.
+- **Keys at rest.** Setup saves them in `~/.config/jev-router/env` with mode 0600, and never prints them. You can
+  also keep them in your shell environment. `serve`, `launch`, `env`, `doctor` and `setup` warn when other users can
+  read or change the env file. `launch` keeps the file's variables out of the agent's environment, so the commands the
+  agent runs don't see those keys.
 - **What Jev sees.** The latest human message, with harness text removed (system reminders, shell-mode output, hook
   output, command wrappers), code blocks replaced by a one-line summary, secrets scrubbed, and cut to 4,000
   characters keeping its start and end. Plus up to two earlier human messages, the last assistant message for short
@@ -516,7 +530,9 @@ Keys come from the environment, or from an env file of `KEY=value` lines such as
   A pattern list can't catch every secret, so don't paste credentials into prompts.
 - **What's stored.** The state file (`~/.local/state/jev-router/sessions.jsonl`, mode 0600) holds hashed session
   keys, tiers, trust flags, the last upstream host, and a hash of the message where the provider changed. It holds
-  no prompt text. The log files (mode 0600) hold decisions, token usage and cost, never prompt text or keys.
+  no prompt text. The log files (mode 0600) hold decisions, token usage and cost, never prompt text or keys. Setup
+  also records what it changed in Claude Code's settings in `~/.config/jev-router/setup.json`, without keys or the
+  router token, so that `uninstall` can undo it.
 - **The live view.** It has its own port and only shows log entries: models, tiers and costs, never prompts or
   keys. It listens on `127.0.0.1` unless `--ui` names another address, and an optional token
   (`JEV_ROUTER_UI_TOKEN`) keeps it private on a shared address. It answers only a `Host` that names loopback or the
@@ -555,7 +571,7 @@ built-in coverage.
 | `npm test` | `node --test test/*.test.mjs`: offline, against mock upstreams and a mock Jev |
 | `npm run test:coverage` | The tests with coverage thresholds on `src/**`: lines 85%, branches 75%, functions 85% |
 | `npm run check` | `lint`, `typecheck`, `lint:md` and `test:coverage`, the gate CI runs |
-| `npm run test:package` | Packs the package, installs it with `npm install -g --prefix` into a temporary directory, and runs `version`, `init`, `serve` with an env file and the live view, `env claude`, `launch claude` and a clean `SIGTERM`, with no network. `-- --git` also installs the last commit from git |
+| `npm run test:package` | Packs the package, installs it with `npm install -g --prefix` into a temporary directory, and runs `version`, `init`, `serve` with an env file and the live view, `env claude`, `launch claude`, a clean `SIGTERM`, then `setup --yes --service none` against a local Jev stand-in, and `uninstall`, with no network. `-- --git` also installs the last commit from git |
 | `npm run test:live` | Three live Anthropic calls with Jev mocked; needs Anthropic credentials |
 | `npm run eval` / `npm run eval:mock` | The Jev evaluation on 58 labeled prompts, live or with a keyword stand-in |
 | `npm start` | Starts the router (`jev-router serve`) |
@@ -577,6 +593,8 @@ kit, and later the npm package. [docs/releasing.md](docs/releasing.md) has the s
 | Path | Purpose |
 | --- | --- |
 | `bin/jev-router.mjs`, `src/cli.mjs` | The command-line entry point |
+| `src/setup.mjs`, `src/prompt.mjs`, `src/service.mjs`, `src/install.mjs` | `setup` and `uninstall`: the questions, the launchd agent and systemd unit, and the global install from npx |
+| `src/files.mjs`, `src/net.mjs`, `src/envfile.mjs`, `src/claude.mjs` | What the commands share: paths, the health probe, the env file, and Claude Code's variables and settings |
 | `src/router.mjs` | The server, the routing pipeline, forwarding, and `report` |
 | `src/config.mjs` | Config defaults and validation |
 | `src/jev.mjs` | Jev's state, the questions, the channels, and the policy |
@@ -609,7 +627,8 @@ router made one Jev call per human message.
 
 Not verified yet, because it needs keys: thresholds tuned on real Jev answers, Ollama Cloud and OpenAI as live
 upstreams, and full Codex sessions, especially Codex's file edits on Ollama models. The Docker Sandboxes kit passes
-`sbx kit validate`, but hasn't run in a sandbox end to end.
+`sbx kit validate`, but hasn't run in a sandbox end to end. `jev-router setup` hasn't run against a real launchd or
+systemd yet: its tests use stand-ins that record each command and start the router from the file setup installed.
 
 ## License
 

@@ -14,17 +14,15 @@ about any way around the boundaries below are welcome.
 
 Report vulnerabilities privately, never in a public issue, pull request or discussion.
 
-- **Email** [info@ediri.de](mailto:info@ediri.de) with "jev-router security" in the subject. This works now, while
-  the repository is private.
-- **GitHub**, once the repository is public: use
-  [private vulnerability reporting](https://github.com/dirien/jev-router/security/advisories/new)
+- **Email** [info@ediri.de](mailto:info@ediri.de) with "jev-router security" in the subject.
+- **GitHub**: use [private vulnerability reporting](https://github.com/dirien/jev-router/security/advisories/new)
   (**Security**, then **Report a vulnerability**).
 
 Include the version (`jev-router version`), the config with keys removed, the steps to reproduce, and what an
 attacker gains. Don't send real API keys, or prompts that contain secrets.
 
-The maintainer acknowledges the report, works on a fix, and publishes it with a changelog entry and, once the
-repository is public, a GitHub security advisory that credits you unless you'd rather not be named. Please allow
+The maintainer acknowledges the report, works on a fix, and publishes it with a changelog entry and a GitHub security
+advisory that credits you unless you'd rather not be named. Please allow
 time for the fix before you disclose the issue publicly.
 
 ## Scope
@@ -58,9 +56,10 @@ time for the fix before you disclose the issue publicly.
 
 - Upstream and Jev keys come from environment variables. Each key goes only to the host of the target or Jev channel
   that names it, and upstream redirects are refused, so a key can't follow one.
-- On a plain machine, the keys live in an env file, `~/.config/jev-router/env` by default, which the router loads
-  with `--env-file` or `JEV_ROUTER_ENV_FILE`. Keep it at mode 0600: `serve`, `launch`, `env` and `doctor` warn, with
-  the `chmod` to run, when other users can read or change it.
+- On a plain machine, the keys live in an env file, `~/.config/jev-router/env`, which every command loads when it
+  exists (or the file `--env-file` or `JEV_ROUTER_ENV_FILE` names). `jev-router setup` writes it with mode 0600, and
+  never prints a key, not even in part. `serve`, `launch`, `env`, `doctor` and `setup` warn, with the `chmod` to run,
+  when other users can read or change it.
 - `launch` keeps the env file's variables out of the agent's environment, so the commands Claude Code or Codex runs,
   and the tool output an untrusted upstream receives, don't carry the router's keys.
 - The client's own credential, such as a Claude login, is forwarded only to targets marked `clientAuth`
@@ -86,6 +85,19 @@ time for the fix before you disclose the issue publicly.
 The router writes nothing else to disk. Of the other commands, `jev-router init` writes the config file,
 `jev-router launch` a `launch-<port>.pid` file next to its log while it runs, and `jev-router launch codex` the Codex
 profile, `~/.codex/jev.config.toml`, with mode 0600, since it may hold the router token.
+
+`jev-router setup` writes:
+
+- the config and the env file, both with mode 0600, in a directory with mode 0700;
+- the service file, a launchd agent or a systemd user unit, which holds paths and a `PATH`, and no keys;
+- Claude Code's `settings.json`, with the router token in `ANTHROPIC_CUSTOM_HEADERS` when the router has one, keeping
+  the file's mode (0600 for a new file), and a backup of the old file, `settings.json.jev-router.bak`, with the same
+  mode;
+- `~/.config/jev-router/setup.json`, mode 0600, its record of what it changed for `jev-router uninstall`, which holds
+  no keys and no router token.
+
+Run through npx, setup installs the package globally with `npm install -g` after you agree, so the service never runs
+from npx's cache.
 
 ### Out of scope
 

@@ -14,8 +14,10 @@ The router uses the first of these that exists:
    unset
 1. the packaged [`config/default.json`](../config/default.json)
 
-`jev-router init` writes the packaged default to `~/.config/jev-router/config.json` as a starting point, and
-`jev-router init --anthropic-only` writes [`config/anthropic-only.json`](../config/anthropic-only.json) instead. It
+`jev-router setup` writes `~/.config/jev-router/config.json` when there's no config yet: from
+[`config/anthropic-only.json`](../config/anthropic-only.json) by default, or from the packaged default with its
+Ollama option (`--models ollama`). It never changes an existing config. `jev-router init` writes the packaged default
+as a starting point, and `jev-router init --anthropic-only` writes `config/anthropic-only.json` instead; `init`
 doesn't overwrite an existing file unless you pass `--force`.
 
 The file is plain JSON, without comments. The router validates it at startup and exits with every problem listed,
@@ -27,7 +29,7 @@ ignored, not rejected, so a misspelled optional key keeps its default without a 
 | File | Claude Code | Codex CLI |
 | --- | --- | --- |
 | [`config/default.json`](../config/default.json) | `fast`: Ollama Cloud `glm-5.3-flash`. `balanced` and `trusted`: Anthropic `claude-sonnet-5`. `frontier`: Anthropic `claude-opus-5-5`. `side`: Anthropic `claude-haiku-4-5` | `fast`: Ollama Cloud `glm-5.3-flash`. `balanced`: Ollama Cloud `kimi-k2.7-code`. `frontier`: OpenAI `gpt-6-astra`. `trusted`: OpenAI `gpt-6-sol` |
-| [`config/anthropic-only.json`](../config/anthropic-only.json) | Like the default, except that `fast` is Anthropic `claude-haiku-4-5`, with the same `omit` list as `side` | Same as the default |
+| [`config/anthropic-only.json`](../config/anthropic-only.json) | Like the default, except that `fast` is Anthropic `claude-haiku-4-5`, with the same `omit` list as `side`. `jev-router setup` writes this one unless you pick its Ollama option | Same as the default |
 
 Both configs share the policy, the Jev channels, the rubric, the prices and the baseline. The OpenAI model names come
 from Codex's bundled model catalog; check them against your account.
@@ -234,41 +236,53 @@ ledger.
 | `OLLAMA_API_KEY` | Ollama Cloud targets | Sent as a bearer key |
 | `OPENAI_API_KEY` | OpenAI targets | Sent as a bearer key |
 | `ANTHROPIC_API_KEY` | Anthropic targets | Optional. When it's unset, Claude Code's own credential goes to Anthropic |
-| `JEV_ROUTER_ENV_FILE` | `serve`, `launch`, `env`, `doctor` | The env file to load when `--env-file` isn't given |
-| `JEV_ROUTER_CONFIG` | Config lookup | The config file, after `--config` |
-| `XDG_CONFIG_HOME` | Config lookup | Base directory for `jev-router/config.json` |
+| `JEV_ROUTER_ENV_FILE` | `serve`, `launch`, `env`, `doctor`, `setup`, `uninstall` | The env file to load instead of `$XDG_CONFIG_HOME/jev-router/env` when `--env-file` isn't given. `setup` saves the keys there |
+| `JEV_ROUTER_CONFIG` | Config lookup | The config file, after `--config`. `setup` keeps it as it is and gives it to the service |
+| `XDG_CONFIG_HOME` | Config lookup, the env file, `setup` | Base directory for `jev-router/config.json`, `jev-router/env`, `jev-router/setup.json`, and the systemd unit setup writes (`systemd/user/jev-router.service`) |
 | `XDG_STATE_HOME` | The state file, `launch` | Base directory for the default `stateFile` and for the log that `launch` writes (`~/.local/state` when unset) |
-| `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | `serve` | Listen address, overriding `host` and `port` |
+| `JEV_ROUTER_HOST`, `JEV_ROUTER_PORT` | `serve`, `setup` | Listen address, overriding `host` and `port`. `setup` passes them to the service as flags |
 | `JEV_ROUTER_LOG_FILE` | `serve`, `report`, `ui` | The log file, after `--log-file` and before `logFile` |
 | `JEV_ROUTER_TOKEN` | The router, `launch`, `env` | Shared secret sent as `x-jev-router-token`, overriding `token`. Required for a non-loopback address |
-| `JEV_ROUTER_UI` | `serve` | The live view's address, like `--ui`: a port or `host:port` |
+| `JEV_ROUTER_UI` | `serve`, `launch`, `setup` | The live view's address, like `--ui`: a port or `host:port`. `setup` gives the service this address instead of 4100 |
 | `JEV_ROUTER_UI_TOKEN` | `serve`, `ui` | The live view's token, like `--ui-token`. Unlike the flag, it doesn't show in `ps` |
 | `JEV_ROUTER_TIER` | The router | Pins every main-loop request of every session to this tier. An unknown tier name is logged and ignored |
 | `JEV_ROUTER_CLAUDE_BIN`, `JEV_ROUTER_CODEX_BIN` | `launch` | The `claude` and `codex` binaries to run |
+| `JEV_ROUTER_SETUP_WAIT` | `setup` | How many seconds to wait for the service's router to answer; 15 by default |
+| `CLAUDE_CONFIG_DIR` | `setup`, `uninstall`, `doctor` | Where Claude Code's `settings.json` is: `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json` |
 | `CODEX_HOME` | `launch codex`, `env codex` | Where the Codex profile goes: `$CODEX_HOME/jev.config.toml`, else `~/.codex/jev.config.toml` |
 | `JEV_BASE_URL`, `JEV_API_KEY`, `JEV_MODEL` | The Jev client | Add a channel in front of `jev.channels`. Both `JEV_BASE_URL` and `JEV_API_KEY` must be set |
 
 The key variables are the `keyEnv` names in the shipped configs. A config can name any variable instead.
 
-`jev-router doctor` also reads Claude Code's `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when that's
-set), without changing it, to check the `env` block that points Claude Code at the router.
+`jev-router setup` merges the router's variables into the `env` block of Claude Code's `~/.claude/settings.json`
+(`$CLAUDE_CONFIG_DIR/settings.json` when that's set), once the router it started answers: `ANTHROPIC_BASE_URL`,
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `ENABLE_TOOL_SEARCH` unless they're set,
+and `ANTHROPIC_CUSTOM_HEADERS` when the router has a token. It keeps the file's other keys and their order, writes it
+with 2-space indentation, keeps its mode (0600 for a new file), and backs it up to `settings.json.jev-router.bak`
+first. It asks before it replaces a base URL that points elsewhere, and leaves a file that isn't valid JSON alone.
+What it changed goes into `$XDG_CONFIG_HOME/jev-router/setup.json`, without keys or the router token, for
+`jev-router uninstall`. `jev-router doctor` reads the same file, without changing it, to check that block.
 
 ### The env file
 
-Any of these variables can come from an env file instead of the shell: a file of `KEY=value` lines, such as
-`~/.config/jev-router/env` with mode 0600. `serve`, `launch`, `env` and `doctor` load the file named by
+Any of these variables can come from an env file instead of the shell: a file of `KEY=value` lines,
+`~/.config/jev-router/env` (`$XDG_CONFIG_HOME/jev-router/env`) with mode 0600, which `jev-router setup` writes.
+`serve`, `launch`, `env`, `doctor` and `setup` load that file when it exists, or the file named by
 `--env-file <file>`, else by `JEV_ROUTER_ENV_FILE`, with Node's own loader, before they read anything else from the
-environment.
+environment. Messages call the usual file the "default location".
 
 - A variable that's already set wins over the file.
 - A leading `~` in the path is your home directory, for services that start without a shell.
-- A file that other users can read or change gets a warning with the `chmod 600` that fixes it. `doctor` also
-  checks the mode of `~/.config/jev-router/env` when you don't pass it, and suggests passing it.
+- A file that other users can read or change gets a warning with the `chmod 600` that fixes it. `setup` rewrites the
+  file with mode 0600.
 - Variables that Node reads only when it starts, such as `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY` and
   `NODE_EXTRA_CA_CERTS`, have no effect from the file, and get a warning.
 - Node checks an `--env-file` path itself. A missing file ends the command with `node: <path>: not found` and exit
-  status 9, before jev-router runs. A file named only by `JEV_ROUTER_ENV_FILE` that can't be read stops the command
-  with jev-router's own error.
+  status 9, before jev-router runs. A file named by `JEV_ROUTER_ENV_FILE`, or a `~/.config/jev-router/env` that
+  exists but can't be read, stops the command with jev-router's own error. A missing `~/.config/jev-router/env` is
+  fine.
+- `setup` changes only the lines of the keys it asks for, and keeps every other line and comment. It quotes a value
+  only when Node's loader would otherwise misread it, for example one with a `#`.
 - The file is read once. `SIGHUP` reloads the config, not the env file, so restart the router after a key change.
 - `launch` keeps the file's variables out of the agent's environment.
 

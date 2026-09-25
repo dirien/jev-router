@@ -238,13 +238,34 @@ forwarded out of a Docker Sandbox.
 
 A router that runs all day as a launchd or systemd service needs its keys without an interactive shell. The plain
 way to hand them over on any Mac or Linux machine is a file of `KEY=value` lines that only its owner can read, so
-`serve` takes `--env-file` and loads it with Node's own loader before it reads anything else. A file that other users
-can read or change gets a warning, because it holds keys.
+every command loads `~/.config/jev-router/env` with Node's own loader before it reads anything else, and `--env-file`
+names another file. A file that other users can read or change gets a warning, because it holds keys.
 
 `launch` loads the same file, but keeps its variables out of the agent's environment. Every command the agent runs
 would otherwise see the router's keys, and so would every tool result an untrusted upstream receives.
 
 Nothing in the router needs Docker Sandboxes. The sandbox kit is an optional way to keep the keys on the host.
+
+## One command to start
+
+Getting started used to take five steps: a config, a key file typed by hand, a check, a router in one terminal, and
+Claude Code with the right variables in another. `jev-router setup` does them in one command, and a few rules keep it
+from leaving a machine half set up:
+
+- **Ask first, write after the key works.** Every question comes before the first write, and the Jev key gets one
+  real call. A wrong key, a closed input or Ctrl-C leaves nothing behind.
+- **Claude Code changes last.** A `settings.json` that points at a router that isn't running breaks every Claude Code
+  session, so setup changes it only after the service's router answers. The router must also have started after
+  setup started the service: a router someone started by hand earlier would pass the health check, while the service
+  failed next to it.
+- **The service sees nothing of the shell.** launchd and systemd don't read a shell profile, so the service gets the
+  config, env file and log file setup used as absolute paths, the host, port and live view address as flags, and a
+  `PATH` that holds the global `jev-router` and the Node.js that runs setup.
+- **Never from npx's cache.** npm can delete its npx cache at any time, and a service pointing into it would break
+  without a word. Run through npx, setup installs the package globally first.
+- **Undo exactly what was done.** setup records in `setup.json` which settings it added and the values it replaced,
+  without secrets, and `uninstall` restores only variables that still hold setup's value. Without that record,
+  `uninstall` removes only values that can only be setup's.
 
 ## No runtime dependencies
 

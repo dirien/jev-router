@@ -57,16 +57,17 @@ and that `SIGTERM` stops the router cleanly. CI runs it on Node.js 22 and 24.
 | npm, once publishing is on | `npm install -g @ediri/jev-router` |
 | The Docker Sandboxes kit | `sbx create --kit ghcr.io/dirien/jev-router-kit:X.Y.Z claude <workspace>` |
 
-Installing again with the same command updates jev-router; `npm uninstall -g @ediri/jev-router` removes it. While
-the repository is private, the GitHub installs need access to it: npm tries `https://github.com` first, which works
-with a git credential helper such as `gh auth setup-git`, then falls back to SSH.
+Installing again with the same command updates jev-router; `npm uninstall -g @ediri/jev-router` removes it. The
+GitHub installs need git, and nothing else: the repository is public.
 
 ## The kit on GHCR
 
-The first push creates the package `ghcr.io/dirien/jev-router-kit`, private like the repository. It holds only the
-kit's `spec.yaml`, which names hosts and key variables but no keys, so make it public: on GitHub, open the package,
-then **Package settings** and **Change visibility**. While it's private, sbx needs `docker login ghcr.io` with a
-token that can read packages.
+The first push created the package `ghcr.io/dirien/jev-router-kit` as a private package, and it has since been made
+public, so sbx pulls it without a login. It holds only the kit's `spec.yaml`, which names hosts and key variables but
+no keys.
+
+In a fork, the first push creates a private package too. To make it public, open the package on GitHub, then
+**Package settings** and **Change visibility**.
 
 sbx allows only `docker.io/` kits by default, so users allow the source once:
 
@@ -75,8 +76,7 @@ sbx settings set kit.allowedSources '["docker.io/","ghcr.io/dirien/","github.com
 ```
 
 sbx can also read the kit from git, without the registry:
-`--kit "git+https://github.com/dirien/jev-router.git#ref=vX.Y.Z&dir=sbx/jev-router-kit"`, or with
-`git+ssh://git@github.com/dirien/jev-router.git` while the repository is private.
+`--kit "git+https://github.com/dirien/jev-router.git#ref=vX.Y.Z&dir=sbx/jev-router-kit"`.
 
 To move the workflow to a newer sbx, change `SBX_VERSION` and `SBX_SHA256` in `release.yml`. The comment above them
 has the command that prints the digest. Dependabot doesn't update these two.

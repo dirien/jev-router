@@ -144,7 +144,7 @@ Switchboard ships Fable 5.1 as its highest tier, and gargpratyush/jev-router off
 
 | Project | Secrets in prompts | What Jev receives | Provider keys |
 | --- | --- | --- | --- |
-| jev-router | A deterministic scanner checks every human message: private keys, common API token formats, JWTs, credentials in URLs, `password=` assignments. A hit keeps the session on its `trusted` target, and untrusted targets get those secrets redacted anywhere in the body, tool output included | The latest human message with harness text removed, code blocks summarized, secrets scrubbed, cut to 4,000 characters; up to two earlier ones; named buckets for session depth and tool use. It never gets tool output, file contents or the system prompt | Each key comes from the variable its target names and goes only to that host. Redirects are refused. Your Claude login goes only to Anthropic. Keys can live in an env file loaded with `--env-file`, which warns when others can read it |
+| jev-router | A deterministic scanner checks every human message: private keys, common API token formats, JWTs, credentials in URLs, `password=` assignments. A hit keeps the session on its `trusted` target, and untrusted targets get those secrets redacted anywhere in the body, tool output included | The latest human message with harness text removed, code blocks summarized, secrets scrubbed, cut to 4,000 characters; up to two earlier ones; named buckets for session depth and tool use. It never gets tool output, file contents or the system prompt | Each key comes from the variable its target names and goes only to that host. Redirects are refused. Your Claude login goes only to Anthropic. Keys live in `~/.config/jev-router/env`, which setup writes with mode 0600 and every command loads, with a warning when others can read it |
 | LiteLLM | No scanning on the Jev routing path; its guardrails: not reviewed | The current ask, up to three earlier user turns and a size estimate, with Claude Code's harness text stripped (docs) | In the config, the environment or its database; clients use a master key or virtual keys |
 | Jevonian | Shell commands are redacted before the Jev call; no scanner | Recent messages, tool calls and trimmed tool results, about 10 KB per call (mock) | Added with its CLI or dashboard |
 | gargpratyush/jev-router | No scanner | The prompt, the current model, the context size and the available models (source) | The Jev key in `~/.jev-router.env` or the environment; the CLI's own login is forwarded unchanged |
@@ -190,7 +190,7 @@ The table lists what each router exposes on the machine it runs on, from its sou
 
 | Project | Config changes | State across restarts | Running it |
 | --- | --- | --- | --- |
-| jev-router | `SIGHUP` re-reads and validates the config, and keeps the old one if the new one is invalid. A bad config at startup lists every problem | Session tiers persist in a state file (hashed keys, no prompt text, seven-day expiry), so a restart doesn't move live sessions | A long-running local service on macOS or Linux: `serve --ui 4100` in a terminal, or the launchd and systemd user templates with keys from `--env-file`. `launch claude` starts a router for one session if none is running. `SIGTERM` lets streams finish for up to 30 s, and the log rotates at `logMaxBytes` |
+| jev-router | `SIGHUP` re-reads and validates the config, and keeps the old one if the new one is invalid. A bad config at startup lists every problem | Session tiers persist in a state file (hashed keys, no prompt text, seven-day expiry), so a restart doesn't move live sessions | A long-running local service on macOS or Linux: `jev-router setup` installs a launchd agent or a systemd user unit with the keys from the env file, or run `serve --ui 4100` in a terminal. `launch claude` starts a router for one session if none is running. `SIGTERM` lets streams finish for up to 30 s, and the log rotates at `logMaxBytes` |
 | LiteLLM | Models and routers change through its API and UI when a database is attached (docs); reloading a YAML config: not reviewed | Session-affinity pins live in its cache with an idle TTL (docs) | A gateway you deploy and operate, with Docker images (docs) |
 | Jevonian | A JSON config file and the dashboard; in our run, CLI edits took effect only after a restart | Routing state in memory; the ledger on disk | A LaunchAgent on macOS, in the foreground elsewhere (docs) |
 | gargpratyush/jev-router | Environment variables and `src/config.mjs`, read at launch | In memory for each launch; the last 20 decisions per session in temporary files for seven days | Starts with each `jev-claude` or `jev-codex` session; nothing to keep running |
@@ -200,16 +200,15 @@ The table lists what each router exposes on the machine it runs on, from its sou
 
 | Project | Install | Runtime |
 | --- | --- | --- |
-| jev-router | `npm install -g github:dirien/jev-router#semver:^1` on any macOS or Linux machine; keys in `~/.config/jev-router/env` (mode 0600) or the shell environment. The Docker Sandboxes kit is optional | Node.js 22 or newer, no runtime dependencies |
+| jev-router | `npx github:dirien/jev-router setup`, or `npm install -g github:dirien/jev-router#semver:^1` and `jev-router setup`, on any macOS or Linux machine; setup asks for the keys and saves them in `~/.config/jev-router/env` (mode 0600). The Docker Sandboxes kit is optional | Node.js 22 or newer, no runtime dependencies |
 | LiteLLM | `uv tool install 'litellm[proxy]'`, `pip`, or its Docker image | Python; 108 packages and 564 MB in our install |
 | Jevonian | `npm install -g jevonian` | Node.js 22 or newer, five runtime dependencies; AGPL-3.0 |
 | gargpratyush/jev-router | `npm install -g jev-router`, with the Jev key in `~/.jev-router.env`. That npm package is this project, not ours | Node.js 20.12 or newer, one runtime dependency |
 | Switchboard | `npm install -g @ruban24/switchboard`, `brew install ruban-24/tap/switchboard` or `npx`; `switchboard init` asks for the Jev key | Node.js 22.18 or newer, three runtime dependencies; macOS and Linux |
 
-With jev-router installed, the everyday setup is a router on the same machine as the agent. Run
-`jev-router serve --ui 4100 --env-file ~/.config/jev-router/env`, or install the service template, then point Claude
-Code at it with `eval "$(jev-router env claude)"` or the same variables in `~/.claude/settings.json`. The live view is
-at `http://127.0.0.1:4100`.
+The everyday setup is a router on the same machine as the agent. `jev-router setup` runs it as a service and points
+Claude Code's `~/.claude/settings.json` at it; by hand, run `jev-router serve --ui 4100` and point Claude Code at it
+with `eval "$(jev-router env claude)"`. The live view is at `http://127.0.0.1:4100`.
 
 ### Maturity
 
