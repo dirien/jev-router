@@ -940,6 +940,10 @@ test('with no env file named, serve, launch, env and doctor load $XDG_CONFIG_HOM
   assert.equal((await serving.done).code, 0);
   assert.ok(!`${serving.out.stdout}${serving.out.stderr}${launched.stderr}${checked.stdout}`.includes(fileKey), 'a key reached the output');
 
+  const off = await run(['env', 'claude', '--port', '4555'], { ...box.env, JEV_ROUTER_ENV_FILE: '/dev/null' });
+  assert.equal(off.code, 0, off.stderr);
+  assert.doesNotMatch(off.stdout, /x-jev-router-token/, 'JEV_ROUTER_ENV_FILE=/dev/null turns the env file off');
+
   const named = join(box.root, 'named.env');
   writeFileSync(named, 'JEV_ROUTER_PORT=4999\n');
   const other = await run(['env', 'claude', '--env-file', named], box.env);

@@ -2,25 +2,39 @@
 // the Jev client (against a fake fetch), config validation, session state, usage accounting and the report.
 
 import assert from 'node:assert/strict';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { parseEnv } from 'node:util';
-import { changeSettingsEnv, settingsBlock } from '../src/claude.mjs';
+import { changeSettingsEnv, readSettings, settingsBlock, settingsSet } from '../src/claude.mjs';
 import { loadConfig, validateConfig } from '../src/config.mjs';
-import { quoteEnvValue, setEnvValues } from '../src/envfile.mjs';
+import { envFileFor, loadEnvFile, quoteEnvValue, setEnvValues } from '../src/envfile.mjs';
+import { writeFileAtomic } from '../src/files.mjs';
 import { commandVersion, installSpec, LEGACY_PACKAGE, npxDirOf, origin, PACKAGE } from '../src/install.mjs';
 import { applyPolicy, buildQuestions, buildState, hardenState, JevClient, tierProbabilities } from '../src/jev.mjs';
 import { appendLogLine } from '../src/logfile.mjs';
 import { clip, describeCode, harness, header, humanTurns, recentTools, stripWrappers, tierTag } from '../src/messages.mjs';
-import { portProblem } from '../src/net.mjs';
+import { parseUiAddress, portProblem } from '../src/net.mjs';
 import { PromptAbort, Prompter, typeKeys } from '../src/prompt.mjs';
 import { report, requestKind, sessionKey, VERSION } from '../src/router.mjs';
 import { findSecrets, mayContainSecret, redactBody, scrub } from '../src/secrets.mjs';
-import { renderService } from '../src/service.mjs';
+import { renderService, startService } from '../src/service.mjs';
 import { hashKey, SessionStore } from '../src/sessions.mjs';
+import { rootProblem } from '../src/setup.mjs';
 import { costOf, UsageTap } from '../src/usage.mjs';
 import { claudeCodeBody, claudeCodeToolTurn, codexBody, jevOptionsAnswer } from './helpers.mjs';
 
@@ -1176,4 +1190,101 @@ test('ports: a port something holds is reported, a free one is not', async () =>
   assert.equal(await portProblem('127.0.0.1', port), 'EADDRINUSE');
   await new Promise((resolve) => server.close(resolve));
   assert.equal(await portProblem('127.0.0.1', port), undefined);
+});
+
+test('root: setup and uninstall refuse root on behalf of another user, through sudo or with their HOME', () => {
+  assert.equal(rootProblem({ uid: 1000, sudoUid: undefined, homeOwner: 1000 }), undefined);
+  assert.equal(rootProblem({ uid: 1000, sudoUid: '1000', homeOwner: 1000 }), undefined, 'SUDO_UID alone, as a user, is fine');
+  assert.equal(rootProblem({ uid: 0, sudoUid: undefined, homeOwner: 0 }), undefined, "root in root's own home");
+  assert.equal(rootProblem({ uid: 0, sudoUid: undefined, homeOwner: undefined }), undefined);
+  assert.equal(rootProblem({ uid: 0, sudoUid: '501', homeOwner: 0 }), 'it runs as root through sudo');
+  assert.equal(rootProblem({ uid: 0, sudoUid: undefined, homeOwner: 501 }), 'it runs as root, but HOME belongs to another user');
+  assert.equal(rootProblem({ uid: undefined, sudoUid: '0', homeOwner: 0 }), undefined, 'Windows has no user ids');
+});
+
+test("service files: $' and $& in paths stay as they are, and a control character is refused", () => {
+  const home = process.env.HOME;
+  process.env.HOME = "/home/o$'neil$&co";
+  try {
+    const args = ['/usr/bin/env', 'jev-router', 'serve', '--config', "/c$'fg$&/config.json"];
+    const plist = renderService('launchd', { args, path: "/p$'a$&th:/usr/bin" });
+    assert.ok(plist.includes("<string>/c$'fg$&amp;/config.json</string>"), plist);
+    assert.ok(plist.includes("<string>/p$'a$&amp;th:/usr/bin</string>"));
+    assert.ok(plist.includes("<string>/home/o$'neil$&amp;co/Library/Logs/jev-router/router.err.log</string>"));
+    const unit = renderService('systemd', { args, path: "/p$'a$&th:/usr/bin" });
+    assert.match(unit, /^ExecStart=\/usr\/bin\/env jev-router serve --config "\/c\$\$'fg\$\$&\/config\.json"$/m);
+    assert.match(unit, /^Environment="PATH=\/p\$'a\$&th:\/usr\/bin"$/m);
+  } finally {
+    process.env.HOME = home;
+  }
+  assert.throws(
+    () => renderService('systemd', { args: ['/usr/bin/env', 'jev-router', 'serve', '--config', '/a\nb'], path: '/usr/bin' }),
+    /control character/,
+  );
+  assert.throws(() => renderService('launchd', { args: ['/usr/bin/env'], path: '/usr/bin\u0000' }), /control character/);
+  assert.throws(() => parseUiAddress('127.0.0.1\r:4100'), /--ui takes a port or host:port/);
+  assert.deepEqual(parseUiAddress('[::1]:4100'), { host: '::1', port: 4100 });
+});
+
+test('Jev client: an error never carries the key, whether fetch quotes the header or the server echoes it', async () => {
+  const key = fake('ts-', 'secret-', 'key');
+  const jevCfg = {
+    ...cfg.jev,
+    deadlineMs: 2000,
+    channels: [{ name: 'one', baseUrl: 'https://one.invalid', model: 'm', keyEnv: 'K', timeoutMs: 500 }],
+  };
+  /** @type {FetchLike} */
+  const quoting = async () => {
+    throw new TypeError(`Headers.append: "Bearer ${key}\r" is an invalid header value.`);
+  };
+  const answer = await new JevClient(jevCfg, { K: key }, { fetchImpl: quoting }).decide(stateOf('Add a test'));
+  assert.ok(!answer.ok);
+  assert.equal(answer.error, 'one: the key has characters an HTTP header cannot carry');
+  /** @type {FetchLike} */
+  const echoing = async () => new Response(JSON.stringify({ detail: { message: `bad key ${key}` } }), { status: 401 });
+  const echoed = await new JevClient(jevCfg, { K: key }, { fetchImpl: echoing }).decide(stateOf('Add a test'));
+  assert.ok(!echoed.ok && !echoed.error.includes(key), echoed.ok ? '' : echoed.error);
+  assert.match(echoed.ok ? '' : echoed.error, /HTTP 401 bad key <key>/);
+});
+
+test('settings: a file that is not JSON is named without quoting it, and a symbolic link to a missing file gets that file', () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-settings-`);
+  writeFileSync(`${dir}/settings.json`, '{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-not-json');
+  assert.deepEqual(readSettings(`${dir}/settings.json`), { problem: "it isn't valid JSON" });
+  symlinkSync(`${dir}/target/settings.json`, `${dir}/link.json`);
+  mkdirSync(`${dir}/target`);
+  writeFileAtomic(`${dir}/link.json`, '{}\n', 0o600);
+  assert.ok(lstatSync(`${dir}/link.json`).isSymbolicLink());
+  assert.equal(readFileSync(`${dir}/target/settings.json`, 'utf8'), '{}\n');
+  /** @type {Record<string, unknown>} */
+  const data = { env: { ENABLE_TOOL_SEARCH: true, CLAUDE_CODE_AUTO_COMPACT_WINDOW: 90000 } };
+  assert.deepEqual(changeSettingsEnv(data, { ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }), []);
+  assert.deepEqual(data, { env: { ENABLE_TOOL_SEARCH: true, CLAUDE_CODE_AUTO_COMPACT_WINDOW: 90000 } }, 'values that are not strings stay');
+  assert.deepEqual(settingsSet(data), { ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '90000' });
+});
+
+test('env file: /dev/null turns it off, by either name', () => {
+  const env = { HOME: tmpdir(), XDG_CONFIG_HOME: tmpdir() };
+  assert.equal(envFileFor(undefined, { ...env, JEV_ROUTER_ENV_FILE: '/dev/null' }), undefined);
+  assert.equal(envFileFor('/dev/null', env), undefined);
+  assert.equal(loadEnvFile('/dev/null', env), undefined);
+});
+
+test('launchd: when the agent never loads again, the error says it is unloaded and gives the command that loads it', async () => {
+  const dir = mkdtempSync(`${tmpdir()}/jev-launchd-`);
+  copyFileSync(new URL('./fakes/fake-service.mjs', import.meta.url), `${dir}/launchctl`);
+  chmodSync(`${dir}/launchctl`, 0o755);
+  symlinkSync(process.execPath, `${dir}/node`);
+  const env = { PATH: dir, HOME: dir, FAKE_SERVICE_LOG: `${dir}/service.log`, FAKE_LAUNCHD: 'stuck' };
+  const file = `${dir}/io.github.dirien.jev-router.plist`;
+  const started = Date.now();
+  await assert.rejects(startService('launchd', file, '<plist/>', env, { launchdWaitMs: 1200 }), (/** @type {Error} */ err) => {
+    assert.match(
+      err.message,
+      /^launchd didn't load the agent again within 1 s \(Bootstrap failed: 5: Input\/output error\)\. It is unloaded now/,
+    );
+    assert.ok(err.message.endsWith(`Load it with:\n  launchctl bootstrap gui/${process.getuid?.()} ${file}`), err.message);
+    return true;
+  });
+  assert.ok(Date.now() - started >= 1200, 'it kept trying until the time was up');
 });

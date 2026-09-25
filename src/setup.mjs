@@ -1,29 +1,36 @@
 // `jev-router setup` gets a plain Mac or Linux machine routing. It asks which models Claude Code
 // uses and for the keys they need, checks the Jev key with one call, and only then writes: the
 // config, the env file, a launchd or systemd service, and, once the router answers, Claude Code's
-// settings. It is safe to run again. `jev-router uninstall` undoes it from the manifest it keeps.
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+// settings. It is safe to run again. `jev-router uninstall` (uninstall.mjs) undoes it from the
+// manifest setup keeps.
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
-  CLAUDE_SETTINGS,
   changeSettingsEnv,
+  claudeCredentials,
   claudeVars,
-  pointsAtRouter,
+  credentialsInWords,
+  foreignBaseUrl,
+  hasTokenLine,
   readSettings,
   settingsBlock,
-  withoutHeader,
+  settingsSet,
   writeSettings,
 } from './claude.mjs';
 import { loadConfig } from './config.mjs';
-import { envFilePath, loadEnvFile, looseFile, readEnvFile, saveEnvValues } from './envfile.mjs';
+import { agentEnv, envFilePath, loadEnvFile, looseFile, readEnvFile, saveEnvValues } from './envfile.mjs';
 import {
   ANTHROPIC_ONLY_CONFIG,
   claudeSettingsPath,
   configFile,
   DEFAULT_CONFIG,
   envValue,
+  errorCode,
   errorMessage,
+  hasControlCharacter,
+  NO_ENV_FILE,
   namedLogFile,
   packaged,
   routerLogPath,
@@ -40,11 +47,10 @@ import {
   legacyInstall,
   npmInstall,
   origin,
-  PACKAGE,
   sameFile,
 } from './install.mjs';
 import { JevClient, SAMPLE_STATE } from './jev.mjs';
-import { clientHost, isLoopback, parsePort, parseUiAddress, portProblem, probe, TOKEN_HEADER, UI_PORT } from './net.mjs';
+import { clientHost, isLoopback, parsePort, parseUiAddress, portProblem, probe, UI_PORT } from './net.mjs';
 import { PromptAbort, Prompter } from './prompt.mjs';
 import { VERSION } from './router.mjs';
 import {
@@ -56,13 +62,12 @@ import {
   renderService,
   serviceFile,
   startService,
-  stopService,
 } from './service.mjs';
 
 /** @import { Config, JevChannel } from './types.js' */
-/** @import { SettingsChange } from './claude.mjs' */
+/** @import { Credential, SettingsChange } from './claude.mjs' */
 /** @import { Origin } from './install.mjs' */
-/** @import { Manager } from './service.mjs' */
+/** @import { Manager, ManagerChoice } from './service.mjs' */
 
 /**
  * @typedef {object} SetupOptions
@@ -80,6 +85,13 @@ import {
  *   `created`: setup made the settings file, so uninstall may remove it once it's empty again
  */
 
+/**
+ * @typedef {object} Gateway another gateway Claude Code goes to, and the credentials it sends there
+ * @property {string} file Claude Code's settings file
+ * @property {Array<{ url: string, where: string }>} bases base URLs, in settings or this shell, that lead elsewhere
+ * @property {Credential[]} credentials what Claude Code would carry to the router, and the router to Anthropic
+ */
+
 /** @type {Record<'claude' | 'ollama', { file: string, what: string }>} */
 const MODELS = {
   claude: { file: ANTHROPIC_ONLY_CONFIG, what: 'Claude only: Haiku 4.5, Sonnet 5 and Opus 5.5' },
@@ -91,6 +103,8 @@ const KEY_NAMES = { TYPESAFE_API_KEY: 'TypeSafe', OPENROUTER_API_KEY: 'OpenRoute
 const KEY_PLACES = { TYPESAFE_API_KEY: 'console.typesafe.ai', OPENROUTER_API_KEY: 'openrouter.ai', OLLAMA_API_KEY: 'ollama.com' };
 /** How long setup waits for the service's router, in seconds; JEV_ROUTER_SETUP_WAIT changes it. */
 const WAIT_SECONDS = 15;
+/** The router settings a service reads from the env file, so that every command finds the router. */
+const ROUTER_VARIABLES = ['JEV_ROUTER_HOST', 'JEV_ROUTER_PORT'];
 
 /** @param {string} text */
 const say = (text) => process.stderr.write(text);
@@ -100,9 +114,15 @@ const keyName = (name) => KEY_NAMES[name] ?? name;
  * @param {string[]} items
  * @param {string} [last] the word before the last item
  */
-const inWords = (items, last = 'and') => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} ${last} ${items.at(-1)}`);
+export const inWords = (items, last = 'and') =>
+  items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} ${last} ${items.at(-1)}`;
 /** @param {string[]} items */
 const orWords = (items) => inWords(items, 'or');
+/**
+ * Whether a key can't be right: no key has a space or a control character, and an HTTP header can't carry one.
+ * @param {string} value
+ */
+const oddKey = (value) => /\s/.test(value) || hasControlCharacter(value);
 
 /**
  * @typedef {object} Plan everything setup asked and found, before it writes anything
@@ -112,6 +132,7 @@ const orWords = (items) => inWords(items, 'or');
  * @property {string} envFile
  * @property {Record<string, string>} saved the variables the env file sets now
  * @property {Record<string, string>} keys the keys to save
+ * @property {Record<string, string>} routerVariables JEV_ROUTER_HOST and JEV_ROUTER_PORT from this shell, to save
  * @property {string} host
  * @property {number} port
  * @property {string} url
@@ -120,6 +141,7 @@ const orWords = (items) => inWords(items, 'or');
  * @property {string} logFile
  * @property {Origin} origin
  * @property {string} [installed] the global jev-router on PATH, outside npx's cache
+ * @property {Gateway} gateway
  * @property {ServicePlan} service
  */
 /**
@@ -133,6 +155,47 @@ const orWords = (items) => inWords(items, 'or');
  * @property {{ replaceForeign: boolean } | { skip: string }} [settings] `skip` says why they stay as they are
  */
 /** @typedef {{ path: string, onPath: boolean }} Command a global jev-router, and whether it's on PATH */
+/**
+ * @typedef {object} SettingsOutcome what happened to Claude Code's settings
+ * @property {string} text
+ * @property {boolean} pointed whether Claude Code uses the router now
+ * @property {boolean} [changed] whether the settings file changed
+ */
+
+/**
+ * Why setup and uninstall won't run as root on someone else's behalf: through sudo, or with another
+ * user's HOME, they would leave files owned by root in that user's home, and a service in the
+ * wrong user's session.
+ * @param {{ uid?: number, sudoUid?: string, homeOwner?: number }} who the process's user id, SUDO_UID, and who owns HOME
+ * @returns {string | undefined} the problem, or undefined when there's none
+ */
+export function rootProblem({ uid, sudoUid, homeOwner }) {
+  if (uid !== 0) return undefined;
+  if (sudoUid) return 'it runs as root through sudo';
+  if (homeOwner !== undefined && homeOwner !== 0) return 'it runs as root, but HOME belongs to another user';
+  return undefined;
+}
+
+/**
+ * The message that stops setup or uninstall as root on someone else's behalf, if this is that case.
+ * @param {string} command `setup` or `uninstall`
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string | undefined}
+ */
+export function refuseRoot(command, env) {
+  let homeOwner;
+  try {
+    homeOwner = statSync(homedir()).uid;
+  } catch {
+    // no HOME to own: the other checks decide
+  }
+  const problem = rootProblem({ uid: process.getuid?.(), sudoUid: envValue(env, 'SUDO_UID'), homeOwner });
+  if (!problem) return undefined;
+  return (
+    `jev-router: ${command} won't run here: ${problem}, so it would leave files owned by root in your home. ` +
+    `Run it as your own user, without sudo: jev-router ${command}\n`
+  );
+}
 
 /**
  * `jev-router setup`: asks, checks the Jev key, then writes. Returns the exit code.
@@ -141,6 +204,11 @@ const orWords = (items) => inWords(items, 'or');
  * @returns {Promise<number>}
  */
 export async function runSetup(options, env) {
+  const refusal = refuseRoot('setup', env) ?? refuseNoEnvFile(env);
+  if (refusal) {
+    say(refusal);
+    return 1;
+  }
   const prompter = options.yes ? undefined : new Prompter(process.stdin, process.stderr);
   const stop = new AbortController();
   const interrupt = () => {
@@ -152,6 +220,8 @@ export async function runSetup(options, env) {
   try {
     say(`jev-router ${VERSION} setup\n\n`);
     plan = await ask(options, env, prompter, stop.signal);
+    // Ctrl-C after the last question still means nothing gets written.
+    if (stop.signal.aborted) throw new PromptAbort('interrupted', 130);
   } catch (err) {
     if (!(err instanceof PromptAbort)) throw err;
     say(
@@ -164,7 +234,18 @@ export async function runSetup(options, env) {
     process.off('SIGINT', interrupt);
     prompter?.close();
   }
+  // From here the first write comes before anything else can run, so a Ctrl-C can't split it.
   return plan ? carryOut(plan, env) : 1;
+}
+
+/**
+ * The message for JEV_ROUTER_ENV_FILE=/dev/null, which turns the env file off: setup has nowhere to save the keys.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string | undefined}
+ */
+function refuseNoEnvFile(env) {
+  if (envFilePath(env) !== NO_ENV_FILE) return undefined;
+  return `jev-router: JEV_ROUTER_ENV_FILE is ${NO_ENV_FILE}, which turns the env file off, so setup has nowhere to save the keys. Unset it, then run setup again.\n`;
 }
 
 /**
@@ -178,20 +259,25 @@ export async function runSetup(options, env) {
  */
 async function ask(options, env, prompter, signal) {
   const envFile = envFilePath(env);
-  if (existsSync(envFile)) for (const warning of loadEnvFile(undefined, env)?.warnings ?? []) say(`note: ${warning}\n`);
+  const loaded = existsSync(envFile) ? loadEnvFile(undefined, env) : undefined;
+  for (const warning of loaded?.warnings ?? []) say(`note: ${warning}\n`);
   const { values: saved } = readEnvFile(envFile);
-  const manager = chooseManager(options.service, env);
-  if (!manager.manager && options.service !== 'auto' && options.service !== 'none')
-    throw new Error(`--service ${options.service}: ${manager.why}`);
+  const choice = chooseManager(options.service, env);
+  if (!choice.manager && options.service !== 'auto' && options.service !== 'none')
+    throw new Error(`--service ${options.service}: ${choice.why}`);
   const { cfg, configPath, configFrom } = await chooseConfig(options, env, prompter);
-  const plan = routerPlan(cfg, env, saved);
-  const keys = await collectKeys({ cfg, env, saved, envFile, prompter, signal });
+  const router = routerPlan(cfg, env, saved);
+  const odd = [configPath, envFile, router.logFile].find(hasControlCharacter);
+  if (odd !== undefined) throw new Error(`setup can't put ${JSON.stringify(odd)} in a service file: it has a control character`);
+  const keys = await collectKeys({ cfg, env, saved, prompter, signal });
   if (!keys) return undefined;
+  // What Claude Code starts with: the shell's variables, without the ones the env file added for the router.
+  const gateway = gatewayCheck(router, env, agentEnv(env, loaded));
   /** @type {Plan} */
-  const full = { ...plan, cfg, configPath, configFrom, envFile, saved, keys, origin: origin(VERSION), service: manager };
-  full.installed = installedCommand(env);
-  if (manager.manager) full.service = await planService(full, manager.manager, options, env, prompter);
-  return full;
+  const plan = { ...router, cfg, configPath, configFrom, envFile, saved, keys, origin: origin(VERSION), gateway, service: choice };
+  plan.installed = installedCommand(env);
+  if (choice.manager) plan.service = await planService(plan, choice, options, env, prompter);
+  return plan;
 }
 
 /**
@@ -233,8 +319,9 @@ async function askModels(prompter) {
 
 /**
  * Where the service's router will listen, and what else it will see: the config, overridden by
- * JEV_ROUTER_HOST and JEV_ROUTER_PORT from here, which the service gets as flags; the router token
- * from the env file or the config, the only places a service reads it from.
+ * JEV_ROUTER_HOST and JEV_ROUTER_PORT, which go into the env file when this shell sets them, so the
+ * service and every other command read the same address; the router token from the env file or the
+ * config, the only places a service reads it from.
  * @param {Config} cfg
  * @param {NodeJS.ProcessEnv} env
  * @param {Record<string, string>} saved
@@ -247,7 +334,66 @@ function routerPlan(cfg, env, saved) {
   parseUiAddress(ui); // stops here on a bad value
   const token = (Object.hasOwn(saved, 'JEV_ROUTER_TOKEN') ? saved.JEV_ROUTER_TOKEN : cfg.token) || undefined;
   const logFile = namedLogFile(undefined, env) ?? routerLogPath(env);
-  return { host, port, url: `http://${clientHost(host)}:${port}`, ui, token, logFile };
+  /** @type {Record<string, string>} */
+  const routerVariables = {};
+  for (const name of ROUTER_VARIABLES) {
+    const value = envValue(env, name);
+    if (value !== undefined && saved[name] !== value) routerVariables[name] = value;
+  }
+  return { host, port, url: `http://${clientHost(host)}:${port}`, ui, token, logFile, routerVariables };
+}
+
+/**
+ * Another gateway that Claude Code goes to, from its settings file or this shell, other than the
+ * router, Anthropic, or the router address setup wrote before, and the credentials Claude Code
+ * would carry. Behind the router, those credentials would go to Anthropic.
+ * @param {{ host: string, port: number }} router
+ * @param {NodeJS.ProcessEnv} env
+ * @param {NodeJS.ProcessEnv} shell what Claude Code starts with
+ * @returns {Gateway}
+ */
+function gatewayCheck(router, env, shell) {
+  const file = claudeSettingsPath(env);
+  const read = readSettings(file);
+  const data = 'problem' in read ? {} : read.data;
+  const own = readManifest(env)?.claude?.env?.ANTHROPIC_BASE_URL?.value;
+  const places = [
+    { url: settingsBlock(data).ANTHROPIC_BASE_URL, where: file },
+    { url: envValue(shell, 'ANTHROPIC_BASE_URL'), where: 'this shell' },
+  ];
+  const bases = places.filter(
+    /** @returns {base is { url: string, where: string }} */ (base) =>
+      base.url !== undefined && base.url !== own && foreignBaseUrl(base.url, router),
+  );
+  return { file, bases, credentials: bases.length ? claudeCredentials(shell, data, file) : [] };
+}
+
+/**
+ * Whether routing Claude Code would send another gateway's credentials to Anthropic.
+ * @param {Gateway} gateway
+ */
+const leaks = (gateway) => gateway.bases.length > 0 && gateway.credentials.length > 0;
+
+/**
+ * Why setup doesn't point Claude Code at the router when it would carry another gateway's
+ * credentials there, and what to remove first.
+ * @param {Gateway} gateway
+ */
+function leakText({ bases, credentials }) {
+  /** @type {Map<string, string[]>} */
+  const byPlace = new Map();
+  for (const { name, where } of [...bases.map((base) => ({ name: 'ANTHROPIC_BASE_URL', where: base.where })), ...credentials])
+    byPlace.set(where, [...new Set([...(byPlace.get(where) ?? []), name])]);
+  const removals = [...byPlace].map(([where, names]) =>
+    where === 'this shell' ? `${inWords(names)} from your shell (its startup files, such as ~/.zshrc)` : `${inWords(names)} from ${where}`,
+  );
+  const targets = inWords(bases.map((base) => `${base.url} (ANTHROPIC_BASE_URL in ${base.where})`));
+  const newShell = byPlace.has('this shell') ? ', open a new shell' : '';
+  return (
+    `Claude Code sends its requests to ${targets}, with ${credentialsInWords(credentials)}. ` +
+    `Behind the router it would send those credentials to Anthropic, so setup doesn't point Claude Code at the router: ` +
+    `remove ${inWords(removals)}${newShell}, then run setup again.`
+  );
 }
 
 /**
@@ -255,7 +401,6 @@ function routerPlan(cfg, env, saved) {
  * @property {Config} cfg
  * @property {NodeJS.ProcessEnv} env
  * @property {Record<string, string>} saved
- * @property {string} envFile
  * @property {Prompter | undefined} prompter
  * @property {AbortSignal} signal
  */
@@ -269,17 +414,29 @@ async function collectKeys(context) {
   const { cfg, env, saved } = context;
   if (!cfg.jev.channels.length) throw new Error('the config has no Jev channels (jev.channels), so setup has no key to ask for');
   const others = upstreamKeys(cfg, 'anthropic');
-  if (!context.prompter) {
-    const missing = [...others].filter(([name]) => !env[name]).map(([name, tiers]) => `${name} for Claude Code's ${inWords(tiers)} tier`);
-    if (!cfg.jev.channels.some((ch) => env[ch.keyEnv])) missing.unshift(`${orWords(cfg.jev.channels.map((ch) => ch.keyEnv))} for Jev`);
-    if (missing.length) throw new Error(`setup --yes takes the keys from the environment. Set ${inWords(missing)}.`);
-  }
+  if (!context.prompter) keysFromEnvironment(cfg, env, others);
   const jev = await workingJevKey(context);
   if (!jev) return undefined;
   /** @type {Record<string, string>} */
   const keys = { [jev.channel.keyEnv]: jev.value };
   for (const [name, tiers] of others) keys[name] = await upstreamKey(context, name, tiers);
   return Object.fromEntries(Object.entries(keys).filter(([name, value]) => saved[name] !== value));
+}
+
+/**
+ * Stops `setup --yes` early when a key it needs isn't in the environment, or can't be a key.
+ * @param {Config} cfg
+ * @param {NodeJS.ProcessEnv} env
+ * @param {Map<string, string[]>} others the keys of Claude Code's tiers besides Jev's
+ */
+function keysFromEnvironment(cfg, env, others) {
+  const missing = [...others].filter(([name]) => !env[name]).map(([name, tiers]) => `${name} for Claude Code's ${inWords(tiers)} tier`);
+  const jev = cfg.jev.channels.find((ch) => env[ch.keyEnv]);
+  if (!jev) missing.unshift(`${orWords(cfg.jev.channels.map((ch) => ch.keyEnv))} for Jev`);
+  if (missing.length) throw new Error(`setup --yes takes the keys from the environment. Set ${inWords(missing)}.`);
+  const odd = [...(jev ? [jev.keyEnv] : []), ...others.keys()].filter((name) => oddKey(env[name] ?? ''));
+  if (odd.length)
+    throw new Error(`${inWords(odd)} holds a space or a control character, which no key has. Check the variable, then run setup again.`);
 }
 
 /**
@@ -321,6 +478,10 @@ async function workingJevKey(context) {
   say(`Jev decides which model each message needs. It takes a key from ${orWords(places)}; one is enough.\n`);
   for (let retry = false; ; retry = true) {
     const jev = prompter ? await askJevKey(context, prompter, retry) : jevKeyFromEnv(context);
+    if (prompter && oddKey(jev.value)) {
+      prompter.say('That key has a space or a control character in it, which no key has. Paste it again.\n');
+      continue;
+    }
     say(`Checking the ${keyName(jev.channel.keyEnv)} key with one Jev call (about $0.00003)... `);
     const client = new JevClient(
       { ...cfg.jev, deadlineMs: 15000, channels: [{ ...jev.channel, timeoutMs: 10000 }] },
@@ -403,9 +564,9 @@ async function upstreamKey(context, name, tiers) {
   if (!prompter) return /** @type {string} */ (context.env[name]);
   const what = `${keyName(name)} API key${KEY_PLACES[name] ? ` (${KEY_PLACES[name]})` : ''} for Claude Code's ${inWords(tiers)} tier${tiers.length > 1 ? 's' : ''}`;
   for (;;) {
-    const value = await prompter.secret(current ? `${what} [${current.where}; press Enter to keep it]: ` : `${what}: `);
-    if (value || current) return value || /** @type {{ value: string }} */ (current).value;
-    prompter.say(`That tier needs ${name}.\n`);
+    const value = (await prompter.secret(current ? `${what} [${current.where}; press Enter to keep it]: ` : `${what}: `)) || current?.value;
+    if (value && !oddKey(value)) return value;
+    prompter.say(value ? 'That key has a space or a control character in it, which no key has.\n' : `That tier needs ${name}.\n`);
   }
 }
 
@@ -414,32 +575,27 @@ async function upstreamKey(context, name, tiers) {
  * jev-router it runs (installing one for good when this copy runs from npx), and whether Claude
  * Code's settings may point at it.
  * @param {Plan} plan
- * @param {Manager} manager
+ * @param {ManagerChoice} choice
  * @param {SetupOptions} options
  * @param {NodeJS.ProcessEnv} env
  * @param {Prompter | undefined} prompter
  * @returns {Promise<ServicePlan>}
  */
-async function planService(plan, manager, options, env, prompter) {
+async function planService(plan, choice, options, env, prompter) {
+  const manager = /** @type {Manager} */ (choice.manager);
   const question = options.claudeSettings
     ? 'Start jev-router in the background when you log in, and send every Claude Code session through it?'
     : 'Start jev-router in the background when you log in?';
   if (prompter) say('\n');
   if (prompter && !(await prompter.confirm(question, true))) return { why: 'you chose to start it yourself' };
-  const file = serviceFile(manager, env);
+  const file = serviceFile(manager, choice.configHome);
   const busy = existsSync(file) ? undefined : await portProblem(plan.host, plan.port);
   if (busy) return { manager, why: '', file, busy: { problem: busy, version: (await probe(plan.url)).health?.version } };
   const runs = await chooseCommand(plan, env, prompter);
   if ('none' in runs) return { why: runs.none };
-  return {
-    manager,
-    why: '',
-    file,
-    ...runs,
-    settings: options.claudeSettings
-      ? await planSettings(plan, env, prompter)
-      : { skip: "Claude Code's settings are unchanged (--no-claude-settings)." },
-  };
+  const unchanged = `Claude Code's settings are unchanged (--no-claude-settings).${leaks(plan.gateway) ? ` ${leakText(plan.gateway)}` : ''}`;
+  const settings = options.claudeSettings ? await planSettings(plan, prompter) : { skip: unchanged };
+  return { manager, why: '', file, ...runs, settings };
 }
 
 /**
@@ -470,22 +626,29 @@ async function chooseCommand(plan, env, prompter) {
 }
 
 /**
- * Whether setup may point Claude Code's settings at the router. A base URL that goes somewhere
- * else, such as a company gateway, is replaced only on a yes; --yes keeps it.
+ * Whether setup may point Claude Code's settings at the router. Never when Claude Code goes to
+ * another gateway with credentials for it; when it goes elsewhere without them, only on a yes, and
+ * --yes keeps it.
  * @param {Plan} plan
- * @param {NodeJS.ProcessEnv} env
  * @param {Prompter | undefined} prompter
  * @returns {Promise<{ replaceForeign: boolean } | { skip: string }>}
  */
-async function planSettings(plan, env, prompter) {
-  const file = claudeSettingsPath(env);
-  const read = readSettings(file);
-  const base = 'problem' in read ? undefined : settingsBlock(read.data).ANTHROPIC_BASE_URL;
-  if (!base || base === plan.url || pointsAtRouter(base, plan, {})) return { replaceForeign: false };
-  say(`Claude Code's settings (${file}) send it to ${base}.\n`);
+async function planSettings(plan, prompter) {
+  const { gateway } = plan;
+  if (leaks(gateway)) return { skip: leakText(gateway) };
+  if (!gateway.bases.length) return { replaceForeign: false };
+  const [settings, shell] = [
+    gateway.bases.find((base) => base.where !== 'this shell'),
+    gateway.bases.find((base) => base.where === 'this shell'),
+  ];
+  say(
+    settings
+      ? `Claude Code's settings (${gateway.file}) send it to ${settings.url}${shell ? `, and this shell to ${shell.url}` : ''}.\n`
+      : `This shell sends Claude Code to ${shell?.url} (ANTHROPIC_BASE_URL). The router's address in ${gateway.file} would override that in every session.\n`,
+  );
   if (!prompter) say('--yes keeps that. To send Claude Code through the router instead, run setup without --yes and answer yes.\n');
-  if (prompter && (await prompter.confirm('Replace that with the router?', false))) return { replaceForeign: true };
-  return { skip: `Claude Code's settings are unchanged: they keep sending it to ${base}.` };
+  else if (await prompter.confirm('Replace that with the router?', false)) return { replaceForeign: true };
+  return { skip: `Claude Code's settings are unchanged: it keeps sending its requests to ${(settings ?? shell)?.url}.` };
 }
 
 /**
@@ -518,15 +681,15 @@ async function carryOut(plan, env) {
     files: { config: plan.configPath, env: plan.envFile, log: plan.logFile },
     claude: readManifest(env)?.claude,
   };
-  const settings =
-    service.settings && 'skip' in service.settings ? { text: service.settings.skip, pointed: false } : pointClaude(plan, manifest, env);
-  writeManifest(env, manifest);
-  finishWithService(plan, command, settings);
+  const skip = service.settings && 'skip' in service.settings ? service.settings.skip : undefined;
+  const settings = skip ? { file: '', outcome: { text: skip, pointed: false }, write: () => undefined } : pointClaude(plan, manifest, env);
+  writeManifest(env, manifest); // first: whatever happens to settings.json next, uninstall can undo it
+  finishWithService(plan, command, writeClaude(plan, settings));
   return 0;
 }
 
 /**
- * Writes the config for a machine that has none, and the keys that changed.
+ * Writes the config for a machine that has none, and the keys and router settings that changed.
  * @param {Plan} plan
  */
 function writeFiles(plan) {
@@ -535,10 +698,12 @@ function writeFiles(plan) {
     say(`Wrote ${plan.configPath} (${plan.configFrom === ANTHROPIC_ONLY_CONFIG ? MODELS.claude.what : MODELS.ollama.what}).\n`);
   } else say(`Kept ${plan.configPath}.\n`);
   const names = Object.keys(plan.keys);
+  const router = Object.entries(plan.routerVariables).map(([name, value]) => `${name}=${value}`);
   const loose = existsSync(plan.envFile) && looseFile(plan.envFile, statSync(plan.envFile).mode);
-  if (names.length || loose) saveEnvValues(plan.envFile, plan.keys); // the rewrite leaves it at mode 0600
+  if (names.length || router.length || loose) saveEnvValues(plan.envFile, { ...plan.keys, ...plan.routerVariables }); // mode 0600
   if (names.length) say(`Saved ${inWords(names)} in ${plan.envFile}, readable only by you.\n`);
   else say(`Kept the keys in ${plan.envFile}${loose ? ', and made it readable only by you' : ''}.\n`);
+  if (router.length) say(`Saved ${inWords(router)} there too, so every jev-router command finds the router.\n`);
 }
 
 /**
@@ -593,6 +758,18 @@ async function serviceCommand(plan, env) {
 }
 
 /**
+ * How long to wait for the service's router: JEV_ROUTER_SETUP_WAIT seconds, or 15.
+ * @param {NodeJS.ProcessEnv} env
+ */
+function waitSeconds(env) {
+  const given = envValue(env, 'JEV_ROUTER_SETUP_WAIT');
+  const seconds = Number(given);
+  if (given === undefined || (Number.isFinite(seconds) && seconds > 0)) return given === undefined ? WAIT_SECONDS : seconds;
+  say(`note: JEV_ROUTER_SETUP_WAIT takes a number of seconds above 0, not ${JSON.stringify(given)}, so setup waits ${WAIT_SECONDS} s.\n`);
+  return WAIT_SECONDS;
+}
+
+/**
  * Writes the service file, (re)starts the service, and waits until its router answers.
  * @param {Plan} plan
  * @param {Manager} manager
@@ -603,6 +780,7 @@ async function serviceCommand(plan, env) {
  */
 async function runService(plan, manager, file, command, env) {
   const path = [...new Set([dirname(command), dirname(process.execPath), '/usr/bin', '/bin'])].join(':');
+  // The host and port are in the env file, which the service reads like every other command.
   const args = [
     '/usr/bin/env',
     'jev-router',
@@ -616,9 +794,8 @@ async function runService(plan, manager, file, command, env) {
     '--log-file',
     plan.logFile,
   ];
-  if (envValue(env, 'JEV_ROUTER_HOST')) args.push('--host', plan.host);
-  if (envValue(env, 'JEV_ROUTER_PORT')) args.push('--port', String(plan.port));
   if (manager === 'launchd') mkdirSync(dirname(launchdErrorLog()), { recursive: true, mode: 0o700 });
+  const wait = waitSeconds(env);
   const since = Date.now();
   try {
     await startService(manager, file, renderService(manager, { args, path }), env);
@@ -627,12 +804,11 @@ async function runService(plan, manager, file, command, env) {
     return false;
   }
   say(`Started the ${MANAGER_NAMES[manager]} ${file}.\nWaiting for the router at ${plan.url}... `);
-  const waitSeconds = Number(envValue(env, 'JEV_ROUTER_SETUP_WAIT') ?? WAIT_SECONDS);
-  if (await answers(plan.url, since, waitSeconds * 1000)) {
+  if (await answers(plan.url, since, wait * 1000)) {
     say('it answers.\n');
     return true;
   }
-  say(`it didn't answer within ${waitSeconds} s.\nSee what went wrong in: ${logHint(manager)}\nClaude Code's settings are unchanged.\n`);
+  say(`it didn't answer within ${wait} s.\nSee what went wrong in: ${logHint(manager)}\nClaude Code's settings are unchanged.\n`);
   return false;
 }
 
@@ -654,66 +830,85 @@ async function answers(url, since, ms) {
 }
 
 /**
- * Points Claude Code's settings at the router: the variables `claudeVars` gives, in the `env` block,
- * with a backup of the file first. What changed goes into the manifest.
+ * What pointing Claude Code's settings at the router would change: the variables `claudeVars`
+ * gives, merged into the `env` block, recorded in the manifest, and a write to run once the
+ * manifest is saved. Variables whose value isn't a string stay as they are.
  * @param {Plan} plan
  * @param {Manifest} manifest changed in place
  * @param {NodeJS.ProcessEnv} env
- * @returns {{ text: string, pointed: boolean, changed?: boolean }} what happened, whether Claude Code now uses the
- *   router, and whether the settings file changed
+ * @returns {{ file: string, outcome: SettingsOutcome, write: () => void }}
  */
 function pointClaude(plan, manifest, env) {
   const file = claudeSettingsPath(env);
   const read = readSettings(file);
-  if ('problem' in read) {
-    const vars = claudeVars({}, plan.url, plan.token && '<your JEV_ROUTER_TOKEN>');
-    return {
-      text: `Setup didn't change ${file}: ${read.problem}. Add this to its "env" block yourself:\n${JSON.stringify(vars, null, 2)}`,
-      pointed: false,
-    };
-  }
-  const block = settingsBlock(read.data);
-  const changes = changeSettingsEnv(read.data, claudeVars(block, plan.url, plan.token));
+  if ('problem' in read) return { file, outcome: { text: byHand(plan, file, read.problem), pointed: false }, write: () => undefined };
+  const before = settingsBlock(read.data);
+  const changes = changeSettingsEnv(read.data, claudeVars(settingsSet(read.data), plan.url, plan.token));
   const earlier = manifest.claude?.file === file ? manifest.claude : undefined;
   const created = earlier?.created ?? (!read.exists && changes.length > 0);
-  manifest.claude = { file, ...(created ? { created } : {}), ...recordChanges(earlier, changes, settingsBlock(read.data)) };
-  if (!changes.length) return { text: `Claude Code's settings (${file}) point at the router already.`, pointed: true };
-  writeSettings(file, read, `${file}.jev-router.bak`);
+  manifest.claude = { file, ...(created ? { created } : {}), ...recordChanges(earlier, changes, before) };
+  if (!changes.length)
+    return {
+      file,
+      outcome: { text: `Claude Code's settings (${file}) point at the router already.`, pointed: true },
+      write: () => undefined,
+    };
   const backup = read.exists ? ` The old file is ${file}.jev-router.bak.` : '';
-  const names = inWords(changes.map((change) => change.name));
-  return { text: `Claude Code's settings (${file}) now send it through the router: set ${names}.${backup}`, pointed: true, changed: true };
+  const text = `Claude Code's settings (${file}) now send it through the router: set ${inWords(changes.map((change) => change.name))}.${backup}`;
+  return { file, outcome: { text, pointed: true, changed: true }, write: () => writeSettings(file, read, `${file}.jev-router.bak`) };
 }
 
 /**
- * The manifest's record of Claude Code's settings after a run: earlier records whose variable still
- * holds what setup wrote, and this run's changes, with the value each replaced. The router token
- * isn't recorded, only that setup added its header line.
+ * Runs the settings write, and says what to add by hand when it fails.
+ * @param {Plan} plan
+ * @param {{ file: string, outcome: SettingsOutcome, write: () => void }} settings
+ * @returns {SettingsOutcome}
+ */
+function writeClaude(plan, { file, outcome, write }) {
+  try {
+    write();
+    return outcome;
+  } catch (err) {
+    const problem = errorCode(err) === 'EACCES' || errorCode(err) === 'EPERM' ? 'permission denied' : errorMessage(err);
+    return { text: byHand(plan, file, `setup can't write it (${problem})`), pointed: false };
+  }
+}
+
+/**
+ * What to add to Claude Code's settings by hand, with a placeholder for the router token.
+ * @param {Plan} plan
+ * @param {string} file
+ * @param {string} problem
+ */
+function byHand(plan, file, problem) {
+  const vars = claudeVars({}, plan.url, plan.token && '<your JEV_ROUTER_TOKEN>');
+  return `Setup didn't change ${file}: ${problem}. Add this to its "env" block yourself:\n${JSON.stringify(vars, null, 2)}`;
+}
+
+/**
+ * The manifest's record of Claude Code's settings after a run: earlier records whose variable held
+ * what setup wrote until this run, and this run's changes. A variable setup changes again keeps the
+ * value it had before setup first changed it. The router token isn't recorded, only whether setup
+ * added its header line.
  * @param {Manifest['claude']} earlier
  * @param {SettingsChange[]} changes
- * @param {Record<string, string>} block the settings after this run
+ * @param {Record<string, string>} before the settings before this run
  * @returns {{ env: Record<string, { value: string, previous?: string }>, tokenHeader?: 'created' | 'added' }}
  */
-function recordChanges(earlier, changes, block) {
+function recordChanges(earlier, changes, before) {
   /** @type {Record<string, { value: string, previous?: string }>} */
-  const records = Object.fromEntries(Object.entries(earlier?.env ?? {}).filter(([name, record]) => block[name] === record.value));
-  let tokenHeader = earlier?.tokenHeader && hasTokenLine(block.ANTHROPIC_CUSTOM_HEADERS) ? earlier.tokenHeader : undefined;
-  for (const { name, before, after } of changes) {
+  const records = Object.fromEntries(Object.entries(earlier?.env ?? {}).filter(([name, record]) => before[name] === record.value));
+  let tokenHeader = earlier?.tokenHeader && hasTokenLine(before.ANTHROPIC_CUSTOM_HEADERS) ? earlier.tokenHeader : undefined;
+  for (const { name, before: was, after } of changes) {
     if (after === undefined) continue;
-    if (name === 'ANTHROPIC_CUSTOM_HEADERS') tokenHeader = tokenHeader === 'created' || before === undefined ? 'created' : 'added';
+    if (name === 'ANTHROPIC_CUSTOM_HEADERS') tokenHeader = tokenHeader === 'created' || was === undefined ? 'created' : 'added';
     else
       records[name] = records[name]
         ? { ...records[name], value: after }
-        : { value: after, ...(before === undefined ? {} : { previous: before }) };
+        : { value: after, ...(was === undefined ? {} : { previous: was }) };
   }
   return tokenHeader ? { env: records, tokenHeader } : { env: records };
 }
-
-/**
- * Whether a header list carries a router token line.
- * @param {string | undefined} headers
- */
-const hasTokenLine = (headers) =>
-  (headers ?? '').split(/\r?\n/).some((line) => line.split(':', 1)[0].trim().toLowerCase() === TOKEN_HEADER);
 
 /**
  * The command that works for this person: `jev-router` when it's installed on PATH, its path when
@@ -728,19 +923,22 @@ function commandForm(plan, global) {
 }
 
 /**
- * The summary for a machine without the service: setup is done, and launch is how to start.
+ * The summary for a machine without the service: setup is done, and launch is how to start, unless
+ * Claude Code carries another gateway's credentials that launch would pass on to Anthropic.
  * @param {Plan} plan
  * @param {NodeJS.ProcessEnv} env
  */
 function finishWithoutService(plan, env) {
   const run = commandForm(plan);
   const leftover = installedServices(env, readManifest(env)?.service)[0];
-  say(
-    `\nDone. There's no background service: ${plan.service.why}.\n` +
+  say(`\nDone. There's no background service: ${plan.service.why}.\n`);
+  if (leaks(plan.gateway)) say(`${leakText(plan.gateway)}\n`);
+  else
+    say(
       `Start Claude Code through the router with: ${run} launch claude\n` +
-      `Watch it live at http://127.0.0.1:${UI_PORT} with: ${run} launch claude --ui ${UI_PORT}\n` +
-      `Check it: ${run} doctor\n`,
-  );
+        `Watch it live at http://127.0.0.1:${UI_PORT} with: ${run} launch claude --ui ${UI_PORT}\n`,
+    );
+  say(`Check it: ${run} doctor\n`);
   if (leftover)
     say(
       `The ${MANAGER_NAMES[leftover.manager]} from an earlier setup is still installed (${leftover.file}); ${run} uninstall removes it.\n`,
@@ -753,20 +951,25 @@ function finishWithoutService(plan, env) {
  * The summary once the service runs.
  * @param {Plan} plan
  * @param {Command} command the global jev-router the service runs
- * @param {{ text: string, pointed: boolean, changed?: boolean }} settings what happened to Claude Code's settings
+ * @param {SettingsOutcome} settings what happened to Claude Code's settings
  */
 function finishWithService(plan, command, { text, pointed, changed }) {
   const run = commandForm(plan, command);
   const ui = /** @type {{ host: string, port: number }} */ (parseUiAddress(plan.ui));
   say(`${text}\n`);
   if (changed) say("Restart any Claude Code session that's already running, so it picks up the settings.\n");
+  const start = pointed
+    ? 'Start Claude Code as usual: claude\n'
+    : leaks(plan.gateway)
+      ? "Claude Code doesn't go through the router until you remove what's named above.\n"
+      : `Start Claude Code through the router with: ${run} launch claude\n`;
   say(
     '\nDone. jev-router runs in the background and starts when you log in.\n' +
       `  Router     ${plan.url}\n` +
       `  Live view  http://${clientHost(ui.host)}:${ui.port}\n` +
       `  Keys       ${plan.envFile}\n` +
       `  Log        ${plan.logFile}\n\n` +
-      (pointed ? 'Start Claude Code as usual: claude\n' : `Start Claude Code through the router with: ${run} launch claude\n`) +
+      start +
       `Check it: ${run} doctor\n` +
       `Undo it: ${run} uninstall\n`,
   );
@@ -809,134 +1012,7 @@ export function readManifest(env) {
  * @param {NodeJS.ProcessEnv} env
  * @param {Manifest} manifest
  */
-function writeManifest(env, manifest) {
+export function writeManifest(env, manifest) {
   const note = 'Written by jev-router setup: what it changed, for jev-router uninstall. It holds no keys.';
   writeFileAtomic(setupManifestPath(env), `${JSON.stringify({ note, ...manifest }, null, 2)}\n`, 0o600);
-}
-
-/**
- * `jev-router uninstall`: stops and removes the service, takes back what setup put into Claude
- * Code's settings, and keeps the config, the keys and the logs. Running it twice is fine.
- * @param {NodeJS.ProcessEnv} env
- * @returns {Promise<number>}
- */
-export async function runUninstall(env) {
-  try {
-    loadEnvFile(undefined, env); // JEV_ROUTER_HOST and JEV_ROUTER_PORT, to tell the router's base URL
-  } catch {
-    // an env file that can't be read changes nothing here
-  }
-  const manifest = readManifest(env);
-  let failed = !undoSettings(manifest, env);
-  const services = installedServices(env, manifest?.service);
-  for (const { manager, file } of services) {
-    const problems = stopService(manager, file, env);
-    say(`Stopped and removed the ${MANAGER_NAMES[manager]} ${file}.\n`);
-    for (const problem of problems) say(`  ${problem}\n`);
-    failed ||= problems.length > 0;
-  }
-  if (!services.length) say('No background service is installed.\n');
-  rmSync(setupManifestPath(env), { force: true });
-  keptFiles(manifest, env);
-  return failed ? 1 : 0;
-}
-
-/**
- * Takes setup's variables back out of Claude Code's settings: what the manifest recorded, where the
- * value is still the one setup wrote; without a manifest, only a base URL that points at the router
- * and gateway settings that hold exactly setup's values.
- * @param {Manifest | undefined} manifest
- * @param {NodeJS.ProcessEnv} env
- * @returns {boolean} false when the settings file couldn't be changed
- */
-function undoSettings(manifest, env) {
-  const file = manifest?.claude?.file ?? claudeSettingsPath(env);
-  const read = readSettings(file);
-  if ('problem' in read) {
-    say(
-      `Couldn't change ${file}: ${read.problem}. If it points Claude Code at the router, remove ANTHROPIC_BASE_URL from its "env" block yourself.\n`,
-    );
-    return false;
-  }
-  const block = settingsBlock(read.data);
-  const values = manifest?.claude ? recordedValues(manifest.claude, block) : guessedValues(block, env);
-  const changes = changeSettingsEnv(read.data, values);
-  if (!changes.length) {
-    say(`Nothing from setup in Claude Code's settings (${file}).\n`);
-    return true;
-  }
-  if (manifest?.claude?.created && !Object.keys(read.data).length) {
-    rmSync(file, { force: true });
-    say(`Removed ${file}, which setup had created. Restart any Claude Code session that's running.\n`);
-    return true;
-  }
-  writeSettings(file, read, `${file}.jev-router.bak`);
-  const restored = changes.filter((c) => c.after !== undefined).map((c) => c.name);
-  const removed = changes.filter((c) => c.after === undefined).map((c) => c.name);
-  say(
-    `Claude Code's settings (${file}): ${[removed.length ? `removed ${inWords(removed)}` : '', restored.length ? `restored ${inWords(restored)}` : ''].filter(Boolean).join('; ')}. ` +
-      `The old file is ${file}.jev-router.bak. Restart any Claude Code session that's running.\n`,
-  );
-  return true;
-}
-
-/**
- * The settings to set or remove to undo what the manifest recorded.
- * @param {NonNullable<Manifest['claude']>} record
- * @param {Record<string, string>} block
- * @returns {Record<string, string | undefined>}
- */
-function recordedValues(record, block) {
-  /** @type {Record<string, string | undefined>} */
-  const values = {};
-  for (const [name, { value, previous }] of Object.entries(record.env ?? {})) if (block[name] === value) values[name] = previous;
-  if (record.tokenHeader && hasTokenLine(block.ANTHROPIC_CUSTOM_HEADERS))
-    values.ANTHROPIC_CUSTOM_HEADERS = withoutHeader(block.ANTHROPIC_CUSTOM_HEADERS, TOKEN_HEADER).join('\n') || undefined;
-  return values;
-}
-
-/**
- * Without a manifest: a base URL that points at the router goes, and so do the gateway settings
- * when they hold exactly setup's values and no other gateway is set.
- * @param {Record<string, string>} block
- * @param {NodeJS.ProcessEnv} env
- * @returns {Record<string, string | undefined>}
- */
-function guessedValues(block, env) {
-  let cfg = { host: '127.0.0.1', port: 4000 };
-  try {
-    cfg = loadConfig(configFile(undefined, env).path);
-  } catch {
-    // the default address is the best guess left
-  }
-  const base = block.ANTHROPIC_BASE_URL;
-  const ours = base !== undefined && pointsAtRouter(base, cfg, env);
-  if (base !== undefined && !ours) return {};
-  /** @type {Record<string, string | undefined>} */
-  const values = ours ? { ANTHROPIC_BASE_URL: undefined } : {};
-  for (const [name, [wanted]] of Object.entries(CLAUDE_SETTINGS)) if (block[name] === wanted) values[name] = undefined;
-  if (hasTokenLine(block.ANTHROPIC_CUSTOM_HEADERS))
-    values.ANTHROPIC_CUSTOM_HEADERS = withoutHeader(block.ANTHROPIC_CUSTOM_HEADERS, TOKEN_HEADER).join('\n') || undefined;
-  return values;
-}
-
-/**
- * Says what uninstall kept, and how to remove it and the command.
- * @param {Manifest | undefined} manifest
- * @param {NodeJS.ProcessEnv} env
- */
-function keptFiles(manifest, env) {
-  const configDir = dirname(userConfigPath(env));
-  const stateDir = dirname(routerLogPath(env));
-  const files = [manifest?.files?.config, manifest?.files?.env ?? envFilePath(env), manifest?.files?.log].filter(
-    /** @returns {file is string} */ (file) => typeof file === 'string',
-  );
-  const outside = files.filter((file) => !file.startsWith(`${configDir}/`) && !file.startsWith(`${stateDir}/`));
-  const all = [configDir, stateDir, ...new Set(outside)].filter((path) => existsSync(path));
-  if (all.length)
-    say(
-      `\nKept your config, keys and logs:\n${all.map((path) => `  ${path}\n`).join('')}` +
-        `To delete them too: rm -rf ${all.map(shellQuote).join(' ')}\n`,
-    );
-  say(`Last step, to remove the jev-router command: npm uninstall -g ${PACKAGE}\n`);
 }

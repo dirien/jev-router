@@ -144,6 +144,19 @@ export function buildQuestions(jev) {
 
 /** @type {ReadonlySet<number | undefined>} */
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+/**
+ * A failed call's result with the channel's key taken out of its error: an error can quote what was
+ * sent, and a server can echo it back.
+ * @template {{ ok: boolean, error?: string }} R
+ * @param {R} result
+ * @param {string | undefined} key
+ * @returns {R}
+ */
+function withoutKey(result, key) {
+  if (result.ok || !key || !result.error?.includes(key)) return result;
+  return { ...result, error: result.error.replaceAll(key, '<key>') };
+}
 /** @type {(ms: number) => Promise<void>} */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -243,7 +256,7 @@ export class JevClient {
       const remaining = deadline - performance.now();
       if (remaining < 150 || signal?.aborted) break;
       stat.calls += 1;
-      const result = await this.#call(ch, payloadState, Math.min(ch.timeoutMs, remaining), signal);
+      const result = withoutKey(await this.#call(ch, payloadState, Math.min(ch.timeoutMs, remaining), signal), ch.key);
       if (result.ok) return { ...result, channel: ch.name, ms: Math.round(performance.now() - started), hardened };
       if (result.aborted) return { ok: false, aborted: true, error: 'client went away', ms: Math.round(performance.now() - started) };
       stat.errors += 1;
@@ -287,11 +300,17 @@ export class JevClient {
       // fetch rejects with the timeout signal's DOMException, or a TypeError whose cause has the socket error code.
       const error = /** @type {Error & { cause?: { code?: string } }} */ (err);
       const timeout = error.name === 'TimeoutError' || error.name === 'AbortError';
+      // A header fetch can't send is quoted whole in the message: say what's wrong without it.
+      const header = !error.cause && /header/i.test(error.message);
       return {
         ok: false,
         timeout,
         network: !timeout,
-        error: timeout ? `timeout after ${timeoutMs} ms` : (error.cause?.code ?? error.message),
+        error: timeout
+          ? `timeout after ${timeoutMs} ms`
+          : header
+            ? 'the key has characters an HTTP header cannot carry'
+            : (error.cause?.code ?? error.message),
       };
     }
     if (!res.ok) return httpFailure(res, text);

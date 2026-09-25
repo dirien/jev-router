@@ -5,7 +5,19 @@
 // configs' Jev channels to a local mock. Nothing touches the real HOME, a service manager or the network.
 
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import net from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -16,6 +28,7 @@ import {
   ask,
   BIN,
   DEFAULT_CONFIG,
+  FAKE_AGENT,
   fake,
   freePort,
   healthz,
@@ -70,7 +83,7 @@ async function setupBox({ tools = ['launchctl', 'systemctl'], installed = true }
     envFile: join(box.config, 'jev-router', 'env'),
     manifest: join(box.config, 'jev-router', 'setup.json'),
     settings: join(box.home, '.claude', 'settings.json'),
-    unit: join(box.config, 'systemd', 'user', 'jev-router.service'),
+    unit: join(box.home, '.config', 'systemd', 'user', 'jev-router.service'), // where the user manager looks
     plist: join(box.home, 'Library', 'LaunchAgents', 'io.github.dirien.jev-router.plist'),
     /** @returns {Array<{ tool: string, args: string[] }>} every call to the fake service tools */
     calls: () =>
@@ -114,6 +127,7 @@ test('setup asks for the models and a Jev key, checks the key, runs the router a
     'Start Claude Code as usual: claude\nCheck it: jev-router doctor\nUndo it: jev-router uninstall\n',
     'To keep it running while you are logged out, run: loginctl enable-linger\n',
     `Codex: put OLLAMA_API_KEY and OPENAI_API_KEY in ${box.envFile}, run jev-router setup again to restart the router with them,`,
+    `Saved JEV_ROUTER_PORT=${box.port} there too, so every jev-router command finds the router.\n`,
   ])
     assert.ok(result.stderr.includes(text), text);
   assert.ok(!result.stderr.includes(GOOD), 'the key is never printed');
@@ -124,7 +138,7 @@ test('setup asks for the models and a Jev key, checks the key, runs the router a
   assert.equal(readFileSync(box.configFile, 'utf8'), readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'), 'the default is Claude only');
   assert.equal(modeOf(box.configFile), 0o600);
   assert.equal(modeOf(join(box.config, 'jev-router')), 0o700);
-  assert.match(readFileSync(box.envFile, 'utf8'), new RegExp(`^TYPESAFE_API_KEY=${GOOD}$`, 'm'));
+  assert.match(readFileSync(box.envFile, 'utf8'), new RegExp(`^TYPESAFE_API_KEY=${GOOD}\nJEV_ROUTER_PORT=${box.port}$`, 'm'));
   assert.equal(modeOf(box.envFile), 0o600);
 
   assert.deepEqual(
@@ -140,7 +154,8 @@ test('setup asks for the models and a Jev key, checks the key, runs the router a
   assert.match(unit, /^# Written by `jev-router setup`/);
   assert.equal(
     /^ExecStart=(.*)$/m.exec(unit)?.[1],
-    `/usr/bin/env jev-router serve --ui ${box.env.JEV_ROUTER_UI} --config "${box.configFile}" --env-file "${box.envFile}" --log-file "${join(box.state, 'jev-router', 'router.log')}" --port ${box.port}`,
+    `/usr/bin/env jev-router serve --ui ${box.env.JEV_ROUTER_UI} --config "${box.configFile}" --env-file "${box.envFile}" --log-file "${join(box.state, 'jev-router', 'router.log')}"`,
+    'the port comes from the env file, like every other command reads it',
   );
   assert.match(unit, new RegExp(`^Environment="PATH=${box.bin}:`, 'm'), 'PATH starts with where jev-router is');
   const health = await healthz(box.url);
@@ -160,10 +175,12 @@ test('setup asks for the models and a Jev key, checks the key, runs the router a
   assert.ok(!manifest.includes(GOOD), 'the manifest holds no key');
   assert.equal(readJson(box.manifest).service.file, box.unit);
 
-  const doctor = await run(['doctor'], box.env);
+  const { JEV_ROUTER_PORT, ...shell } = box.env; // a new shell: the port is only in the env file now
+  const doctor = await run(['doctor'], shell);
   assert.equal(doctor.code, 0, doctor.stdout);
   assert.match(doctor.stdout, new RegExp(`^ {2}ok {3}service {3}systemd user unit ${box.unit}; the router answers at ${box.url}$`, 'm'));
   assert.match(doctor.stdout, /Ready\. Start Claude Code as usual: claude\n$/);
+  assert.match((await run(['env', 'claude'], shell)).stdout, new RegExp(`^export ANTHROPIC_BASE_URL=${box.url}$`, 'm'), 'env finds it too');
 });
 
 test('setup --yes takes the keys from the environment, runs a launchd agent, and merges into existing settings with a backup', async () => {
@@ -185,13 +202,14 @@ test('setup --yes takes the keys from the environment, runs a launchd agent, and
   assert.equal(readFileSync(box.configFile, 'utf8'), readFileSync(DEFAULT_CONFIG, 'utf8'));
   assert.equal(
     readFileSync(box.envFile, 'utf8'),
-    `# my router\nJEV_ROUTER_TOKEN=${ROUTER_TOKEN}\nTYPESAFE_API_KEY=${GOOD}\nOLLAMA_API_KEY=${OLLAMA}\n`,
+    `# my router\nJEV_ROUTER_TOKEN=${ROUTER_TOKEN}\nTYPESAFE_API_KEY=${GOOD}\nOLLAMA_API_KEY=${OLLAMA}\nJEV_ROUTER_PORT=${box.port}\n`,
     'its lines stay, the keys go at the end',
   );
   assert.equal(modeOf(box.envFile), 0o600, 'and only its owner can read it now');
 
   const uid = String(process.getuid?.());
   assert.deepEqual(box.calls(), [
+    { tool: 'launchctl', args: ['print', `gui/${uid}`] },
     { tool: 'launchctl', args: ['bootout', `gui/${uid}/io.github.dirien.jev-router`] },
     { tool: 'launchctl', args: ['bootstrap', `gui/${uid}`, box.plist] },
   ]);
@@ -220,8 +238,9 @@ test('setup --yes takes the keys from the environment, runs a launchd agent, and
   assert.deepEqual(Object.keys(JSON.parse(settings)), ['model', 'env', 'permissions'], 'the keys keep their order');
   assert.ok(settings.startsWith('{\n  "model": "opus",\n  "env": {\n    "FOO": "bar",'), '2-space indentation');
   assert.ok(settings.endsWith('}\n'));
-  assert.equal(modeOf(box.settings), 0o640, 'the file keeps its mode');
+  assert.equal(modeOf(box.settings), 0o600, 'with the router token in it, only its owner can read it');
   assert.equal(readFileSync(`${box.settings}.jev-router.bak`, 'utf8'), before, 'the old file is kept');
+  assert.equal(modeOf(`${box.settings}.jev-router.bak`), 0o600, 'and only its owner can read the backup');
   const manifest = readFileSync(box.manifest, 'utf8');
   assert.ok(!manifest.includes(ROUTER_TOKEN), 'the router token stays in settings.json');
   assert.equal(readJson(box.manifest).claude.tokenHeader, 'created');
@@ -245,7 +264,7 @@ test('setup keeps an existing config and a saved key, and a second run restarts 
   const claudeOnly = JSON.parse(readFileSync(ANTHROPIC_ONLY_CONFIG, 'utf8'));
   claudeOnly.jev.channels = [{ name: 'mock', baseUrl: jev.url, model: 'jev-1.13.0', keyEnv: 'MOCK_JEV_KEY', timeoutMs: 1000 }];
   writeFileSync(box.configFile, JSON.stringify(claudeOnly));
-  const saved = `MOCK_JEV_KEY=${GOOD}\n`;
+  const saved = `MOCK_JEV_KEY=${GOOD}\nJEV_ROUTER_PORT=${box.port}\n`;
   writeFileSync(box.envFile, saved, { mode: 0o600 });
   const first = await setup(box, ['--service', 'systemd', '--models', 'ollama'], { input: '\n\n' });
   assert.equal(first.code, 0, first.stderr);
@@ -434,7 +453,7 @@ test("a base URL for another gateway stays unless the person says yes, and setti
   const kept = await setup(box, ['--yes', '--service', 'systemd'], { env: { TYPESAFE_API_KEY: GOOD } });
   assert.equal(kept.code, 0, kept.stderr);
   assert.match(kept.stderr, /send it to https:\/\/gateway\.example\.com\.\n--yes keeps that\./);
-  assert.match(kept.stderr, /Claude Code's settings are unchanged: they keep sending it to https:\/\/gateway\.example\.com\./);
+  assert.match(kept.stderr, /Claude Code's settings are unchanged: it keeps sending its requests to https:\/\/gateway\.example\.com\./);
   assert.match(kept.stderr, /Start Claude Code through the router with: jev-router launch claude\n/);
   assert.deepEqual(readJson(box.settings), gateway);
 
@@ -450,7 +469,7 @@ test("a base URL for another gateway stays unless the person says yes, and setti
   assert.equal(invalid.code, 0, invalid.stderr);
   assert.match(
     invalid.stderr,
-    /Setup didn't change .*settings\.json: it isn't valid JSON .*Add this to its "env" block yourself:\n\{\n {2}"ANTHROPIC_BASE_URL": /,
+    /Setup didn't change .*settings\.json: it isn't valid JSON\. Add this to its "env" block yourself:\n\{\n {2}"ANTHROPIC_BASE_URL": /,
   );
   assert.equal(readFileSync(box.settings, 'utf8'), broken, 'the file is left alone');
 });
@@ -736,15 +755,289 @@ test('setup asks again after an answer it cannot use, and a service manager that
     mac.envFile,
     `TYPESAFE_API_KEY=${GOOD}\nOLLAMA_API_KEY=${OLLAMA}\nOPENAI_API_KEY=${fake('sk-', 'openai-', 'DO-NOT-PRINT')}\n`,
   );
-  const busy = await setup(mac, ['--yes', '--service', 'launchd', '--models', 'ollama'], {
-    env: { FAKE_LAUNCHD: 'busy', JEV_ROUTER_TOKEN: 'shell-only' },
-  });
-  assert.equal(busy.code, 0, busy.stderr);
-  assert.deepEqual(
-    mac.calls().map((call) => call.args[0]),
-    ['bootout', 'bootstrap', 'bootstrap'],
-    'launchd gets a second try',
+  const first = await setup(mac, ['--yes', '--service', 'launchd', '--models', 'ollama'], { env: { JEV_ROUTER_TOKEN: 'shell-only' } });
+  assert.equal(first.code, 0, first.stderr);
+  assert.match(first.stderr, /note: JEV_ROUTER_TOKEN is set in this shell, but the service can't see it\./);
+  assert.match(first.stderr, /Codex: jev-router launch codex\n$/, 'with every key Codex needs, the hint is just the command');
+
+  // A re-run while the old router drains: launchd refuses to load the agent again until it has unloaded.
+  const before = mac.calls().length;
+  const started = Date.now();
+  const slow = await setup(mac, ['--yes', '--service', 'launchd'], { env: { FAKE_LAUNCHD: 'slow' } });
+  assert.equal(slow.code, 0, slow.stderr);
+  const tries = mac
+    .calls()
+    .slice(before)
+    .filter((call) => call.args[0] === 'bootstrap');
+  assert.ok(tries.length >= 2, `launchd got ${tries.length} tries`);
+  assert.ok(Date.now() - started >= 2000, 'setup waited for the old agent to unload');
+  assert.equal((await healthz(mac.url)).ok, true);
+});
+
+const GATEWAY_TOKEN = fake('gw-', 'token-', 'DO-NOT-PRINT');
+
+test("setup never points Claude Code at the router while it carries another gateway's credentials, and launch and env refuse", async () => {
+  const box = await setupBox();
+  const gateway = { ANTHROPIC_BASE_URL: 'https://litellm.example.com', ANTHROPIC_AUTH_TOKEN: GATEWAY_TOKEN };
+  const guarded = await setup(box, ['--yes', '--service', 'systemd'], { env: { ...gateway, TYPESAFE_API_KEY: GOOD } });
+  assert.equal(guarded.code, 0, guarded.stderr);
+  assert.ok(
+    guarded.stderr.includes(
+      'Claude Code sends its requests to https://litellm.example.com (ANTHROPIC_BASE_URL in this shell), with ANTHROPIC_AUTH_TOKEN in this shell. ' +
+        "Behind the router it would send those credentials to Anthropic, so setup doesn't point Claude Code at the router: " +
+        'remove ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN from your shell (its startup files, such as ~/.zshrc), open a new shell, then run setup again.\n',
+    ),
+    guarded.stderr,
   );
-  assert.match(busy.stderr, /note: JEV_ROUTER_TOKEN is set in this shell, but the service can't see it\./);
-  assert.match(busy.stderr, /Codex: jev-router launch codex\n$/, 'with every key Codex needs, the hint is just the command');
+  assert.match(guarded.stderr, /Claude Code doesn't go through the router until you remove what's named above\.\n/);
+  assert.doesNotMatch(guarded.stderr, /launch claude|Replace that/, 'launch would carry them too, and there is no question');
+  assert.ok(!existsSync(box.settings), "Claude Code's settings stay as they are");
+  assert.ok(!guarded.stderr.includes(GATEWAY_TOKEN), 'names only, never a value');
+  assert.equal((await healthz(box.url)).ok, true, 'the service runs anyway');
+
+  const asked = await setup(box, ['--service', 'systemd'], { input: '\n\n', env: gateway });
+  assert.equal(asked.code, 0, asked.stderr);
+  assert.doesNotMatch(asked.stderr, /Replace that/, 'no question either');
+  assert.ok(!existsSync(box.settings));
+
+  const launched = await run(['launch', 'claude'], { ...box.env, ...gateway, JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT });
+  assert.equal(launched.code, 1);
+  assert.ok(
+    launched.stderr.endsWith(
+      'Through the router, Claude Code would send those credentials to Anthropic. To leave them out, run: ' +
+        'env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN jev-router launch claude\n',
+    ),
+    launched.stderr,
+  );
+  assert.ok(!existsSync(box.report), 'Claude Code never started');
+  const exported = await run(['env', 'claude'], { ...box.env, ...gateway });
+  assert.deepEqual({ code: exported.code, stdout: exported.stdout }, { code: 1, stdout: '' });
+  assert.match(exported.stderr, /run: unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN; eval "\$\(jev-router env claude\)"\n$/);
+  for (const result of [asked, launched, exported]) assert.ok(!result.stderr.includes(GATEWAY_TOKEN));
+
+  const anthropic = { ANTHROPIC_AUTH_TOKEN: GATEWAY_TOKEN };
+  assert.equal(
+    (await run(['env', 'claude'], { ...box.env, ...anthropic })).code,
+    0,
+    'without another gateway, they are Anthropic credentials',
+  );
+  const direct = { ANTHROPIC_BASE_URL: 'https://api.anthropic.com', ANTHROPIC_API_KEY: GATEWAY_TOKEN };
+  assert.equal((await run(['env', 'claude'], { ...box.env, ...direct })).code, 0, "Anthropic's own API isn't another gateway");
+
+  mkdirSync(join(box.home, '.claude'));
+  writeFileSync(
+    box.settings,
+    JSON.stringify({ apiKeyHelper: '/usr/local/bin/gateway-token', env: { ANTHROPIC_BASE_URL: 'https://gw.example.com' } }),
+  );
+  const helper = await setup(box, ['--service', 'systemd'], { input: '\n\n' });
+  assert.equal(helper.code, 0, helper.stderr);
+  assert.match(helper.stderr, /with apiKeyHelper in .*settings\.json\. Behind the router/);
+  assert.match(helper.stderr, /remove ANTHROPIC_BASE_URL and apiKeyHelper from .*settings\.json, then run setup again\./);
+  assert.equal(readJson(box.settings).env.ANTHROPIC_BASE_URL, 'https://gw.example.com');
+  const helped = await run(['launch', 'claude'], {
+    ...box.env,
+    ANTHROPIC_BASE_URL: 'https://gw.example.com',
+    JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT,
+  });
+  assert.equal(helped.code, 1);
+  assert.match(
+    helped.stderr,
+    /To leave them out, remove apiKeyHelper in .*settings\.json, then run: env -u ANTHROPIC_BASE_URL jev-router launch claude\n$/,
+  );
+});
+
+test('a base URL from this shell without credentials gets the question, which says the settings file would override it', async () => {
+  const box = await setupBox();
+  const proxy = { ANTHROPIC_BASE_URL: 'https://proxy.example.com' };
+  const asked = await setup(box, ['--service', 'systemd'], { input: `\n${GOOD}\n\n\n`, env: proxy });
+  assert.equal(asked.code, 0, asked.stderr);
+  assert.ok(
+    asked.stderr.includes(
+      `This shell sends Claude Code to https://proxy.example.com (ANTHROPIC_BASE_URL). The router's address in ${box.settings} would override that in every session.\nReplace that with the router? [y/N] \n`,
+    ),
+    asked.stderr,
+  );
+  assert.ok(!existsSync(box.settings), 'Enter means no');
+  assert.match(
+    asked.stderr,
+    /Start Claude Code through the router with: jev-router launch claude\n/,
+    'without credentials, launch is fine',
+  );
+  const kept = await setup(box, ['--yes', '--service', 'systemd'], { env: proxy });
+  assert.match(kept.stderr, /--yes keeps that\./);
+  const replaced = await setup(box, ['--service', 'systemd'], { input: '\n\ny\n', env: proxy });
+  assert.equal(replaced.code, 0, replaced.stderr);
+  assert.equal(readJson(box.settings).env.ANTHROPIC_BASE_URL, box.url, 'a yes replaces it');
+});
+
+test("after a port change, setup's own address is its own, and uninstall restores what was there before setup", async () => {
+  const box = await setupBox();
+  mkdirSync(join(box.home, '.claude'));
+  writeFileSync(box.settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' } }));
+  const first = await setup(box, ['--service', 'systemd'], { input: `\n${GOOD}\n\ny\n` });
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(readJson(box.settings).env.ANTHROPIC_BASE_URL, box.url);
+
+  const port = await freePort();
+  const moved = { ...box.env, JEV_ROUTER_PORT: String(port) };
+  const second = await run(['setup', '--yes', '--service', 'systemd'], moved, { node: ['--import', REDIRECT] });
+  assert.equal(second.code, 0, second.stderr);
+  assert.doesNotMatch(second.stderr, /send it to|Replace that/, "the old router address is setup's own, not another gateway");
+  const url = `http://127.0.0.1:${port}`;
+  assert.equal(readJson(box.settings).env.ANTHROPIC_BASE_URL, url);
+  assert.match(readFileSync(box.envFile, 'utf8'), new RegExp(`^JEV_ROUTER_PORT=${port}$`, 'm'), 'the new port is saved');
+  assert.deepEqual(readJson(box.manifest).claude.env.ANTHROPIC_BASE_URL, { value: url, previous: 'https://gateway.example.com' });
+  assert.equal((await healthz(url)).ok, true);
+
+  const removed = await run(['uninstall'], box.env); // the env file has the port now
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.deepEqual(readJson(box.settings), { env: { ANTHROPIC_BASE_URL: 'https://gateway.example.com' } }, 'the true original');
+});
+
+test('a settings file and an env file that are symbolic links stay links, and the files they point to change', async () => {
+  const box = await setupBox();
+  const dotfiles = join(box.root, 'dotfiles');
+  mkdirSync(dotfiles);
+  writeFileSync(join(dotfiles, 'settings.json'), JSON.stringify({ model: 'opus' }));
+  chmodSync(join(dotfiles, 'settings.json'), 0o644);
+  writeFileSync(join(dotfiles, 'env'), `TYPESAFE_API_KEY=${GOOD}\n`, { mode: 0o600 });
+  mkdirSync(join(box.home, '.claude'));
+  symlinkSync(join(dotfiles, 'settings.json'), box.settings);
+  mkdirSync(join(box.config, 'jev-router'));
+  symlinkSync(join(dotfiles, 'env'), box.envFile);
+  const result = await setup(box, ['--yes', '--service', 'systemd']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(lstatSync(box.settings).isSymbolicLink() && lstatSync(box.envFile).isSymbolicLink(), 'both are still links');
+  assert.equal(readJson(join(dotfiles, 'settings.json')).env.ANTHROPIC_BASE_URL, box.url);
+  assert.match(readFileSync(join(dotfiles, 'env'), 'utf8'), new RegExp(`^JEV_ROUTER_PORT=${box.port}$`, 'm'));
+  assert.equal(modeOf(join(dotfiles, 'settings.json')), 0o644, 'without a router token, the mode stays');
+  const backup = `${box.settings}.jev-router.bak`;
+  assert.ok(lstatSync(backup).isFile());
+  assert.deepEqual(readJson(backup), { model: 'opus' });
+  assert.equal(modeOf(backup), 0o600);
+});
+
+test('uninstall keeps its record of the settings when it cannot read them, and a later uninstall finishes', async () => {
+  const box = await setupBox();
+  const installed = await setup(box, ['--yes', '--service', 'systemd'], { env: { TYPESAFE_API_KEY: GOOD } });
+  assert.equal(installed.code, 0, installed.stderr);
+  const settings = readFileSync(box.settings, 'utf8');
+  writeFileSync(box.settings, '{ "env": ');
+  const stuck = await run(['uninstall'], box.env);
+  assert.equal(stuck.code, 1);
+  assert.match(stuck.stderr, /Couldn't change .*settings\.json: it isn't valid JSON\. Fix it, then run jev-router uninstall again\.\n/);
+  assert.match(stuck.stderr, /Kept .*setup\.json, so that jev-router uninstall can finish once the settings file is fixed\.\n/);
+  assert.ok(!existsSync(box.unit), 'the service is gone');
+  assert.equal(readJson(box.manifest).service, undefined);
+  assert.equal(readJson(box.manifest).claude.env.ANTHROPIC_BASE_URL.value, box.url);
+  writeFileSync(box.settings, settings);
+  const finished = await run(['uninstall'], box.env);
+  assert.equal(finished.code, 0, finished.stderr);
+  assert.match(finished.stderr, /Removed .*settings\.json, which setup had created\./);
+  assert.ok(!existsSync(box.manifest));
+});
+
+test("the systemd unit goes where the user manager looks, which needn't be the shell's XDG_CONFIG_HOME", async () => {
+  const box = await setupBox();
+  const manager = join(box.root, 'manager-config');
+  const env = { TYPESAFE_API_KEY: GOOD, FAKE_SYSTEMD_XDG: manager };
+  const result = await setup(box, ['--yes', '--service', 'systemd'], { env });
+  assert.equal(result.code, 0, result.stderr);
+  const unit = join(manager, 'systemd', 'user', 'jev-router.service');
+  assert.ok(existsSync(unit) && !existsSync(box.unit) && !existsSync(join(box.config, 'systemd')));
+  const doctor = await run(['doctor'], { ...box.env, FAKE_SYSTEMD_XDG: manager });
+  assert.match(doctor.stdout, new RegExp(`^ {2}ok {3}service {3}systemd user unit ${unit};`, 'm'));
+  rmSync(box.manifest); // found without setup's record too, by asking the user manager
+  assert.match((await run(['doctor'], { ...box.env, FAKE_SYSTEMD_XDG: manager })).stdout, new RegExp(`systemd user unit ${unit};`));
+  const removed = await run(['uninstall'], { ...box.env, FAKE_SYSTEMD_XDG: manager });
+  assert.match(removed.stderr, new RegExp(`Stopped and removed the systemd user unit ${unit}\\.`));
+  assert.ok(!existsSync(unit));
+});
+
+test('Ctrl-C after the key check under --yes still writes nothing', async () => {
+  const box = await setupBox();
+  // Something that holds the port and never answers keeps setup busy for a second after the key check.
+  const holder = net.createServer(() => undefined);
+  await new Promise((resolve) => holder.listen(0, '127.0.0.1', () => resolve(undefined)));
+  const port = /** @type {import('node:net').AddressInfo} */ (holder.address()).port;
+  const env = { ...box.env, TYPESAFE_API_KEY: GOOD, JEV_ROUTER_PORT: String(port) };
+  const running = start(['setup', '--yes', '--service', 'systemd'], env, { node: ['--import', REDIRECT] });
+  await waitFor(() => running.out.stderr.includes('it works'), 'the key check');
+  running.child.kill('SIGINT');
+  const result = await running.done;
+  holder.close();
+  assert.equal(result.code, 130, result.stderr);
+  assert.match(result.stderr, /\nStopped\. Nothing was written\.\n$/);
+  assert.ok(!existsSync(join(box.config, 'jev-router')));
+});
+
+test("uninstall guesses only without a manifest, and only from a base URL that points at the router; values that aren't strings stay", async () => {
+  const box = await setupBox();
+  mkdirSync(join(box.home, '.claude'));
+  const own = { ENABLE_TOOL_SEARCH: true, CLAUDE_CODE_AUTO_COMPACT_WINDOW: 90000 };
+  writeFileSync(box.settings, JSON.stringify({ env: own }));
+  const installed = await setup(box, ['--yes', '--service', 'systemd'], { env: { TYPESAFE_API_KEY: GOOD } });
+  assert.equal(installed.code, 0, installed.stderr);
+  assert.deepEqual(readJson(box.settings).env, { ...own, ANTHROPIC_BASE_URL: box.url, CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1' });
+  assert.equal((await run(['uninstall'], box.env)).code, 0);
+  assert.deepEqual(readJson(box.settings), { env: own }, 'never overwritten, never removed');
+
+  const noSettings = await setup(box, ['--yes', '--service', 'systemd', '--no-claude-settings']);
+  assert.equal(noSettings.code, 0, noSettings.stderr);
+  const byHand = { ANTHROPIC_BASE_URL: box.url, CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1' };
+  writeFileSync(box.settings, JSON.stringify({ env: byHand }));
+  const kept = await run(['uninstall'], box.env);
+  assert.match(kept.stderr, /^Setup didn't change Claude Code's settings\.\n/);
+  assert.deepEqual(readJson(box.settings), { env: byHand }, 'setup recorded no settings, so there is nothing to guess');
+
+  const noBase = { CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1', ENABLE_TOOL_SEARCH: 'true' };
+  writeFileSync(box.settings, JSON.stringify({ env: noBase }));
+  await run(['uninstall'], box.env);
+  assert.deepEqual(readJson(box.settings), { env: noBase }, 'no base URL that points at the router, no guess');
+});
+
+test('a key with a space is asked again, and settings that setup cannot write get a manifest first and the lines to add by hand', async () => {
+  const box = await setupBox();
+  const spaced = await setup(box, ['--service', 'none'], { input: `\nbad key\n${GOOD}\n` });
+  assert.equal(spaced.code, 0, spaced.stderr);
+  assert.match(spaced.stderr, /That key has a space or a control character in it, which no key has\. Paste it again\.\n/);
+  const yes = await setup(box, ['--yes'], { env: { TYPESAFE_API_KEY: `tab\there` } });
+  assert.equal(yes.code, 1);
+  assert.match(yes.stderr, /TYPESAFE_API_KEY holds a space or a control character, which no key has\./);
+
+  const locked = await setupBox();
+  if (process.getuid?.() === 0) return; // root writes anywhere
+  mkdirSync(join(locked.home, '.claude'));
+  writeFileSync(locked.settings, '{}');
+  chmodSync(join(locked.home, '.claude'), 0o500);
+  try {
+    const env = { TYPESAFE_API_KEY: GOOD, JEV_ROUTER_SETUP_WAIT: 'soon' };
+    const result = await setup(locked, ['--yes', '--service', 'systemd'], { env });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /note: JEV_ROUTER_SETUP_WAIT takes a number of seconds above 0, not "soon", so setup waits 15 s\.\n/);
+    assert.match(
+      result.stderr,
+      /Setup didn't change .*settings\.json: setup can't write it \(permission denied\)\. Add this to its "env" block yourself:/,
+    );
+    assert.equal(readJson(locked.manifest).claude.env.ANTHROPIC_BASE_URL.value, locked.url, 'the manifest was written first');
+  } finally {
+    chmodSync(join(locked.home, '.claude'), 0o700);
+  }
+});
+
+test('setup refuses a launchd without a GUI session, and a /dev/null env file', async () => {
+  const box = await setupBox();
+  const nogui = await setup(box, ['--yes', '--service', 'launchd'], { env: { TYPESAFE_API_KEY: GOOD, FAKE_LAUNCHD: 'nogui' } });
+  assert.equal(nogui.code, 1);
+  assert.match(
+    nogui.stderr,
+    /--service launchd: there's no GUI login session here \(for example over SSH\), so launchd can't run an agent/,
+  );
+  const off = await setup(box, ['--yes'], { env: { TYPESAFE_API_KEY: GOOD, JEV_ROUTER_ENV_FILE: '/dev/null' } });
+  assert.equal(off.code, 1);
+  assert.equal(
+    off.stderr,
+    'jev-router: JEV_ROUTER_ENV_FILE is /dev/null, which turns the env file off, so setup has nowhere to save the keys. Unset it, then run setup again.\n',
+  );
+  assert.ok(!existsSync(join(box.config, 'jev-router')));
 });

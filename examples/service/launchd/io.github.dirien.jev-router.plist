@@ -6,7 +6,8 @@
   view on port 4100, the config ~/.config/jev-router/config.json and the keys from
   ~/.config/jev-router/env (the arguments are in ProgramArguments below), starts when you log in,
   and restarts the router when it fails. The router listens on http://127.0.0.1:4000 and its live
-  view on http://127.0.0.1:4100.
+  view on http://127.0.0.1:4100. To move it, put JEV_ROUTER_HOST or JEV_ROUTER_PORT in the env file, where
+  every jev-router command reads them.
 
   launchd doesn't expand ~ or $HOME, and a LaunchAgent doesn't get your shell's PATH, while
   jev-router starts with "#!/usr/bin/env node". So the install commands fill in two placeholders

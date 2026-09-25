@@ -2,7 +2,8 @@
 # template is the manual route, and setup writes the same unit from it. It runs
 # `jev-router serve --ui 4100` with the config ~/.config/jev-router/config.json and the keys from
 # ~/.config/jev-router/env, starts when you log in, and restarts the router when it fails. The
-# router listens on http://127.0.0.1:4000 and its live view on http://127.0.0.1:4100.
+# router listens on http://127.0.0.1:4000 and its live view on http://127.0.0.1:4100. To move it, put
+# JEV_ROUTER_HOST or JEV_ROUTER_PORT in the env file, where every jev-router command reads them.
 #
 # A service doesn't get your shell's PATH, and jev-router starts with `#!/usr/bin/env node`. So the
 # install commands replace @PATH@ below with the directories that hold jev-router and node on your
@@ -53,7 +54,8 @@ ExecReload=/bin/kill -HUP $MAINPID
 # The JSON lines are in the log file above; the journal gets the messages for people.
 StandardOutput=null
 Restart=on-failure
-# Node exits with 9 when the --env-file path doesn't exist: fix the path instead of restarting.
+# Node itself exits with 9, before jev-router runs, when the --env-file path is missing or can't be read:
+# fix the file instead of restarting. A broken config exits with 1, and gets the five tries above.
 RestartPreventExitStatus=9
 RestartSec=2
 SyslogIdentifier=jev-router

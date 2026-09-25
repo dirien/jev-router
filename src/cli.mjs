@@ -8,7 +8,16 @@ import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, 
 import { homedir, constants as osConstants } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { CLAUDE_SETTINGS, claudeVars, pointsAtRouter, settingsEnv } from './claude.mjs';
+import {
+  CLAUDE_SETTINGS,
+  claudeCredentials,
+  claudeVars,
+  credentialsInWords,
+  foreignBaseUrl,
+  pointsAtRouter,
+  readSettings,
+  settingsEnv,
+} from './claude.mjs';
 import { loadConfig } from './config.mjs';
 import { agentEnv, loadEnvFile } from './envfile.mjs';
 import {
@@ -32,12 +41,14 @@ import { appendLogLine } from './logfile.mjs';
 import { clientHost, isLoopback, LOOPBACK, parsePort, parseUiAddress, probe, TOKEN_HEADER, UI_PORT, urlHost } from './net.mjs';
 import { createRouter, describeConfig, report, VERSION } from './router.mjs';
 import { installedServices, logHint, MANAGER_NAMES } from './service.mjs';
-import { readManifest, runSetup, runUninstall } from './setup.mjs';
+import { readManifest, runSetup } from './setup.mjs';
 import { createUiServer } from './ui.mjs';
+import { runUninstall } from './uninstall.mjs';
 
 /** @import { Config, Health, RouterServer, UiServer } from './types.js' */
 /** @import { EnvFile } from './envfile.mjs' */
 /** @import { SetupOptions } from './setup.mjs' */
+/** @import { Credential } from './claude.mjs' */
 
 /**
  * @typedef {'ok' | 'warn' | 'FAIL' | 'hint' | 'info'} Status
@@ -418,6 +429,12 @@ async function launch(args, env) {
   const file = useEnvFile(values['env-file'], env);
   const { cfg, host, port, token } = settings(values, env);
   const uiAddress = parseUiAddress(values.ui ?? envValue(env, 'JEV_ROUTER_UI'));
+  const forAgent = agentEnv(env, file);
+  const leak = name === 'claude' ? gatewayLeak(forAgent, host, port) : undefined;
+  if (leak) {
+    console.error(leakMessage(leak, `env ${leak.unset.map((variable) => `-u ${variable}`).join(' ')} jev-router launch claude`));
+    return 1;
+  }
   const wanted = envValue(env, agent.override) ?? agent.bin;
   const bin = findProgram(wanted, env);
   if (!bin) {
@@ -437,7 +454,6 @@ async function launch(args, env) {
     console.error(
       `jev-router: --ui serves a live view only for a router that launch starts. For the one at ${router.url}, open its own view, or follow its log with: jev-router ui`,
     );
-  const forAgent = agentEnv(env, file);
   try {
     if (name === 'codex') {
       writeCodexProfile(env, router.url, token, flags.has('force'));
@@ -478,6 +494,47 @@ function ownedByLaunch(env, port) {
   } catch (err) {
     return errorCode(err) === 'EPERM'; // alive, just not ours to signal; no file or no such process means no owner
   }
+}
+
+/**
+ * @typedef {object} Leak another gateway's credentials that Claude Code would carry through the router to Anthropic
+ * @property {string} base the gateway's base URL, from this shell
+ * @property {Credential[]} credentials
+ * @property {string[]} unset the shell's variables to leave out
+ * @property {Credential[]} inSettings credentials in the settings file, to remove there
+ */
+
+/**
+ * The credentials Claude Code would carry to the router, when this shell sends it to another
+ * gateway with them: behind the router they'd go to Anthropic. Without another gateway, they're
+ * Anthropic's own, and fine.
+ * @param {NodeJS.ProcessEnv} shell what Claude Code starts with
+ * @param {string} host
+ * @param {number} port
+ * @returns {Leak | undefined}
+ */
+function gatewayLeak(shell, host, port) {
+  const base = envValue(shell, 'ANTHROPIC_BASE_URL');
+  if (!base || !foreignBaseUrl(base, { host, port })) return undefined;
+  const file = claudeSettingsPath(shell);
+  const read = readSettings(file);
+  const credentials = claudeCredentials(shell, 'problem' in read ? {} : read.data, file);
+  if (!credentials.length) return undefined;
+  const unset = ['ANTHROPIC_BASE_URL', ...credentials.filter((c) => c.where === 'this shell').map((c) => c.name)];
+  return { base, credentials, unset, inSettings: credentials.filter((c) => c.where !== 'this shell') };
+}
+
+/**
+ * Why `launch claude` or `env claude` refuses, and the command that leaves those credentials out.
+ * @param {Leak} leak
+ * @param {string} way
+ */
+function leakMessage({ base, credentials, inSettings }, way) {
+  const settings = inSettings.length ? `remove ${credentialsInWords(inSettings)}, then ` : '';
+  return (
+    `jev-router: this shell sends Claude Code to ${base} (ANTHROPIC_BASE_URL), with ${credentialsInWords(credentials)}. ` +
+    `Through the router, Claude Code would send those credentials to Anthropic. To leave them out, ${settings}run: ${way}`
+  );
 }
 
 /**
@@ -637,9 +694,14 @@ async function printEnv(args, env) {
   const [agent, ...extra] = rest;
   if (!(agent === 'claude' || agent === 'codex') || extra.length)
     throw new Error('Usage: jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]');
-  useEnvFile(values['env-file'], env);
+  const file = useEnvFile(values['env-file'], env);
   const { host, port, token } = settings(values, env);
   if (port === 0) throw new Error('env needs the port the router listens on, not 0');
+  const leak = agent === 'claude' ? gatewayLeak(agentEnv(env, file), host, port) : undefined;
+  if (leak) {
+    console.error(leakMessage(leak, `unset ${leak.unset.join(' ')}; eval "$(jev-router env claude)"`));
+    return 1;
+  }
   const url = `http://${clientHost(host)}:${port}`;
   const lines =
     agent === 'claude'

@@ -130,8 +130,8 @@ export function readSettings(file) {
   let data;
   try {
     data = JSON.parse(text);
-  } catch (err) {
-    return { problem: `it isn't valid JSON (${errorMessage(err)})` };
+  } catch {
+    return { problem: "it isn't valid JSON" }; // Node's message quotes the file, which can hold secrets
   }
   if (!isObject(data)) return { problem: "it isn't a JSON object" };
   if (data.env !== undefined && !isObject(data.env)) return { problem: 'its "env" isn\'t an object' };
@@ -149,8 +149,22 @@ export function settingsBlock(data) {
 }
 
 /**
+ * Every variable in a settings file's `env` block, a value that isn't a string written as JSON: to
+ * `claudeVars`, `"ENABLE_TOOL_SEARCH": true` is set as much as `"true"` is.
+ * @param {Record<string, unknown>} data
+ * @returns {Record<string, string>}
+ */
+export function settingsSet(data) {
+  const block = isObject(data.env) ? data.env : {};
+  return Object.fromEntries(
+    Object.entries(block).map(([name, value]) => [name, typeof value === 'string' ? value : JSON.stringify(value)]),
+  );
+}
+
+/**
  * Sets and removes variables in a settings file's `env` block, in place. The keys keep their order;
- * a new key goes at the end, and so does a new block.
+ * a new key goes at the end, and so does a new block. A variable whose value isn't a string, such as
+ * `"ENABLE_TOOL_SEARCH": true`, is someone's own setting, and stays as it is.
  * @param {Record<string, unknown>} data
  * @param {Record<string, string | undefined>} values undefined removes the variable
  * @returns {SettingsChange[]} what changed
@@ -162,6 +176,7 @@ export function changeSettingsEnv(data, values) {
   for (const [name, after] of Object.entries(values)) {
     const current = block[name];
     const before = typeof current === 'string' ? current : undefined;
+    if (current !== undefined && before === undefined) continue; // not a string: never overwritten or removed
     if (after === current || (after === undefined && current === undefined)) continue;
     if (after === undefined) delete block[name];
     else block[name] = after;
@@ -174,12 +189,75 @@ export function changeSettingsEnv(data, values) {
 
 /**
  * Writes Claude Code's settings: 2-space JSON and a trailing newline, in one step, with the mode the
- * file had. An existing file is copied to `backup` first.
+ * file had, less what lets other users read it once it holds the router token. An existing file is
+ * copied to `backup` first, readable only by its owner: it may hold keys of its own.
  * @param {string} file
  * @param {Settings} settings
  * @param {string} backup
  */
 export function writeSettings(file, { data, exists, mode }, backup) {
-  if (exists) writeFileAtomic(backup, readFileSync(file, 'utf8'), mode);
-  writeFileAtomic(file, `${JSON.stringify(data, null, 2)}\n`, mode);
+  if (exists) writeFileAtomic(backup, readFileSync(file, 'utf8'), 0o600);
+  const token = hasTokenLine(settingsBlock(data).ANTHROPIC_CUSTOM_HEADERS);
+  writeFileAtomic(file, `${JSON.stringify(data, null, 2)}\n`, token ? mode & 0o600 : mode);
+}
+
+/**
+ * Whether a header list carries a router token line.
+ * @param {string | undefined} headers
+ */
+export const hasTokenLine = (headers) =>
+  (headers ?? '').split(/\r?\n/).some((line) => line.split(':', 1)[0].trim().toLowerCase() === TOKEN_HEADER);
+
+/**
+ * @typedef {{ name: string, where: string }} Credential a credential Claude Code sends, by name and where it's set
+ */
+
+/**
+ * The credentials Claude Code sends with every request, by name and where they're set, never their
+ * values: ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY and custom headers other than the router token,
+ * in the shell or a settings file's `env`, and a settings file's `apiKeyHelper`.
+ * @param {NodeJS.ProcessEnv} shell the environment Claude Code starts with
+ * @param {Record<string, unknown>} settings the parsed settings file; {} when there's none
+ * @param {string} file where the settings file is
+ * @returns {Credential[]}
+ */
+export function claudeCredentials(shell, settings, file) {
+  /** @type {Credential[]} */
+  const found = [];
+  /** @type {Array<[Record<string, unknown>, string]>} */
+  const places = [
+    [shell, 'this shell'],
+    [isObject(settings.env) ? settings.env : {}, file],
+  ];
+  for (const [vars, where] of places) {
+    for (const name of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) if (vars[name]) found.push({ name, where });
+    const headers = vars.ANTHROPIC_CUSTOM_HEADERS;
+    if (headers && (typeof headers !== 'string' || withoutHeader(headers, TOKEN_HEADER).length))
+      found.push({ name: 'ANTHROPIC_CUSTOM_HEADERS', where });
+  }
+  if (settings.apiKeyHelper !== undefined) found.push({ name: 'apiKeyHelper', where: file });
+  return found;
+}
+
+/**
+ * Whether a base URL leads somewhere other than the router at host:port, or Anthropic's own API.
+ * @param {string} base
+ * @param {Pick<Config, 'host' | 'port'>} router
+ */
+export function foreignBaseUrl(base, router) {
+  if (pointsAtRouter(base, router, {})) return false;
+  try {
+    return new URL(base).hostname !== 'api.anthropic.com';
+  } catch {
+    return true; // not a URL at all: nothing setup should replace without asking
+  }
+}
+
+/**
+ * Credentials in words: "ANTHROPIC_AUTH_TOKEN in this shell and apiKeyHelper in <file>".
+ * @param {Credential[]} credentials
+ */
+export function credentialsInWords(credentials) {
+  const items = credentials.map(({ name, where }) => `${name} in ${where}`);
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 }

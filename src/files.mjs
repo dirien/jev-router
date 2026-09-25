@@ -1,6 +1,19 @@
 // Where jev-router's files live, how programs are found on PATH, and how a file is replaced safely.
 // The commands share these rules, so a service, a shell and `doctor` agree on every path.
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -117,24 +130,56 @@ export function makeDirectory(dir) {
 
 /**
  * Replaces a file in one step: the text goes to a temporary file next to it, which is renamed over
- * it, so a reader sees the old file or the new one and never half of one. A missing directory is
- * created with mode 0700.
+ * it, so a reader sees the old file or the new one and never half of one. A symbolic link stays a
+ * link: the file it points to is the one replaced, as in a dotfiles repository. A missing directory
+ * is created with mode 0700.
  * @param {string} path
  * @param {string} text
  * @param {number} mode the new file's permissions
  */
 export function writeFileAtomic(path, text, mode) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
+  const target = linkTarget(path);
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.${process.pid}.tmp`;
   try {
     writeFileSync(temporary, text, { mode });
     chmodSync(temporary, mode); // the umask may have taken bits away
-    renameSync(temporary, path);
+    renameSync(temporary, target);
   } catch (err) {
     rmSync(temporary, { force: true });
     throw err;
   }
 }
+
+/**
+ * The file a path stands for: the path itself, or the file a symbolic link there points to, even
+ * one that doesn't exist yet.
+ * @param {string} path
+ */
+function linkTarget(path) {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return path;
+  } catch {
+    return path; // nothing there yet
+  }
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(dirname(path), readlinkSync(path)); // a link to a file that isn't there yet
+  }
+}
+
+/**
+ * Whether text holds a control character, such as a line break or a NUL: no path, host or key has
+ * one, and a service file or an HTTP header can't carry it.
+ * @param {string} text
+ */
+export const hasControlCharacter = (text) => [...text].some((char) => char < ' ' || char === '\u007f');
+
+/**
+ * The file that turns the env file off: named by --env-file or JEV_ROUTER_ENV_FILE, no file is loaded.
+ */
+export const NO_ENV_FILE = '/dev/null';
 
 /**
  * Finds a program the way a shell does: a name with a slash is a path, anything else is looked up on PATH.

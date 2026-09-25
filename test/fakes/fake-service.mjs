@@ -9,7 +9,11 @@
 //   FAKE_SERVICE_START  "0": don't start the router, as for a service that fails at once
 //   FAKE_SYSTEMD        "down": `systemctl --user show-environment` fails, as in a container;
 //                       "refuses": `systemctl --user enable` fails
-//   FAKE_LAUNCHD        "busy": the first `launchctl bootstrap` fails, as while launchd still unloads the agent
+//   FAKE_SYSTEMD_XDG    the user manager's XDG_CONFIG_HOME, which it reports and looks for units
+//                       under; without it, ~/.config, whatever the shell's is
+//   FAKE_LAUNCHD        "slow": after `launchctl bootout`, the agent stays loaded for 2 s, as while the
+//                       router drains, and `bootstrap` fails until then; "stuck": `bootstrap` always
+//                       fails; "nogui": there's no GUI session, so `launchctl print gui/<uid>` fails
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -22,6 +26,7 @@ if (!log) throw new Error('FAKE_SERVICE_LOG is not set');
 appendFileSync(log, `${JSON.stringify({ tool, args })}\n`);
 const pidFile = join(dirname(log), 'fake-service.pid');
 const loaded = join(dirname(log), 'fake-launchd-loaded');
+const unloading = join(dirname(log), 'fake-launchd-unloading'); // holds when the unload finishes
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -91,11 +96,19 @@ function unit(file) {
   return { argv, path };
 }
 
-const unitFile = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', 'jev-router.service');
+/** The user manager's unit directory, which needn't be the shell's. */
+const unitFile = () => join(process.env.FAKE_SYSTEMD_XDG || join(homedir(), '.config'), 'systemd', 'user', 'jev-router.service');
+
+/** Whether launchd is still unloading the agent after a slow bootout. */
+const stillUnloading = () => existsSync(unloading) && Date.now() < Number(readFileSync(unloading, 'utf8'));
 
 /** @returns {Promise<number>} the exit code */
 async function launchctl() {
   const [command, target, file] = args;
+  if (command === 'print') {
+    if (target?.split('/').length === 2) return process.env.FAKE_LAUNCHD === 'nogui' ? 113 : 0; // the GUI domain
+    return existsSync(loaded) || stillUnloading() ? 0 : 113;
+  }
   if (command === 'bootout') {
     if (!existsSync(loaded)) {
       process.stderr.write(`Boot-out failed: 3: No such process\n`);
@@ -103,16 +116,11 @@ async function launchctl() {
     }
     await stopRouter();
     rmSync(loaded);
+    if (process.env.FAKE_LAUNCHD === 'slow') writeFileSync(unloading, String(Date.now() + 2000));
     return 0;
   }
   if (command === 'bootstrap') {
-    const busy = join(dirname(log ?? ''), 'fake-launchd-was-busy');
-    if (process.env.FAKE_LAUNCHD === 'busy' && !existsSync(busy)) {
-      writeFileSync(busy, '');
-      process.stderr.write('Bootstrap failed: 5: Input/output error\n');
-      return 5;
-    }
-    if (existsSync(loaded)) {
+    if (existsSync(loaded) || stillUnloading() || process.env.FAKE_LAUNCHD === 'stuck') {
       process.stderr.write('Bootstrap failed: 5: Input/output error\n');
       return 5;
     }
@@ -134,6 +142,7 @@ async function systemctl() {
       return 1;
     }
     process.stdout.write(`HOME=${homedir()}\n`);
+    if (process.env.FAKE_SYSTEMD_XDG) process.stdout.write(`XDG_CONFIG_HOME=${process.env.FAKE_SYSTEMD_XDG}\n`);
   }
   if (command === 'enable' && process.env.FAKE_SYSTEMD === 'refuses') {
     process.stderr.write('Failed to enable unit: Access denied\n');

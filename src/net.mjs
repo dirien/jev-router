@@ -2,6 +2,7 @@
 // anything else on a port.
 import http from 'node:http';
 import net from 'node:net';
+import { hasControlCharacter } from './files.mjs';
 
 /** @import { Health } from './types.js' */
 
@@ -31,7 +32,8 @@ export function parseUiAddress(value) {
   if (value === undefined) return undefined;
   if (/^\d+$/.test(value)) return { host: LOOPBACK, port: parsePort(value) };
   const match = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d+)$/.exec(value);
-  if (!match) throw new Error(`--ui takes a port or host:port, got "${value}"`);
+  // A control character in the host would end up in a service file, and no host has one.
+  if (!match || hasControlCharacter(value)) throw new Error(`--ui takes a port or host:port, got ${JSON.stringify(value)}`);
   return { host: match[1] ?? match[2], port: parsePort(match[3]) };
 }
 

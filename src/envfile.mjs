@@ -2,7 +2,7 @@
 // loader before anything reads the environment.
 import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { parseEnv } from 'node:util';
-import { envValue, errorCode, errorMessage, expandHome, shellQuote, standardEnvFile, writeFileAtomic } from './files.mjs';
+import { envValue, errorCode, errorMessage, expandHome, NO_ENV_FILE, shellQuote, standardEnvFile, writeFileAtomic } from './files.mjs';
 
 /**
  * Variables Node reads only when it starts: an env file loaded later can set them, but they change
@@ -36,13 +36,14 @@ export const DEFAULT_SOURCE = 'default location';
 
 /**
  * The env file a command loads: the one --env-file or JEV_ROUTER_ENV_FILE names, else the standard
- * file, `$XDG_CONFIG_HOME/jev-router/env`, when it exists.
+ * file, `$XDG_CONFIG_HOME/jev-router/env`, when it exists. Naming /dev/null turns it off.
  * @param {string | undefined} flag
  * @param {NodeJS.ProcessEnv} env
- * @returns {{ path: string, source: string } | undefined} undefined when none is named and the standard file doesn't exist
+ * @returns {{ path: string, source: string } | undefined} undefined when there's no env file to load
  */
 export function envFileFor(flag, env) {
   const given = flag ?? envValue(env, 'JEV_ROUTER_ENV_FILE');
+  if (given !== undefined && expandHome(given) === NO_ENV_FILE) return undefined;
   if (given !== undefined) return { path: expandHome(given), source: flag === undefined ? 'JEV_ROUTER_ENV_FILE' : '--env-file' };
   const standard = standardEnvFile(env);
   return existsSync(standard) ? { path: standard, source: DEFAULT_SOURCE } : undefined;
