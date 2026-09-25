@@ -5,7 +5,6 @@
 # AGENTS.md
 
 **Precedence:** the **closest `AGENTS.md`** to the files you're changing wins. This is the only one in the repo.
-`CLAUDE.md` is an identical copy for Claude Code; keep the two files the same.
 
 ## Project
 
@@ -99,7 +98,6 @@ network.
 | Writing a test | `test/<area>.test.mjs` with `node:test` and `node:assert/strict`; listen on port 0 through `listen()` in `test/helpers.mjs`; assert call deltas, never totals |
 | Adding a CLI command | `src/cli.mjs`, `test/cli.test.mjs`, the CLI section of `README.md`, and `docs/activation.md` when it touches client setup |
 | Editing Markdown | `npm run lint:md`: MD013 at 120 characters, tables and code blocks exempt |
-| Editing `AGENTS.md` | `cp AGENTS.md CLAUDE.md`; the two files stay identical |
 | Releasing | Bump `package.json` and `VERSION` in `src/router.mjs`, move `Unreleased` in `CHANGELOG.md` to the new version |
 | Adding a dependency | Don't add runtime dependencies. A dev dependency needs a reason in the PR |
 <!-- AGENTS-GENERATED:END heuristics -->
@@ -172,4 +170,4 @@ network.
 ## When instructions conflict
 
 Explicit user prompts override this file. Where this file and `README.md` or the docs disagree, fix whichever is
-wrong, and keep `CLAUDE.md` identical to this file.
+wrong.
