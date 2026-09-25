@@ -48,10 +48,10 @@ const COMPACT_WINDOW = '160000';
 const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or Codex turn with Jev.
 
 Usage:
-  jev-router [serve] [--config <file>] [--host <h>] [--port <n>] [--ui [<host>:]<port>]
-  jev-router launch claude [--config <file>] [--port <n>] [--] [claude args…]
-  jev-router launch codex  [--config <file>] [--port <n>] [--force] [--] [codex args…]
-  jev-router env claude|codex [--config <file>] [--port <n>]
+  jev-router [serve] [--config <file>] [--env-file <file>] [--host <h>] [--port <n>] [--ui [<host>:]<port>]
+  jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--] [claude args…]
+  jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--force] [--] [codex args…]
+  jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
   jev-router doctor [--config <file>] [--live]
   jev-router init [--anthropic-only] [--force]
   jev-router report [<log.jsonl>]
@@ -70,6 +70,10 @@ Config: --config, else $JEV_ROUTER_CONFIG, else $XDG_CONFIG_HOME/jev-router/conf
 (~/.config by default) if it exists, else the packaged default. JEV_ROUTER_HOST and
 JEV_ROUTER_PORT override the config's host and port; the flags override both.
 JEV_ROUTER_UI works like --ui.
+
+Keys: --env-file, else $JEV_ROUTER_ENV_FILE, names a file of KEY=VALUE lines (such as
+~/.config/jev-router/env, mode 600) that is loaded before anything reads the environment.
+Variables already set win. launch keeps the file's variables away from the agent.
 `;
 
 /**
@@ -176,6 +180,96 @@ function configFile(flag, env) {
 }
 
 /**
+ * Variables Node reads only when it starts: an env file loaded later can set them, but they change
+ * nothing. (NODE_OPTIONS isn't listed: Node itself applies it from a file named by --env-file.)
+ * @type {ReadonlySet<string>}
+ */
+const STARTUP_ONLY = new Set(['NODE_USE_ENV_PROXY', 'NODE_EXTRA_CA_CERTS', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY']);
+
+/**
+ * @typedef {object} EnvFile
+ * @property {string} path
+ * @property {string} source `--env-file` or `JEV_ROUTER_ENV_FILE`
+ * @property {string[]} names the variables it set; a variable that was set already keeps its value and isn't listed
+ */
+
+/**
+ * A file error in a few words: the file's path is in the message around it already.
+ * @param {unknown} err
+ */
+function fileProblem(err) {
+  const code = errorCode(err);
+  if (code === 'ENOENT') return 'no such file';
+  if (code === 'EACCES') return 'permission denied';
+  return errorMessage(err);
+}
+
+/**
+ * Loads the env file that --env-file or JEV_ROUTER_ENV_FILE names into the environment, with
+ * Node's own loader: its KEY=VALUE lines are there before anything reads a key or a setting, and a
+ * variable that is set already wins. The file holds API keys, so a mode that lets other users read
+ * or change it gets a warning, as do variables that Node reads only when it starts.
+ * @param {string | undefined} flag
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {EnvFile | undefined} undefined when no env file is given
+ */
+function loadEnvFile(flag, env) {
+  const given = flag ?? envValue(env, 'JEV_ROUTER_ENV_FILE');
+  if (given === undefined) return undefined;
+  const path = resolve(given);
+  const source = flag === undefined ? 'JEV_ROUTER_ENV_FILE' : '--env-file';
+  const before = new Set(Object.keys(process.env));
+  let mode = 0;
+  try {
+    const info = statSync(path);
+    if (!info.isFile()) throw new Error('not a file');
+    mode = info.mode;
+    process.loadEnvFile(path);
+  } catch (err) {
+    throw new Error(`Cannot read env file ${path} (${source}): ${fileProblem(err)}`);
+  }
+  const names = Object.keys(process.env).filter((name) => !before.has(name));
+  // `env` is process.env unless a caller passed its own; it gets the file's variables too.
+  if (env !== process.env) for (const name of names) env[name] ??= process.env[name];
+  const loose = looseFile(path, mode);
+  if (loose) console.error(`jev-router: ${loose}`);
+  const late = names.filter((name) => STARTUP_ONLY.has(name.toUpperCase()));
+  if (late.length) {
+    const [they, have] = late.length === 1 ? ['it', 'has'] : ['them', 'have'];
+    console.error(
+      `jev-router: ${late.join(', ')} in ${path} ${have} no effect: Node reads ${they} only when it starts. Set ${they} where jev-router is started instead.`,
+    );
+  }
+  return { path, source, names };
+}
+
+/**
+ * The warning for a file of keys that other users can read or change. Windows has no such mode bits.
+ * @param {string} path
+ * @param {number} mode the file's mode
+ * @returns {string | undefined} undefined when only its owner can
+ */
+function looseFile(path, mode) {
+  if (process.platform === 'win32' || (mode & 0o066) === 0) return undefined;
+  const verbs = [mode & 0o044 ? 'read' : '', mode & 0o022 ? 'change' : ''].filter(Boolean).join(' and ');
+  const octal = (mode & 0o777).toString(8).padStart(3, '0');
+  return `other users can ${verbs} ${path} (mode ${octal}), which holds API keys. Run: chmod 600 ${shellQuote(path)}`;
+}
+
+/**
+ * The agent's environment under `launch`: the user's, without what the env file added. Those are
+ * the router's keys, and every command the agent runs would see them.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {EnvFile | undefined} file
+ * @returns {NodeJS.ProcessEnv}
+ */
+function agentEnv(env, file) {
+  if (!file?.names.length) return env;
+  const added = new Set(file.names);
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !added.has(name)));
+}
+
+/**
  * Loads the config and works out where the router listens and which token it expects.
  * @param {Record<string, string | undefined>} values the parsed --config, --host and --port
  * @param {NodeJS.ProcessEnv} env
@@ -270,8 +364,15 @@ function listen(server, port, host) {
  * @returns {Promise<undefined>}
  */
 async function serve(args, env) {
-  const { values, rest } = parseArgs(args, { '--config': 'value', '--host': 'value', '--port': 'value', '--ui': 'value' });
+  const { values, rest } = parseArgs(args, {
+    '--config': 'value',
+    '--env-file': 'value',
+    '--host': 'value',
+    '--port': 'value',
+    '--ui': 'value',
+  });
   if (rest.length) throw new Error(`serve takes no arguments, got "${rest.join(' ')}"`);
+  loadEnvFile(values['env-file'], env);
   const { cfg: loaded, path, host, port, token } = settings(values, env);
   if (!isLoopback(host) && !token) throw new Error(`Refusing to listen on ${host} without a token: set JEV_ROUTER_TOKEN.`);
   const uiAddress = parseUiAddress(values.ui ?? envValue(env, 'JEV_ROUTER_UI'));
@@ -365,8 +466,12 @@ async function startView(view, { host, port }) {
 
 /** @type {Record<string, { bin: string, override: string, spec: Record<string, 'value' | 'flag'> }>} */
 const AGENTS = {
-  claude: { bin: 'claude', override: 'JEV_ROUTER_CLAUDE_BIN', spec: { '--config': 'value', '--port': 'value' } },
-  codex: { bin: 'codex', override: 'JEV_ROUTER_CODEX_BIN', spec: { '--config': 'value', '--port': 'value', '--force': 'flag' } },
+  claude: { bin: 'claude', override: 'JEV_ROUTER_CLAUDE_BIN', spec: { '--config': 'value', '--env-file': 'value', '--port': 'value' } },
+  codex: {
+    bin: 'codex',
+    override: 'JEV_ROUTER_CODEX_BIN',
+    spec: { '--config': 'value', '--env-file': 'value', '--port': 'value', '--force': 'flag' },
+  },
 };
 
 /**
@@ -378,8 +483,10 @@ const AGENTS = {
 async function launch(args, env) {
   const [name = '', ...rest] = args;
   const agent = Object.hasOwn(AGENTS, name) ? AGENTS[name] : undefined;
-  if (!agent) throw new Error('Usage: jev-router launch claude|codex [--config <file>] [--port <n>] [--] [agent args…]');
+  if (!agent)
+    throw new Error('Usage: jev-router launch claude|codex [--config <file>] [--env-file <file>] [--port <n>] [--] [agent args…]');
   const { values, flags, rest: agentArgs } = parseArgs(rest, agent.spec, { passthrough: true });
+  const file = loadEnvFile(values['env-file'], env);
   const { cfg, host, port, token } = settings(values, env);
   const wanted = envValue(env, agent.override) ?? agent.bin;
   const bin = findProgram(wanted, env);
@@ -393,12 +500,13 @@ async function launch(args, env) {
       ? `jev-router: reusing the jev-router ${router.version} at ${router.url}`
       : `jev-router: routing ${name} through ${router.url} (log: ${router.logFile})`,
   );
+  const forAgent = agentEnv(env, file);
   try {
     if (name === 'codex') {
       writeCodexProfile(env, router.url, token, flags.has('force'));
-      return await runAgent(bin, ['--profile', 'jev', ...agentArgs], env);
+      return await runAgent(bin, ['--profile', 'jev', ...agentArgs], forAgent);
     }
-    return await runAgent(bin, agentArgs, { ...env, ...claudeVars(env, router.url, token) });
+    return await runAgent(bin, agentArgs, { ...forAgent, ...claudeVars(forAgent, router.url, token) });
   } finally {
     await router.stop();
   }
@@ -644,10 +752,11 @@ const shellQuote = (value) => (/^[\w@%+=:,./-]+$/.test(value) ? value : `'${valu
  * @returns {Promise<number>}
  */
 async function printEnv(args, env) {
-  const { values, rest } = parseArgs(args, { '--config': 'value', '--port': 'value' });
+  const { values, rest } = parseArgs(args, { '--config': 'value', '--env-file': 'value', '--port': 'value' });
   const [agent, ...extra] = rest;
   if (!(agent === 'claude' || agent === 'codex') || extra.length)
-    throw new Error('Usage: jev-router env claude|codex [--config <file>] [--port <n>]');
+    throw new Error('Usage: jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]');
+  loadEnvFile(values['env-file'], env);
   const { host, port, token } = settings(values, env);
   if (port === 0) throw new Error('env needs the port the router listens on, not 0');
   const url = `http://${clientHost(host)}:${port}`;

@@ -251,6 +251,8 @@ test('version, help, and a short error for an unknown command, option or usage',
     for (const usage of ['launch claude', 'launch codex', 'env claude|codex', 'doctor', 'init', 'report [<log.jsonl>]']) {
       assert.ok(help.stdout.includes(`jev-router ${usage}`), usage);
     }
+    assert.match(help.stdout, /\[--env-file <file>\]/);
+    assert.match(help.stdout, /\$JEV_ROUTER_ENV_FILE/);
   }
   const unknown = await run(['frobnicate'], env);
   assert.deepEqual(unknown, {
@@ -736,6 +738,94 @@ test('launch claude adds the router token to the user’s custom headers, and th
   assert.equal(fromConfig.code, 0, fromConfig.stderr);
   assert.equal(box.agent().env.ANTHROPIC_CUSTOM_HEADERS, 'x-team: blue\nx-jev-router-token: from-config');
   assert.equal(box.agent().request.status, 200);
+});
+
+test('--env-file and JEV_ROUTER_ENV_FILE load the router keys first, set variables win, and launch keeps them from the agent', async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const config = writeConfig(join(box.root, 'env-file.json'), {}, { upstream: upstream.url });
+  const fileKey = fake('file-', 'anthropic-', 'DO-NOT-PRINT');
+  const shellKey = fake('shell-', 'anthropic-', 'DO-NOT-PRINT');
+  const fileToken = fake('file-', 'router-', 'token');
+  const envFile = join(box.root, 'router.env');
+  writeFileSync(envFile, `# the router's own keys\nANTHROPIC_API_KEY=${fileKey}\nexport JEV_ROUTER_TOKEN="${fileToken}"\n`);
+  chmodSync(envFile, 0o600);
+
+  const env = { ...box.env, JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT, FAKE_AGENT_REQUEST: '1', FAKE_CLIENT_KEY: CLIENT_KEY };
+  const launched = await run(['launch', 'claude', '--config', config, '--port', '0', '--env-file', envFile], env);
+  assert.equal(launched.code, 0, launched.stderr);
+  assert.doesNotMatch(launched.stderr, /chmod|reads only when it starts/, 'a private file with plain keys gets no warning');
+  const agent = box.agent();
+  assert.equal(agent.env.ANTHROPIC_API_KEY, undefined, "the file's key stays with the router");
+  assert.equal(
+    agent.env.ANTHROPIC_CUSTOM_HEADERS,
+    `x-jev-router-token: ${fileToken}`,
+    'the token from the file reaches the agent as its header',
+  );
+  assert.equal(agent.request.status, 200, 'the router took the token from the file');
+  assert.equal(upstream.calls.at(-1)?.headers['x-api-key'], fileKey, 'and used the key from the file');
+
+  const serving = start(['serve', '--config', config, '--port', '0'], {
+    ...box.env,
+    JEV_ROUTER_ENV_FILE: envFile,
+    ANTHROPIC_API_KEY: shellKey,
+  });
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router to listen');
+  const res = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': CLIENT_KEY, 'x-jev-router-token': fileToken },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 64, messages: [{ role: 'user', content: 'Add a test' }] }),
+  });
+  await res.text();
+  assert.equal(res.status, 200, 'JEV_ROUTER_ENV_FILE works like --env-file');
+  assert.equal(upstream.calls.at(-1)?.headers['x-api-key'], shellKey, 'a variable that is set already wins over the file');
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
+  for (const secret of [fileKey, shellKey])
+    assert.ok(!`${serving.out.stdout}${serving.out.stderr}`.includes(secret), 'a key reached the output');
+
+  const flagWins = await run(['env', 'claude', '--env-file', envFile], { ...box.env, JEV_ROUTER_ENV_FILE: join(box.root, 'missing.env') });
+  assert.equal(flagWins.code, 0, '--env-file wins over JEV_ROUTER_ENV_FILE');
+  assert.match(
+    flagWins.stdout,
+    new RegExp(`^export ANTHROPIC_CUSTOM_HEADERS='x-jev-router-token: ${fileToken}'$`, 'm'),
+    'env reads the token from it',
+  );
+});
+
+test('an env file that cannot be read stops the command, and one other users can read or that sets startup-only variables gets a warning', async () => {
+  const box = sandbox();
+  const missing = join(box.root, 'missing.env');
+  const failed = await run(['serve', '--port', '0'], { ...box.env, JEV_ROUTER_ENV_FILE: missing });
+  assert.deepEqual(
+    { code: failed.code, stderr: failed.stderr },
+    { code: 1, stderr: `jev-router: Cannot read env file ${missing} (JEV_ROUTER_ENV_FILE): no such file\n` },
+  );
+  const directory = await run(['launch', 'codex'], { ...box.env, JEV_ROUTER_ENV_FILE: box.root, JEV_ROUTER_CODEX_BIN: FAKE_AGENT });
+  assert.equal(directory.code, 1);
+  assert.match(directory.stderr, /Cannot read env file .* \(JEV_ROUTER_ENV_FILE\): not a file/);
+  // Node 22 and 24 check the file of an --env-file anywhere on their own command line, script
+  // arguments included, and stop with their own message before jev-router runs. They don't load it.
+  for (const args of [['--env-file', missing], [`--env-file=${missing}`]]) {
+    const flagged = await run(['launch', 'codex', ...args], { ...box.env, JEV_ROUTER_CODEX_BIN: FAKE_AGENT });
+    assert.notEqual(flagged.code, 0);
+    assert.ok(flagged.stderr.includes(missing), flagged.stderr);
+  }
+  assert.ok(!existsSync(box.report), 'the agent never started');
+
+  const shared = join(box.root, 'shared.env');
+  writeFileSync(shared, 'JEV_ROUTER_PORT=4567\nNODE_OPTIONS=--no-warnings\nNODE_USE_ENV_PROXY=1\nhttps_proxy=http://proxy.example:3128\n');
+  chmodSync(shared, 0o664);
+  const loose = await run(['env', 'claude', '--env-file', shared], box.env);
+  assert.equal(loose.code, 0, loose.stderr);
+  assert.match(loose.stdout, /^export ANTHROPIC_BASE_URL=http:\/\/127\.0\.0\.1:4567$/m, 'the file set the port');
+  const warnings = loose.stderr.split('\n').filter((line) => line.includes(shared));
+  assert.deepEqual(warnings, [
+    `jev-router: other users can read and change ${shared} (mode 664), which holds API keys. Run: chmod 600 ${shared}`,
+    `jev-router: NODE_USE_ENV_PROXY, https_proxy in ${shared} have no effect: Node reads them only when it starts. Set them where jev-router is started instead.`,
+  ]);
+  chmodSync(shared, 0o644);
+  assert.match((await run(['env', 'claude', '--env-file', shared], box.env)).stderr, /other users can read .*shared\.env \(mode 644\)/);
 });
 
 test('launch reuses a router that already answers on the port, and leaves it running', async () => {
