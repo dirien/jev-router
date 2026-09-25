@@ -1023,6 +1023,11 @@ test('--env-file and JEV_ROUTER_ENV_FILE load the router keys first, set variabl
   chmodSync(envFile, 0o600);
 
   const env = { ...box.env, JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT, FAKE_AGENT_REQUEST: '1', FAKE_CLIENT_KEY: CLIENT_KEY };
+  // The plain-machine path: real keys from a file, and no proxy or sandbox variable anywhere.
+  assert.deepEqual(
+    Object.keys(env).filter((name) => /proxy|^SBX_/i.test(name)),
+    [],
+  );
   const launched = await run(['launch', 'claude', '--config', config, '--port', '0', '--env-file', envFile], env);
   assert.equal(launched.code, 0, launched.stderr);
   assert.doesNotMatch(launched.stderr, /chmod|reads only when it starts/, 'a private file with plain keys gets no warning');
