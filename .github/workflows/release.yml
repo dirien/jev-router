@@ -1,0 +1,194 @@
+name: release
+
+# Runs for a version tag: git tag -a v1.4.0 -m v1.4.0 && git push origin v1.4.0
+# docs/releasing.md has the checklist, and explains how to turn on the npm publish.
+on:
+  push:
+    tags: ['v*']
+
+# Each job asks for what it needs.
+permissions: {}
+
+# One release at a time, so two tags can't race for the kit's :latest.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: check and pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      latest: ${{ steps.meta.outputs.latest }}
+      npm-tag: ${{ steps.meta.outputs.npm-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # every tag, to tell whether this is the newest release
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Match the tag to the version
+        id: meta
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag $TAG doesn't match the version in package.json, $version."
+            exit 1
+          fi
+          # The newest release gets the kit's :latest, GitHub's Latest badge and npm's latest tag. A
+          # pre-release gets npm's next tag, and a fix for an older line npm's maintenance tag.
+          newest="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          prerelease=false latest=false npm_tag=maintenance
+          case "$version" in
+            *-*) prerelease=true npm_tag=next ;;
+            *) if [ "$TAG" = "$newest" ]; then latest=true npm_tag=latest; fi ;;
+          esac
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "latest=$latest"
+            echo "npm-tag=$npm_tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "version $version, prerelease $prerelease, latest $latest, npm tag $npm_tag"
+      # Packs before npm ci, so no dependency's code has run when the tarball is made.
+      - name: Pack, and take the notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir "$RUNNER_TEMP/dist"
+          npm pack --pack-destination "$RUNNER_TEMP/dist"
+          node scripts/release-notes.mjs "$VERSION" > "$RUNNER_TEMP/dist/notes.md"
+      - name: Smoke-test the tarball and a git install
+        run: node scripts/smoke-package.mjs --git --tarball "$RUNNER_TEMP"/dist/*.tgz
+      - run: npm ci
+      - run: npm run check
+      - name: Checksums
+        working-directory: ${{ runner.temp }}/dist
+        run: sha256sum -- *.tgz | tee SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  kit:
+    name: sandbox kit
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # sbx, pinned by release and by the SHA-256 that GitHub lists for the asset. To move to another release:
+      # gh api repos/docker/sbx-releases/releases/tags/<tag> --jq '.assets[] | select(.name == "DockerSandboxes-linux-amd64.tar.gz") | .digest'
+      SBX_VERSION: v0.45.1
+      SBX_SHA256: a5470cabe32d25d242e05a10d1a2feb67a33e1e668e0e8c2488e0e02712e74f7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install sbx
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/sbx.tar.gz" \
+            "https://github.com/docker/sbx-releases/releases/download/$SBX_VERSION/DockerSandboxes-linux-amd64.tar.gz"
+          echo "$SBX_SHA256  $RUNNER_TEMP/sbx.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/sbx.tar.gz" -C "$RUNNER_TEMP" docker-sbx/sbx
+          echo "$RUNNER_TEMP/docker-sbx" >> "$GITHUB_PATH"
+      - name: Stamp the kit with the version, and validate it
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          sed -i -e '/^version: /d' -e "/^name: /a version: \"$VERSION\"" sbx/jev-router-kit/spec.yaml
+          grep -qx "version: \"$VERSION\"" sbx/jev-router-kit/spec.yaml
+          sbx version
+          sbx kit validate sbx/jev-router-kit
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ github.token }}
+        run: echo "$TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      # sbx kit push records the commit in a provenance attestation, because the kit sits in a git checkout.
+      - name: Push
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          LATEST: ${{ needs.build.outputs.latest }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/jev-router-kit"
+          sbx kit push sbx/jev-router-kit "$image:$VERSION"
+          if [ "$LATEST" = true ]; then
+            sbx kit push sbx/jev-router-kit "$image:latest"
+          fi
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+  release:
+    name: GitHub release
+    needs: [build, kit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          LATEST: ${{ needs.build.outputs.latest }}
+        run: |
+          flags=(--verify-tag --title "$TAG" --notes-file dist/notes.md "--latest=$LATEST")
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}" dist/*.tgz dist/SHA256SUMS
+      - name: Explain a skipped npm publish
+        if: vars.NPM_PUBLISH != 'true'
+        run: >-
+          echo "::notice title=npm publish skipped::The repository variable NPM_PUBLISH isn't 'true', so this
+          release doesn't go to npm. docs/releasing.md explains how to turn the publish on."
+
+  npm:
+    name: npm publish
+    needs: [build, release]
+    # Off until the repository variable NPM_PUBLISH is 'true'. It uses npm trusted publishing (OIDC), no token.
+    if: vars.NPM_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write # the OIDC token for npm and for the provenance attestation
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Publish the tarball from the release
+        working-directory: dist
+        env:
+          NPM_TAG: ${{ needs.build.outputs.npm-tag }}
+        run: |
+          sha256sum --check --strict SHA256SUMS
+          npm_version="$(npm --version)"
+          if [ "$(printf '%s\n' 11.5.1 "$npm_version" | sort -V | head -n 1)" != 11.5.1 ]; then
+            echo "::error::npm trusted publishing needs npm 11.5.1 or newer; this runner has npm $npm_version."
+            exit 1
+          fi
+          npm publish ./*.tgz --access public --provenance --tag "$NPM_TAG"
