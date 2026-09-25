@@ -2349,8 +2349,26 @@ function loadSnapshot(data) {
   schedule('layout', 'header', 'hero', 'feed', 'sessions', 'totals');
 }
 
+/**
+ * The token of a view that has one, from the address the page was opened with. It leaves the
+ * address bar at once, so it doesn't show on a shared screen; a reload uses the cookie the page
+ * set, and the event stream gets it in its query, which works without cookies too.
+ * @returns {string | undefined}
+ */
+function takeToken() {
+  const params = new URLSearchParams(location.search);
+  const token = params.get('token');
+  if (token === null) return undefined;
+  params.delete('token');
+  const rest = params.toString();
+  history.replaceState(history.state, '', `${location.pathname}${rest ? `?${rest}` : ''}${location.hash}`);
+  return token;
+}
+
+const viewToken = takeToken();
+
 function connect() {
-  const source = new EventSource('/events');
+  const source = new EventSource(viewToken === undefined ? '/events' : `/events?token=${encodeURIComponent(viewToken)}`);
   source.addEventListener('open', () => setConnection('live'));
   source.addEventListener('error', () => {
     if (source.readyState !== EventSource.CLOSED) {

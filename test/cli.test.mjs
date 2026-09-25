@@ -775,6 +775,42 @@ test("serve --ui shows the router's own entries live, and a view that cannot lis
   assert.match(bad.stderr, /--ui takes a port or host:port, got "somewhere"/);
 });
 
+test('serve --ui-token, else JEV_ROUTER_UI_TOKEN, puts the live view behind a token and prints the address that carries it', async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const config = writeConfig(join(box.root, 'ui-token.json'), {}, { upstream: upstream.url });
+  const token = fake('view-', 'token/', 'with?odd&chars');
+  const serving = start(['serve', '--config', config, '--port', '0', '--ui', '0.0.0.0:0', '--ui-token', token], box.env);
+  const shown = await waitFor(() => /live view on (http:\/\/127\.0\.0\.1:\d+\/)\?token=(\S+)\n/.exec(serving.out.stderr), 'the view');
+  const [, view, carried] = shown;
+  assert.equal(decodeURIComponent(carried), token, 'the address carries the token');
+  assert.doesNotMatch(serving.out.stderr, /anyone who can reach that address/, 'a view behind a token gets no open-view warning');
+  assert.equal((await fetch(view)).status, 401, 'no token, no page');
+  const page = await fetch(`${view}?token=${carried}`);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('set-cookie') ?? '', /^jev-router-ui-\d+=.*; HttpOnly; SameSite=Strict; Path=\/$/);
+  const url = /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1] ?? '';
+  assert.equal((await ask(url)).status, 200);
+  await waitFor(() => serving.out.stdout.includes('"event":"done"'), 'the done line');
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
+  assert.ok(!serving.out.stdout.includes(token) && !serving.out.stdout.includes(carried), 'the token never reaches the log');
+
+  const open = start(['serve', '--config', config, '--port', '0', '--ui', '0.0.0.0:0'], box.env);
+  await waitFor(() => open.out.stderr.includes('anyone who can reach that address can watch routing decisions'), 'the open-view warning');
+  const openView = /live view on (http:\/\/127\.0\.0\.1:\d+\/)\n/.exec(open.out.stderr)?.[1] ?? '';
+  assert.equal((await fetch(openView)).status, 200, 'without a token the view stays as it was');
+  open.child.kill('SIGTERM');
+  assert.equal((await open.done).code, 0);
+
+  const viewing = start(['ui', join(box.root, 'any.log'), '--port', '0'], { ...box.env, JEV_ROUTER_UI_TOKEN: token });
+  const uiView = await waitFor(() => /open (http:\/\/127\.0\.0\.1:\d+\/)\?token=\S+\n/.exec(viewing.out.stderr)?.[1], 'the ui view');
+  assert.equal((await fetch(uiView)).status, 401, 'jev-router ui takes JEV_ROUTER_UI_TOKEN too');
+  assert.equal((await fetch(`${uiView}?token=${carried}`)).status, 200);
+  viewing.child.kill('SIGTERM');
+  assert.equal((await viewing.done).code, 0);
+});
+
 test('serve refuses to listen on a network address without a token, or on a taken port', async () => {
   const box = sandbox();
   const open = await run(['serve', '--host', '0.0.0.0', '--port', '0'], box.env);

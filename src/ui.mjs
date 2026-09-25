@@ -3,6 +3,7 @@
 // by following a log file. It only shows log entries, which hold no prompt text and no keys, and it
 // listens on loopback unless it is given another address.
 
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { open, readFile, stat } from 'node:fs/promises';
 import http from 'node:http';
 import { basename, extname, join } from 'node:path';
@@ -42,6 +43,8 @@ const LOOPBACK = '127.0.0.1';
 /** Host names that always mean this machine. */
 const LOOPBACK_NAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const WILDCARDS = new Set(['0.0.0.0', '::']);
+/** The paths that show routing, and so need the token when the view has one. The page's code, style and icon don't. */
+const GUARDED = new Set(['/', '/index.html', '/events']);
 /** The longest line kept. The router's own lines are far shorter. */
 const MAX_LINE = 64 * 1024;
 /** The most read from the log in one poll; a larger backlog is read over several polls. */
@@ -268,8 +271,9 @@ function reply(res, status, message) {
  * @param {ServerResponse} res
  * @param {string} path
  * @param {boolean} headOnly
+ * @param {Record<string, string>} [headers] more response headers
  */
-async function sendAsset(res, path, headOnly) {
+async function sendAsset(res, path, headOnly, headers = {}) {
   /** @type {Buffer} */
   let body;
   try {
@@ -277,8 +281,58 @@ async function sendAsset(res, path, headOnly) {
   } catch {
     return reply(res, 404, 'Not found');
   }
-  res.writeHead(200, { ...HEADERS, 'content-type': TYPES[extname(path)] ?? 'application/octet-stream', 'content-length': body.length });
+  res.writeHead(200, {
+    ...HEADERS,
+    ...headers,
+    'content-type': TYPES[extname(path)] ?? 'application/octet-stream',
+    'content-length': body.length,
+  });
   res.end(headOnly ? undefined : body);
+}
+
+/** @param {string} value */
+const digest = (value) => createHash('sha256').update(value).digest();
+
+/**
+ * One cookie's value from a Cookie header.
+ * @param {string | undefined} header
+ * @param {string} name
+ * @returns {string | undefined}
+ */
+function readCookie(header, name) {
+  for (const part of (header ?? '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq <= 0 || part.slice(0, eq).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      return undefined; // not a value this view set
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The cookie that carries the token, named after the port the browser sees: views on other ports
+ * of the same host (forwarded from several sandboxes, say) keep their own.
+ * @param {string} host the request's Host header, already checked
+ */
+const cookieName = (host) => `jev-router-ui-${new URL(`http://${host}`).port || '80'}`;
+
+/**
+ * Where a request carries the view's token, compared in constant time: its query, or the cookie
+ * the page set.
+ * @param {IncomingMessage} req
+ * @param {URLSearchParams} query
+ * @param {Buffer} expected the token's digest
+ * @returns {'query' | 'cookie' | undefined} undefined when it doesn't
+ */
+function tokenFrom(req, query, expected) {
+  const given = query.get('token');
+  if (given !== null && timingSafeEqual(digest(given), expected)) return 'query';
+  const saved = readCookie(req.headers.cookie, cookieName(req.headers.host ?? ''));
+  if (saved !== undefined && timingSafeEqual(digest(saved), expected)) return 'cookie';
+  return undefined;
 }
 
 /**
@@ -296,7 +350,9 @@ export function createUiServer({
   heartbeatMs = 15000,
   assets = ASSET_DIR,
   maxClients = MAX_CLIENTS,
+  token,
 } = {}) {
+  const expected = token === undefined ? undefined : digest(token);
   /** @type {UiEvent[]} */
   const recent = [];
   /** @type {Set<ServerResponse>} */
@@ -357,16 +413,39 @@ export function createUiServer({
     res.on('close', () => clients.delete(res));
   };
 
+  /**
+   * The token check for the paths that show routing, when the view has a token.
+   * @param {IncomingMessage} req
+   * @param {string} path
+   * @param {string} search the query, without its `?`
+   * @returns {Record<string, string> | undefined} headers for the response, or undefined when the token is missing or wrong
+   */
+  const admit = (req, path, search) => {
+    if (!expected || !GUARDED.has(path)) return {};
+    const found = tokenFrom(req, new URLSearchParams(search), expected);
+    if (!found) return undefined;
+    // The page opened with ?token= keeps it in a cookie, for a reload once the address is clean.
+    if (found === 'query' && path !== '/events')
+      return {
+        'set-cookie': `${cookieName(req.headers.host ?? '')}=${encodeURIComponent(String(token))}; HttpOnly; SameSite=Strict; Path=/`,
+      };
+    return {};
+  };
+
   const server = http.createServer((req, res) => {
     const refused = refusal(req, names);
     if (refused) return reply(res, refused.status, refused.message);
-    const path = (req.url ?? '/').split('?')[0];
+    const target = req.url ?? '/';
+    const mark = target.indexOf('?');
+    const path = mark < 0 ? target : target.slice(0, mark);
+    const headers = admit(req, path, mark < 0 ? '' : target.slice(mark + 1));
+    if (!headers) return reply(res, 401, 'This live view needs its token: open the address jev-router printed, which ends in ?token=');
     if (path === '/events' && req.method !== 'GET') return reply(res, 405, 'Use GET for /events');
     if (path === '/events' && clients.size >= maxClients) return reply(res, 503, `Too many open pages (${maxClients}): close one`);
     if (path === '/events') return subscribe(res);
     const asset = ASSETS[path];
     if (!asset) return reply(res, 404, 'Not found');
-    void sendAsset(res, join(assets, asset), req.method === 'HEAD');
+    void sendAsset(res, join(assets, asset), req.method === 'HEAD', headers);
   });
 
   return {

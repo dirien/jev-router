@@ -29,17 +29,18 @@ async function until(check, what) {
 }
 
 /**
- * One request to the view, with the Host and Origin a browser would send.
+ * One request to the view, with the Host, Origin and cookie a browser would send.
  * @param {number} port
  * @param {string} path
- * @param {{ method?: string, host?: string, origin?: string }} [options]
+ * @param {{ method?: string, host?: string, origin?: string, cookie?: string }} [options]
  * @returns {Promise<{ status: number | undefined, headers: http.IncomingHttpHeaders, body: string }>}
  */
-function request(port, path, { method = 'GET', host = `127.0.0.1:${port}`, origin } = {}) {
+function request(port, path, { method = 'GET', host = `127.0.0.1:${port}`, origin, cookie } = {}) {
   return new Promise((done, fail) => {
     /** @type {Record<string, string>} */
     const headers = { host };
     if (origin) headers.origin = origin;
+    if (cookie) headers.cookie = cookie;
     const req = http.request({ host: '127.0.0.1', port, path, method, headers }, (res) => {
       /** @type {Buffer[]} */
       const chunks = [];
@@ -54,11 +55,15 @@ function request(port, path, { method = 'GET', host = `127.0.0.1:${port}`, origi
 /**
  * Opens the event stream and collects what arrives.
  * @param {number} port
+ * @param {{ path?: string, cookie?: string }} [options]
  */
-async function subscribe(port) {
+async function subscribe(port, { path = '/events', cookie } = {}) {
   const state = { text: '', ended: false };
+  /** @type {Record<string, string>} */
+  const headers = { host: `127.0.0.1:${port}` };
+  if (cookie) headers.cookie = cookie;
   /** @type {http.ClientRequest} */
-  const req = http.get({ host: '127.0.0.1', port, path: '/events', headers: { host: `127.0.0.1:${port}` } });
+  const req = http.get({ host: '127.0.0.1', port, path, headers });
   const res = await new Promise((done) => req.on('response', done));
   res.setEncoding('utf8');
   res.on('data', (/** @type {string} */ chunk) => {
@@ -266,6 +271,50 @@ test('a view without a log shows what is published, and answers a port forwarded
   assert.equal((await request(port, '/', { host: 'bad host' })).status, 403, 'a Host that is not a host');
   page.close();
   await view.close();
+});
+
+test('a view with a token asks for it on the page and the stream, in the query or the cookie the page sets', async () => {
+  const assets = mkdtempSync(join(dir, 'token-assets-'));
+  writeFileSync(join(assets, 'index.html'), '<!doctype html><title>jev-router</title>');
+  writeFileSync(join(assets, 'app.js'), 'export {};\n');
+  const token = 'view token; with=odd&chars';
+  const view = createUiServer({ heartbeatMs: 1000, assets, token });
+  view.publish({ ts: 't1', event: 'config', tiers: ['fast'] });
+  const port = Number(new URL(await view.listen(0)).port);
+  const query = `token=${encodeURIComponent(token)}`;
+  try {
+    for (const path of ['/', '/index.html', '/events', '/?token=wrong', '/events?token=']) {
+      const refused = await request(port, path);
+      assert.equal(refused.status, 401, path);
+      assert.match(refused.body, /needs its token/);
+    }
+    assert.equal((await request(port, '/app.js')).status, 200, "the page's code needs no token");
+
+    const page = await request(port, `/?${query}`);
+    assert.equal(page.status, 200);
+    const [cookie] = /** @type {string[]} */ (page.headers['set-cookie']);
+    assert.equal(cookie, `jev-router-ui-${port}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/`);
+    const saved = cookie.split(';')[0];
+    const again = await request(port, '/', { cookie: `theme=dark; ${saved}` });
+    assert.equal(again.status, 200, 'the cookie opens the page');
+    assert.equal(again.headers['set-cookie'], undefined, 'and is not set again');
+    assert.equal((await request(port, '/', { cookie: `jev-router-ui-${port}=wrong` })).status, 401);
+    assert.equal((await request(port, '/', { cookie: `jev-router-ui-${port}=%E0%A4%A` })).status, 401, 'a cookie it cannot read');
+    assert.equal(
+      (await request(port, '/', { cookie: `jev-router-ui-1=${encodeURIComponent(token)}` })).status,
+      401,
+      "another port's cookie",
+    );
+
+    for (const options of [{ cookie: saved }, { path: `/events?${query}` }]) {
+      const stream = await subscribe(port, options);
+      await until(() => stream.state.text.includes('event: snapshot'), 'the snapshot');
+      assert.equal(stream.res.headers['set-cookie'], undefined);
+      stream.close();
+    }
+  } finally {
+    await view.close();
+  }
 });
 
 test('the view takes a bounded number of open pages', async () => {

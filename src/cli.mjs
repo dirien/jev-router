@@ -39,14 +39,14 @@ const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or
 
 Usage:
   jev-router [serve] [--config <file>] [--env-file <file>] [--log-file <file>] [--host <h>] [--port <n>]
-                     [--ui [<host>:]<port>]
+                     [--ui [<host>:]<port>] [--ui-token <token>]
   jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--] [claude args…]
   jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--force] [--] [codex args…]
   jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
   jev-router doctor [--config <file>] [--live]
   jev-router init [--anthropic-only] [--force]
   jev-router report [<log.jsonl>]
-  jev-router ui [<log.jsonl>] [--port <n>]
+  jev-router ui [<log.jsonl>] [--port <n>] [--ui-token <token>]
   jev-router version | help
 
   serve    run the router in the foreground (the default command); --ui also serves the live view
@@ -60,7 +60,8 @@ Usage:
 Config: --config, else $JEV_ROUTER_CONFIG, else $XDG_CONFIG_HOME/jev-router/config.json
 (~/.config by default) if it exists, else the packaged default. JEV_ROUTER_HOST and
 JEV_ROUTER_PORT override the config's host and port; the flags override both.
-JEV_ROUTER_UI works like --ui.
+JEV_ROUTER_UI works like --ui. With --ui-token, else $JEV_ROUTER_UI_TOKEN, the live view asks
+for that token: open the address serve or ui prints, which carries it.
 
 Keys: --env-file, else $JEV_ROUTER_ENV_FILE, names a file of KEY=VALUE lines (such as
 ~/.config/jev-router/env, mode 600) that is loaded before anything reads the environment.
@@ -429,6 +430,7 @@ async function serve(args, env) {
     '--log-file': 'value',
     '--port': 'value',
     '--ui': 'value',
+    '--ui-token': 'value',
   });
   if (rest.length) throw new Error(`serve takes no arguments, got "${rest.join(' ')}"`);
   loadEnvFile(values['env-file'], env);
@@ -445,7 +447,8 @@ async function serve(args, env) {
     stdoutBroken = true;
   });
   process.stderr.on('error', () => undefined);
-  const view = uiAddress ? createUiServer() : undefined;
+  const uiToken = values['ui-token'] ?? envValue(env, 'JEV_ROUTER_UI_TOKEN');
+  const view = uiAddress ? createUiServer({ token: uiToken }) : undefined;
   const log = logger(() => ({ files: [logFile ?? cfg.logFile], maxBytes: cfg.logMaxBytes }), {
     echo: (entry, line) => {
       if (!stdoutBroken) process.stdout.write(line);
@@ -490,7 +493,7 @@ async function serve(args, env) {
   });
   console.error(`jev-router ${VERSION} listening on http://${urlHost(host)}:${bound}`);
   logConfig(log, cfg);
-  if (view && uiAddress) await startView(view, uiAddress);
+  if (view && uiAddress) await startView(view, uiAddress, uiToken);
   return undefined;
 }
 
@@ -508,16 +511,24 @@ function parseUiAddress(value) {
 }
 
 /**
+ * The address of the live view to open: with its token, when it has one.
+ * @param {string} url
+ * @param {string | undefined} token
+ */
+const viewUrl = (url, token) => (token === undefined ? url : `${url}?token=${encodeURIComponent(token)}`);
+
+/**
  * Starts the live view of `serve --ui`. A view that can't listen is reported, and routing goes on
  * without it: the view must never take the router down.
  * @param {UiServer} view
  * @param {{ host: string, port: number }} address
+ * @param {string | undefined} token what the view asks for, if anything
  */
-async function startView(view, { host, port }) {
+async function startView(view, { host, port }, token) {
   try {
     const url = await view.listen(port, host);
-    console.error(`jev-router: live view on ${url}`);
-    if (!isLoopback(host))
+    console.error(`jev-router: live view on ${viewUrl(url, token)}`);
+    if (!isLoopback(host) && token === undefined)
       console.error(
         `jev-router: the live view listens on ${urlHost(host)}, so anyone who can reach that address can watch routing decisions (models, tiers, costs; never prompts or keys).`,
       );
@@ -1101,18 +1112,19 @@ function printReport(args, env) {
  * @returns {Promise<undefined>}
  */
 async function ui(args, env) {
-  const { values, rest } = parseArgs(args, { '--config': 'value', '--port': 'value' });
-  if (rest.length > 1) throw new Error('Usage: jev-router ui [<log.jsonl>] [--port <n>]');
+  const { values, rest } = parseArgs(args, { '--config': 'value', '--port': 'value', '--ui-token': 'value' });
+  if (rest.length > 1) throw new Error('Usage: jev-router ui [<log.jsonl>] [--port <n>] [--ui-token <token>]');
   const file = resolve(
     rest[0] ?? namedLogFile(undefined, env) ?? loadConfig(configFile(values.config, env).path).logFile ?? routerLogPath(env),
   );
   const port = values.port === undefined ? UI_PORT : parsePort(values.port);
-  const view = createUiServer({ file });
+  const token = values['ui-token'] ?? envValue(env, 'JEV_ROUTER_UI_TOKEN');
+  const view = createUiServer({ file, token });
   const url = await view.listen(port).catch((err) => {
     throw new Error(`cannot listen on ${LOOPBACK}:${port}: ${errorMessage(err)}`);
   });
   console.error(
-    `jev-router ui: open ${url}\nFollowing ${file}${existsSync(file) ? '' : ' (not there yet: waiting for the router to write it)'}`,
+    `jev-router ui: open ${viewUrl(url, token)}\nFollowing ${file}${existsSync(file) ? '' : ' (not there yet: waiting for the router to write it)'}`,
   );
   const stop = () => {
     void view.close().then(() => process.exit(0));

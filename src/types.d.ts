@@ -462,6 +462,11 @@ export interface UiOptions {
   assets?: string;
   /** How many pages may stream at once; one more gets a 503. Defaults to 32. */
   maxClients?: number;
+  /**
+   * When set, the page and `/events` need it: as `?token=`, or in the HttpOnly, SameSite=Strict cookie that the page
+   * sets when it is opened with `?token=`. The page's code, style and icon stay open.
+   */
+  token?: string;
 }
 
 /** The live view's server; see `createUiServer`. */
