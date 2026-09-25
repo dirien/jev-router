@@ -208,11 +208,15 @@ function isListening(port) {
   });
 }
 
-/** @param {string} text */
+/**
+ * The complete lines of a log as entries. Output that is still arriving can end in part of a line,
+ * or be empty, and neither is an entry yet.
+ * @param {string} text
+ */
 const logEntries = (text) =>
   text
-    .trim()
     .split('\n')
+    .slice(0, -1)
     .map((line) => JSON.parse(line));
 /** @param {string} text */
 const logEvents = (text) => logEntries(text).map((entry) => entry.event);
