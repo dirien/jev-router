@@ -167,6 +167,8 @@ jobs:
     name: npm publish
     needs: [build, release]
     # Off until the repository variable NPM_PUBLISH is 'true'. It uses npm trusted publishing (OIDC), no token.
+    # Trusted publishing can't create a package, so the first publish uses the NPM_TOKEN secret instead: npm tries
+    # OIDC first and falls back to the token. Delete the secret once the trusted publisher is set up.
     if: vars.NPM_PUBLISH == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -184,11 +186,19 @@ jobs:
         working-directory: dist
         env:
           NPM_TAG: ${{ needs.build.outputs.npm-tag }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           sha256sum --check --strict SHA256SUMS
           npm_version="$(npm --version)"
           if [ "$(printf '%s\n' 11.5.1 "$npm_version" | sort -V | head -n 1)" != 11.5.1 ]; then
             echo "::error::npm trusted publishing needs npm 11.5.1 or newer; this runner has npm $npm_version."
             exit 1
+          fi
+          if [ -n "$NPM_TOKEN" ]; then
+            # npm expands ${NPM_TOKEN} when it reads the file, so the token itself never touches the disk.
+            # shellcheck disable=SC2016
+            printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$RUNNER_TEMP/npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc"
+            echo "::warning title=NPM_TOKEN is set::npm uses the token only when trusted publishing fails, as it must for the first publish. Once the trusted publisher is set up on npmjs.com, delete it: gh secret delete NPM_TOKEN"
           fi
           npm publish ./*.tgz --access public --provenance --tag "$NPM_TAG"
