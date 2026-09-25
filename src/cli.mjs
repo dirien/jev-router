@@ -302,27 +302,56 @@ const errorMessage = (err) => (err instanceof Error ? err.message : String(err))
 const errorCode = (err) => (err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : undefined);
 
 /**
+ * Why a log line couldn't be written, in a few words.
+ * @param {unknown} err
+ */
+function writeProblem(err) {
+  const code = errorCode(err);
+  if (code === 'ENOENT') return 'its directory does not exist';
+  if (code === 'EACCES' || code === 'EPERM') return 'permission denied';
+  if (code === 'ENOSPC') return 'no space left on the device';
+  if (code === 'EISDIR') return 'it is a directory';
+  return errorMessage(err);
+}
+
+/**
  * The router's log: one JSON line per event, for `echo` and appended to each file (created with
- * mode 0600). A file rotates to `<file>.1` before it would grow past `maxBytes`.
+ * mode 0600). A file rotates to `<file>.1` before it would grow past `maxBytes`. A file that can't
+ * be written costs its own lines and never a request: its first failure becomes a warning entry
+ * for the other outputs, and `tell` hears about it, and about the file working again.
  * @param {() => { files: Array<string | null | undefined>, maxBytes: number }} targets looked up for every line, so a
  *   reloaded config's logFile and logMaxBytes apply
- * @param {(line: string) => void} [echo] also gets every line
+ * @param {{ echo?: (entry: Record<string, unknown>, line: string) => void, tell?: (text: string) => void }} [outputs]
  * @returns {(entry: Record<string, unknown>) => void}
  */
-function logger(targets, echo) {
-  return (entry) => {
+function logger(targets, { echo, tell } = {}) {
+  /** @type {Set<string>} files whose last write failed */
+  const failing = new Set();
+  /** @param {Record<string, unknown>} entry */
+  const write = (entry) => {
     const line = `${JSON.stringify(entry)}\n`;
-    echo?.(line);
+    echo?.(entry, line);
     const { files, maxBytes } = targets();
+    /** @type {string[]} */
+    const problems = [];
     for (const file of new Set(files)) {
       if (!file) continue;
       try {
         appendLogLine(file, line, maxBytes);
-      } catch {
-        // logging must not break routing
+        if (failing.delete(file)) tell?.(`jev-router: the log file ${file} can be written again`);
+      } catch (err) {
+        if (failing.has(file)) continue;
+        failing.add(file);
+        problems.push(`cannot write the log file ${file}: ${writeProblem(err)}. Its lines are lost until it can be written.`);
       }
     }
+    // A failing file is marked already, so these warnings can't fail into another round.
+    for (const message of problems) {
+      tell?.(`jev-router: ${message}`);
+      write({ ts: new Date().toISOString(), event: 'warning', message });
+    }
   };
+  return write;
 }
 
 /**
@@ -371,21 +400,19 @@ async function serve(args, env) {
   const uiAddress = parseUiAddress(values.ui ?? envValue(env, 'JEV_ROUTER_UI'));
   let cfg = { ...loaded, host, port };
   let stdoutBroken = false;
+  // A closed pipe must not crash the router: `serve 2>&1 | tee router.log` loses both when tee goes.
   process.stdout.on('error', () => {
-    stdoutBroken = true; // a closed log pipe must not crash the router
+    stdoutBroken = true;
   });
+  process.stderr.on('error', () => undefined);
   const view = uiAddress ? createUiServer() : undefined;
-  const toLog = logger(
-    () => ({ files: [cfg.logFile], maxBytes: cfg.logMaxBytes }),
-    (line) => {
+  const log = logger(() => ({ files: [cfg.logFile], maxBytes: cfg.logMaxBytes }), {
+    echo: (entry, line) => {
       if (!stdoutBroken) process.stdout.write(line);
+      view?.publish(entry);
     },
-  );
-  /** @param {Record<string, unknown>} entry */
-  const log = (entry) => {
-    toLog(entry);
-    view?.publish(entry);
-  };
+    tell: (text) => console.error(text),
+  });
   /** @param {string} text a message for people: stderr, and a notice in the live view */
   const say = (text) => {
     console.error(text);

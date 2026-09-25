@@ -560,17 +560,29 @@ test('serve logs JSON to stdout and the logFile, reloads on SIGHUP, and drains o
   writeFileSync(config, '{ not json');
   serving.child.kill('SIGHUP');
   await waitFor(() => serving.out.stderr.includes('reload failed, keeping the old config'), 'the failed reload');
-  writeConfig(config, { logFile: join(box.root, 'no-such-dir', 'serve.log') }, { upstream: upstream.url });
+  const missingDir = join(box.root, 'no-such-dir');
+  const unwritable = join(missingDir, 'serve.log');
+  writeConfig(config, { logFile: unwritable }, { upstream: upstream.url });
   serving.child.kill('SIGHUP');
   await waitFor(() => serving.out.stderr.includes('jev-router: config reloaded'), 'the reload');
-  await waitFor(() => logEvents(serving.out.stdout).length === 5, 'the reloaded config line');
-  assert.equal(logEvents(serving.out.stdout)[4], 'config');
+  await waitFor(() => logEvents(serving.out.stdout).length === 6, 'the reloaded config line and its warning');
+  const problem = `cannot write the log file ${unwritable}: its directory does not exist. Its lines are lost until it can be written.`;
+  assert.deepEqual(logEntries(serving.out.stdout).slice(4), [
+    { ...logEntries(serving.out.stdout)[4], event: 'config' },
+    { ts: logEntries(serving.out.stdout)[5].ts, event: 'warning', message: problem },
+  ]);
 
-  // Neither a logFile that can't be written nor a closed stdout pipe may stop the router.
+  // Neither a logFile that can't be written nor a closed stdout pipe may stop the router, and the
+  // failing file is reported once, not on every line.
   const logged = readFileSync(logFile, 'utf8');
   assert.equal((await ask(url)).status, 200);
-  await waitFor(() => logEvents(serving.out.stdout).length === 7, 'the next two lines on stdout');
+  await waitFor(() => logEvents(serving.out.stdout).length === 8, 'the next two lines on stdout');
   assert.equal(readFileSync(logFile, 'utf8'), logged, 'the reloaded config moved the logFile');
+  assert.equal(serving.out.stderr.split(problem).length - 1, 1, 'one note on stderr');
+  mkdirSync(missingDir);
+  assert.equal((await ask(url)).status, 200);
+  await waitFor(() => serving.out.stderr.includes(`the log file ${unwritable} can be written again`), 'the recovery note');
+  assert.deepEqual(logEvents(readFileSync(unwritable, 'utf8')), ['route', 'done']);
   serving.child.stdout.destroy();
   for (let i = 0; i < 3; i += 1) assert.equal((await ask(url)).status, 200);
 
@@ -579,6 +591,39 @@ test('serve logs JSON to stdout and the logFile, reloads on SIGHUP, and drains o
   assert.equal(code, 0);
   assert.match(serving.out.stderr, /shutting down, waiting for 0 request\(s\)/);
   assert.equal(await isListening(portOf(url)), false);
+});
+
+test('a log file on a full disk costs its lines, never a request', { skip: !existsSync('/dev/full') && 'no /dev/full' }, async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const config = writeConfig(join(box.root, 'full.json'), { logFile: '/dev/full' }, { upstream: upstream.url });
+  const serving = start(['serve', '--config', config, '--port', '0'], box.env);
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router to listen');
+  assert.equal((await ask(url)).status, 200);
+  await waitFor(() => serving.out.stdout.includes('"event":"done"'), 'the done line');
+  const warnings = logEntries(serving.out.stdout).filter((entry) => entry.event === 'warning' && entry.message.includes('/dev/full'));
+  assert.deepEqual(
+    warnings.map((entry) => entry.message),
+    ['cannot write the log file /dev/full: no space left on the device. Its lines are lost until it can be written.'],
+  );
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
+});
+
+test('serve keeps routing when its stderr goes away (regression: the next message killed it)', async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const config = writeConfig(join(box.root, 'stderr.json'), {}, { upstream: upstream.url });
+  const serving = start(['serve', '--config', config, '--port', '0'], box.env);
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router to listen');
+  serving.child.stderr.destroy();
+  serving.child.kill('SIGHUP'); // "config reloaded" goes to the closed stderr
+  await waitFor(() => logEvents(serving.out.stdout).filter((event) => event === 'config').length === 2, 'the reload');
+  await sleep(100);
+  assert.equal(serving.child.exitCode, null, 'still running');
+  assert.equal((await ask(url)).status, 200);
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
 });
 
 test('serve and launch rotate their log files at logMaxBytes without losing a line, and report reads both files', async () => {
