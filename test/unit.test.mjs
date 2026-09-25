@@ -604,6 +604,23 @@ test('Jev client: a client that goes away ends the decision without counting an 
   assert.equal(client.health().one.errors, 0);
 });
 
+test('Jev client: a client gone before the first call or between retries is an abort, not a Jev failure', async () => {
+  const gone = scripted({ 'one.invalid': [good] });
+  const before = await gone.client.decide(stateOf('Add a test'), { signal: AbortSignal.abort() });
+  assert.ok(!before.ok && before.aborted, 'already gone: aborted');
+  assert.equal(gone.calls.length, 0, 'and no call is made');
+  const controller = new AbortController();
+  const retrying = scripted({ 'one.invalid': [() => reply(503, {}, { 'retry-after': '0.3' }), good], 'two.invalid': [good] });
+  setTimeout(() => controller.abort(), 100);
+  const between = await retrying.client.decide(stateOf('Add a test'), { signal: controller.signal });
+  assert.ok(!between.ok && between.aborted && between.error === 'client went away', 'gone while waiting to retry: aborted');
+  assert.deepEqual(
+    retrying.calls.map((call) => call.host),
+    ['one.invalid'],
+    'no retry and no next channel',
+  );
+});
+
 test('Jev client: JEV_BASE_URL and JEV_API_KEY add a channel in front; keyless channels are dropped', async () => {
   const env = { JEV_BASE_URL: 'http://env.invalid', JEV_API_KEY: 'key-env', JEV_MODEL: 'jev-1.14.0' };
   const { client, calls } = scripted({ 'env.invalid': [good] }, { env });

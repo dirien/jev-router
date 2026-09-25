@@ -167,7 +167,7 @@ export function createRouter(
       max: cfg.maxSessions,
       onError: (err) => warn(`session file: ${/** @type {Error} */ (err).message}`),
     });
-  /** @type {Map<string, Promise<JevAnswer>>} */
+  /** @type {Map<string, { answer: Promise<JevAnswer>, controller: AbortController, waiters: number }>} */
   const inflight = new Map();
   const started = Date.now();
   let active = 0;
@@ -224,21 +224,38 @@ export function createRouter(
   }
 
   /**
-   * One Jev call per human turn, shared by concurrent requests of that turn.
+   * One Jev call per human turn, shared by concurrent requests of that turn. It is cancelled only
+   * when every request waiting for it has gone away, so one client that leaves can't take the
+   * decision from the others.
    * @param {Facts} f
    * @param {AbortSignal} signal
    * @returns {Promise<Decision>}
    */
   async function consultJev(f, signal) {
+    if (signal.aborted) return follow(f, 'client-aborted');
     const flightKey = `${f.key.id}#${f.turns.length}`;
     let flight = inflight.get(flightKey);
     if (!flight) {
       log({ ts: new Date().toISOString(), event: 'deciding', session: sessionId(f.key.id), turn: f.turns.length });
       const state = buildState({ body: f.body, headers: f.headers, turns: f.turns, bodyBytes: f.bodyBytes, jev: cfg.jev });
-      flight = jev.decide(state, { signal }).finally(() => inflight.delete(flightKey));
+      const controller = new AbortController();
+      const answer = jev.decide(state, { signal: controller.signal }).finally(() => inflight.delete(flightKey));
+      flight = { answer, controller, waiters: 0 };
       inflight.set(flightKey, flight);
     }
-    const answer = await flight;
+    const shared = flight;
+    shared.waiters += 1;
+    const leave = () => {
+      shared.waiters -= 1;
+      if (shared.waiters === 0) shared.controller.abort();
+    };
+    signal.addEventListener('abort', leave, { once: true });
+    let answer;
+    try {
+      answer = await shared.answer;
+    } finally {
+      signal.removeEventListener('abort', leave);
+    }
     return answer.ok ? afterJevAnswer(f, answer, cfg.jev.options) : afterJevFailure(f, answer);
   }
 

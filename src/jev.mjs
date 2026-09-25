@@ -203,10 +203,14 @@ export class JevClient {
     /** @type {string[]} */
     const errors = [];
     for (const ch of this.channels) {
+      if (signal?.aborted) break;
       const answer = await this.#ask(ch, state, { started, deadline, signal, errors });
       if (answer) return answer;
     }
-    return { ok: false, error: errors.join('; ') || 'no Jev channel is configured', ms: Math.round(performance.now() - started) };
+    const ms = Math.round(performance.now() - started);
+    // A client that left before or between calls is not a Jev failure.
+    if (signal?.aborted) return { ok: false, aborted: true, error: 'client went away', ms };
+    return { ok: false, error: errors.join('; ') || 'no Jev channel is configured', ms };
   }
 
   /**

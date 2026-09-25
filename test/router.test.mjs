@@ -799,6 +799,39 @@ test('a client that leaves during the Jev call costs no upstream request', async
   assert.equal(done().at(-1)?.client_aborted, true);
 });
 
+test("two requests of one turn share its Jev call, and one that leaves doesn't cancel it for the other (regression)", async () => {
+  reset(plans.a, { option: 'deep', probability: 0.9, delayMs: 300 });
+  const { url, routes } = await startRouter();
+  const body = cc('s-share', 'Design the cache');
+  const controller = new AbortController();
+  const d = await delta(async () => {
+    const leaving = fetch(`${url}/v1/messages`, {
+      method: 'POST',
+      headers: ccHeaders('s-share'),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    }).catch(() => null);
+    await sleep(50);
+    const staying = post(url, '/v1/messages', body, ccHeaders('s-share'));
+    await sleep(50);
+    controller.abort();
+    await leaving;
+    return staying;
+  });
+  assert.equal(d.jevA.length, 1, 'one Jev call for the turn');
+  assert.equal(d.result.status, 200);
+  assert.equal(d.result.headers.get('x-jev-reason'), 'jev', "the request that stayed got Jev's answer");
+  assert.deepEqual(
+    d.anthropic.map((call) => call.body.model),
+    ['claude-opus-5-5'],
+    'and only it went upstream',
+  );
+  assert.deepEqual(
+    routes().map((r) => r.reason),
+    ['jev', 'jev'],
+  );
+});
+
 test('server.active counts requests in flight, so a shutdown can wait for them (regression: it stayed 0)', async () => {
   reset(plans.a, { option: 'routine', probability: 0.9 });
   const { url, server } = await startRouter();
