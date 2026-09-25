@@ -9,11 +9,23 @@ is a starter, not a basis for trusting them.
 
 ## Running it
 
+The harness and the prompts live in the repository, not in the installed package, so run them from a clone:
+
+```bash
+git clone https://github.com/dirien/jev-router.git && cd jev-router && npm ci
+```
+
 ```bash
 npm run eval                        # live: needs TYPESAFE_API_KEY or OPENROUTER_API_KEY, about $0.002 per run
 npm run eval -- --repeats 3         # ask each prompt three times, to see how stable the answers are
 npm run eval -- --config my.json    # evaluate another config, for example with a changed rubric
 npm run eval:mock                   # keyword stand-in for Jev: checks the harness, measures nothing
+```
+
+To use the keys from your env file, and your own config, let Node load the file:
+
+```bash
+node --env-file ~/.config/jev-router/env eval/run.mjs --config ~/.config/jev-router/config.json
 ```
 
 The summary is printed as JSON on stdout. The per-prompt results, with every probability and guard value, go to
@@ -73,8 +85,9 @@ Jev calls.
 - Check that `injection.downgraded` stays at zero. If variants with a routing claim go unflagged, lower
   `policy.claimGuard`, then check the per-prompt results to make sure ordinary prompts don't trip it.
 
-Then reload a running router: send it `SIGHUP` (`kill -HUP <pid>`, `launchctl kill HUP …` or
-`systemctl --user reload jev-router`). The router re-validates the config before it takes effect.
+Then reload a running router by sending it `SIGHUP`: `kill -HUP <pid>` for one in a terminal,
+`launchctl kill HUP gui/$(id -u)/io.github.dirien.jev-router` for the launchd service, or
+`systemctl --user reload jev-router` for the systemd one. The router re-validates the config before it takes effect.
 
 ## How big the set should be
 

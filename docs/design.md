@@ -150,6 +150,11 @@ jev-router falls back in steps, and says so every time:
   response carries `x-jev-tier`, `x-jev-model`, `x-jev-reason` and `x-jev-session`. Missing hint headers, unknown
   pins and a missing Jev key produce a warning. `/healthz` shows each channel's errors and circuit state, and
   `jev-router report` shows the fallback rate.
+- **One client can't cancel a shared decision.** Concurrent requests of one human turn share one Jev call, and that
+  call ends only when every request waiting for it has gone away.
+- **Upstream failures, named.** A 502 names the upstream host and the cause, such as a failed DNS lookup or a TLS
+  error. A stream the upstream breaks off is cut for the client too, so it can't pass for a whole response, and its
+  `done` line still records the usage so far.
 
 A Jev failure never fails the request itself. The worst case is a session on the default tier.
 
@@ -177,13 +182,29 @@ only what it must:
   thinks it's using, and a live check on 2026-09-24 got a 400 from Haiku 4.5 for adaptive `thinking`, for
   `output_config.effort`, and for a `context_management` edit without thinking. With the `omit` list, the same
   requests succeed.
+- **`max_tokens`**, lowered to what the target's model accepts. Claude Code asks for 128,000 output tokens because it
+  believes it talks to Opus 5.5, and Haiku 4.5 refuses anything above 64,000.
+- **System messages inside the conversation.** Claude Code sends `role: "system"` messages mid-conversation to the
+  Claude 5 family, and Haiku 4.5 answers "role 'system' is not supported on this model". For such a model the router
+  folds each one into the user message it follows, as `<system-reminder>` text, and moves the tools it adds into
+  `tools`.
+- **Betas the model refuses.** Once Claude Code's own model has a 1M window, it asks for the 1M-context beta on every
+  request, and Haiku 4.5 refuses it on a subscription. The router drops that flag for Haiku.
 - **`count_tokens`** stays local for targets without it. Ollama Cloud has no `count_tokens`, and the router answers
   with a 404 rather than sending the prompt to a counter with another tokenizer; Claude Code then falls back to an
   estimate.
 
-Claude Code can't learn a routed model's context window through a gateway, so the client setup sets
-`CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000`, below the smallest window among the tiers
-([environment variables](https://code.claude.com/docs/en/env-vars)).
+The rejected fields, `max_tokens`, the system messages and the beta each broke Claude Code turns routed to Haiku 4.5 in
+the live checks. Claude Code keeps its own model name (Opus 5.5, say) and that model's features, and the router adapts
+only the requests it sends to a smaller model. [comparison.md](comparison.md#claude-code-compatibility) shows how
+other Jev routers handle the same requests.
+
+Two settings belong to the client, not the router. Claude Code can't learn a routed model's context window through a
+gateway, so the client setup sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW=160000`, below the smallest window among the
+tiers ([environment variables](https://code.claude.com/docs/en/env-vars)). And behind any gateway, Claude Code turns
+MCP tool search off and sends every MCP tool definition with every request: with a few MCP servers, about 200,000
+tokens per request in a live test, so Claude Code compacted on every message. `launch claude` and `env claude` set
+`ENABLE_TOOL_SEARCH=true`, and the router forwards tool search as is.
 
 Codex needs one more piece. It shapes every request from the model's catalog entry: tool types, shell type, parallel
 tool calls. Ollama Cloud's Responses API doesn't replay custom or freeform tool calls
@@ -202,11 +223,28 @@ are stripped, and a compacted conversation, which no longer contains the anchor 
 
 ## No admin surface
 
-The router serves the proxied `/v1/*` routes and `GET /healthz`, and nothing else: no dashboard, no config API, no
-key management. A local service without authentication is still reachable from a web page, through a cross-site
-request or DNS rebinding, and could spend your keys. So the router refuses any `Host` header other than loopback on
-its port, any `Origin` header, and bodies that aren't JSON. An optional token locks it further, and it won't listen
-on a non-loopback address without one.
+The router serves the proxied `/v1/*` routes and `GET /healthz`, and nothing else: no config API and no key
+management. A local service without authentication is still reachable from a web page, through a cross-site request
+or DNS rebinding, and could spend your keys. So the router refuses any `Host` header other than loopback on its port,
+any `Origin` header, and bodies that aren't JSON. An optional token locks it further, and it won't listen on a
+non-loopback address without one.
+
+The live view is read-only and has a port of its own; the router's port still refuses every browser request. The view
+shows log entries, which hold no prompt text and no keys, and it can't change anything. It listens on loopback unless
+you give it an address, and an optional token keeps it private when it listens on a shared one, for example to be
+forwarded out of a Docker Sandbox.
+
+## Keys for a service
+
+A router that runs all day as a launchd or systemd service needs its keys without an interactive shell. The plain
+way to hand them over on any Mac or Linux machine is a file of `KEY=value` lines that only its owner can read, so
+`serve` takes `--env-file` and loads it with Node's own loader before it reads anything else. A file that other users
+can read or change gets a warning, because it holds keys.
+
+`launch` loads the same file, but keeps its variables out of the agent's environment. Every command the agent runs
+would otherwise see the router's keys, and so would every tool result an untrusted upstream receives.
+
+Nothing in the router needs Docker Sandboxes. The sandbox kit is an optional way to keep the keys on the host.
 
 ## No runtime dependencies
 
@@ -288,12 +326,13 @@ priced on Opus 5.5), and `jev-router report` sums them into spend, baseline and 
 
 These need keys and haven't run end to end yet:
 
-- Real Jev answers. The thresholds are starting values, not tuned; [evaluation.md](evaluation.md) describes how to
-  tune them.
+- Thresholds tuned on real Jev answers. The shipped ones are starting values; [evaluation.md](evaluation.md)
+  describes how to tune them.
 - Ollama Cloud and OpenAI as live upstreams, including whether Ollama Cloud accepts every field Claude Code sends.
-- Full Claude Code and Codex sessions through the router, especially Codex's file edits on Ollama models.
+- Full Codex sessions through the router, especially Codex's file edits on Ollama models.
 
-[sandbox.md](sandbox.md) walks through each of these in a Docker Sandbox.
+Once you have the keys, the [routing walkthrough](activation.md#a-routing-walkthrough) checks the upstreams and the
+Codex sessions.
 
 ## Sources
 
