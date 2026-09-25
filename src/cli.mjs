@@ -490,7 +490,15 @@ async function serve(args, env) {
       say(`jev-router: reload failed, keeping the old config\n${errorMessage(err)}`);
     }
   });
-  const shutdown = () => {
+  let stopping = false;
+  /** @param {NodeJS.Signals} signal */
+  const shutdown = (signal) => {
+    // A second signal while requests drain means now: an impatient Ctrl-C shouldn't need a SIGKILL.
+    if (stopping) {
+      console.error(`jev-router: stopping now, cutting ${server.active} request(s)`);
+      process.exit(128 + osConstants.signals[signal]);
+    }
+    stopping = true;
     console.error(`jev-router: shutting down, waiting for ${server.active} request(s)`);
     void view?.close();
     server.close();
@@ -498,6 +506,7 @@ async function serve(args, env) {
     const wait = setInterval(() => {
       if (server.active === 0 || Date.now() > deadline) {
         clearInterval(wait);
+        if (server.active) console.error(`jev-router: 30 s passed, cutting ${server.active} request(s)`);
         process.exit(0);
       }
     }, 100);

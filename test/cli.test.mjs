@@ -698,6 +698,33 @@ test('a log file on a full disk costs its lines, never a request', { skip: !exis
   assert.equal((await serving.done).code, 0);
 });
 
+test('serve drains open streams on SIGTERM, and a second signal stops it at once', async () => {
+  const box = sandbox();
+  const holding = await mock((_call, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('event: ping\ndata: {"type":"ping"}\n\n'); // and never ends
+  });
+  const config = writeConfig(join(box.root, 'drain.json'), {}, { upstream: holding.url });
+  const serving = start(['serve', '--config', config, '--port', '0'], box.env);
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router to listen');
+  const res = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': CLIENT_KEY },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'Add a test' }] }),
+  });
+  const reader = /** @type {ReadableStream<Uint8Array>} */ (res.body).getReader();
+  await reader.read();
+  serving.child.kill('SIGTERM');
+  await waitFor(() => serving.out.stderr.includes('shutting down, waiting for 1 request(s)'), 'the drain');
+  await sleep(200);
+  assert.equal(serving.child.exitCode, null, 'the open stream holds the shutdown');
+  serving.child.kill('SIGINT');
+  const { code } = await serving.done;
+  assert.equal(code, 128 + 2, 'a second signal stops it at once, as SIGINT would');
+  assert.match(serving.out.stderr, /stopping now, cutting 1 request\(s\)/);
+  await reader.cancel().catch(() => undefined);
+});
+
 test('serve keeps routing when its stderr goes away (regression: the next message killed it)', async () => {
   const box = sandbox();
   const upstream = await mockUpstream();
