@@ -48,8 +48,10 @@ const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or
 Usage:
   jev-router [serve] [--config <file>] [--env-file <file>] [--log-file <file>] [--host <h>] [--port <n>]
                      [--ui [<host>:]<port>] [--ui-token <token>]
-  jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--] [claude args…]
-  jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--force] [--] [codex args…]
+  jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--ui [<host>:]<port>]
+                           [--] [claude args…]
+  jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--ui [<host>:]<port>]
+                           [--force] [--] [codex args…]
   jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
   jev-router doctor [--config <file>] [--env-file <file>] [--live]
   jev-router init [--anthropic-only] [--force]
@@ -58,7 +60,8 @@ Usage:
   jev-router version | help
 
   serve    run the router in the foreground (the default command); --ui also serves the live view
-  launch   run Claude Code or Codex through the router on the configured port, starting one if none runs
+  launch   run Claude Code or Codex through the router on the configured port, starting one if none runs;
+           --ui also serves the live view of a router it starts
   env      print shell exports for a running router: eval "$(jev-router env claude)"
   doctor   check the config, the keys and a running router; --live makes one Jev call (~$0.00003)
   init     write the user config; --anthropic-only sends every Claude Code tier to Anthropic
@@ -68,7 +71,7 @@ Usage:
 Config: --config, else $JEV_ROUTER_CONFIG, else $XDG_CONFIG_HOME/jev-router/config.json
 (~/.config by default) if it exists, else the packaged default. JEV_ROUTER_HOST and
 JEV_ROUTER_PORT override the config's host and port; the flags override both.
-JEV_ROUTER_UI works like --ui. With --ui-token, else $JEV_ROUTER_UI_TOKEN, the live view asks
+JEV_ROUTER_UI works like --ui for serve and launch. With --ui-token, else $JEV_ROUTER_UI_TOKEN, the live view asks
 for that token: open the address serve or ui prints, which carries it.
 
 Keys: a file of KEY=VALUE lines (mode 600) is loaded before anything reads the environment:
@@ -385,18 +388,17 @@ async function startView(view, { host, port }, token) {
   }
 }
 
+/** @type {Record<string, 'value' | 'flag'>} */
+const LAUNCH_OPTIONS = { '--config': 'value', '--env-file': 'value', '--port': 'value', '--ui': 'value' };
 /** @type {Record<string, { bin: string, override: string, spec: Record<string, 'value' | 'flag'> }>} */
 const AGENTS = {
-  claude: { bin: 'claude', override: 'JEV_ROUTER_CLAUDE_BIN', spec: { '--config': 'value', '--env-file': 'value', '--port': 'value' } },
-  codex: {
-    bin: 'codex',
-    override: 'JEV_ROUTER_CODEX_BIN',
-    spec: { '--config': 'value', '--env-file': 'value', '--port': 'value', '--force': 'flag' },
-  },
+  claude: { bin: 'claude', override: 'JEV_ROUTER_CLAUDE_BIN', spec: LAUNCH_OPTIONS },
+  codex: { bin: 'codex', override: 'JEV_ROUTER_CODEX_BIN', spec: { ...LAUNCH_OPTIONS, '--force': 'flag' } },
 };
 
 /**
- * `jev-router launch claude|codex`: runs the agent through a router and exits with the agent's exit code.
+ * `jev-router launch claude|codex`: runs the agent through a router and exits with the agent's
+ * exit code. With --ui (or JEV_ROUTER_UI), a router it starts also serves the live view.
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
  * @returns {Promise<number>}
@@ -405,22 +407,32 @@ async function launch(args, env) {
   const [name = '', ...rest] = args;
   const agent = Object.hasOwn(AGENTS, name) ? AGENTS[name] : undefined;
   if (!agent)
-    throw new Error('Usage: jev-router launch claude|codex [--config <file>] [--env-file <file>] [--port <n>] [--] [agent args…]');
+    throw new Error(
+      'Usage: jev-router launch claude|codex [--config <file>] [--env-file <file>] [--port <n>] [--ui [<host>:]<port>] [--] [agent args…]',
+    );
   const { values, flags, rest: agentArgs } = parseArgs(rest, agent.spec, { passthrough: true });
   const file = useEnvFile(values['env-file'], env);
   const { cfg, host, port, token } = settings(values, env);
+  const uiAddress = parseUiAddress(values.ui ?? envValue(env, 'JEV_ROUTER_UI'));
   const wanted = envValue(env, agent.override) ?? agent.bin;
   const bin = findProgram(wanted, env);
   if (!bin) {
     console.error(`jev-router: cannot find ${wanted}. Install it, or set ${agent.override} to its path.`);
     return 127;
   }
-  const router = await routerFor(cfg, host, port, env);
+  const uiToken = envValue(env, 'JEV_ROUTER_UI_TOKEN');
+  const view = uiAddress ? createUiServer({ token: uiToken }) : undefined;
+  const router = await routerFor(cfg, host, port, env, view);
   console.error(
     router.reused
       ? `jev-router: reusing the jev-router ${router.version} at ${router.url}`
       : `jev-router: routing ${name} through ${router.url} (log: ${router.logFile})`,
   );
+  if (view && uiAddress && !router.reused) await startView(view, uiAddress, uiToken);
+  else if (values.ui && router.reused)
+    console.error(
+      `jev-router: --ui serves a live view only for a router that launch starts. For the one at ${router.url}, open its own view, or follow its log with: jev-router ui`,
+    );
   const forAgent = agentEnv(env, file);
   try {
     if (name === 'codex') {
@@ -430,6 +442,7 @@ async function launch(args, env) {
     return await runAgent(bin, agentArgs, { ...forAgent, ...claudeVars(forAgent, router.url, token) });
   } finally {
     await router.stop();
+    await view?.close();
   }
 }
 
@@ -465,20 +478,24 @@ function ownedByLaunch(env, port) {
 
 /**
  * Finds the router the agent should use: one that already answers at host:port, or a new one in
- * this process on loopback. The new one logs to files only, because the agent's TUI owns the terminal.
+ * this process on loopback. The new one logs to files only, because the agent's TUI owns the
+ * terminal, and to the live view, when there is one.
  * @param {Config} cfg
  * @param {string} host
  * @param {number} port
  * @param {NodeJS.ProcessEnv} env
+ * @param {UiServer} [view] gets every entry a router started here logs
  * @returns {Promise<AgentRouter>}
  */
-async function routerFor(cfg, host, port, env) {
+async function routerFor(cfg, host, port, env, view) {
   const url = `http://${clientHost(host)}:${port}`;
   const found = port === 0 ? undefined : await probe(url); // port 0 asks for any free port, so there's nothing to find
   if (found?.health && !ownedByLaunch(env, port)) return { url, reused: true, version: found.health.version, stop: async () => undefined };
   const logFile = routerLogPath(env);
   mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
-  const log = logger(() => ({ files: [logFile, cfg.logFile], maxBytes: cfg.logMaxBytes }));
+  const log = logger(() => ({ files: [logFile, cfg.logFile], maxBytes: cfg.logMaxBytes }), {
+    echo: view && ((entry) => view.publish(entry)),
+  });
   const server = createRouter({ ...cfg, host: LOOPBACK, port }, { log });
   let bound;
   try {

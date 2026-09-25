@@ -1195,6 +1195,63 @@ test('an env file that cannot be read stops the command, and one other users can
   assert.match((await run(['env', 'claude', '--env-file', shared], box.env)).stderr, /other users can read .*shared\.env \(mode 644\)/);
 });
 
+/**
+ * Follows a live view's event stream.
+ * @param {string} view the view's page URL
+ */
+async function follow(view) {
+  const res = await fetch(`${view}events`);
+  const reader = /** @type {ReadableStream<Uint8Array>} */ (res.body).getReader();
+  const decoder = new TextDecoder();
+  const seen = { text: '' };
+  void (async () => {
+    for (;;) {
+      const { value, done } = await reader.read().catch(() => ({ value: undefined, done: true }));
+      if (done) break;
+      seen.text += decoder.decode(value, { stream: true });
+    }
+  })();
+  return { seen, stop: () => reader.cancel().catch(() => undefined) };
+}
+
+test('launch --ui serves the live view of a router it starts, before the agent starts, and says why there is none for one it reuses', async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const config = writeConfig(join(box.root, 'launch-ui.json'), {}, { upstream: upstream.url });
+  const env = { ...box.env, JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT, FAKE_AGENT_WAIT: '1', FAKE_AGENT_REQUEST: '1', FAKE_CLIENT_KEY: CLIENT_KEY };
+  const launching = start(['launch', 'claude', '--config', config, '--port', '0', '--ui', '127.0.0.1:0'], env);
+  await waitFor(() => existsSync(box.report), 'the agent to start');
+  assert.match(
+    launching.out.stderr,
+    /^jev-router: routing claude through http:\/\/127\.0\.0\.1:\d+ \(log: .*\)\njev-router: live view on http:\/\/127\.0\.0\.1:\d+\/\n$/,
+    'the view is up before the agent starts',
+  );
+  const view = /live view on (\S+)\n/.exec(launching.out.stderr)?.[1] ?? '';
+  const events = await follow(view);
+  await waitFor(() => events.seen.text.includes('"event":"route"') && events.seen.text.includes('"event":"done"'), "the agent's request");
+  assert.match(events.seen.text, /"event":"config"/, 'with the config the router started with');
+  await events.stop();
+  launching.child.kill('SIGHUP');
+  assert.equal((await launching.done).code, 42);
+  assert.equal(await isListening(portOf(view)), false, 'the view stops with the session');
+
+  const { port } = await runningRouter();
+  const plain = { ...box.env, JEV_ROUTER_CLAUDE_BIN: FAKE_AGENT };
+  const reused = await run(['launch', 'claude', '--port', String(port), '--ui', '127.0.0.1:0'], plain);
+  assert.equal(reused.code, 0, reused.stderr);
+  assert.match(reused.stderr, /--ui serves a live view only for a router that launch starts\. .*jev-router ui\n$/);
+  assert.doesNotMatch(reused.stderr, /live view on http/);
+  const quiet = await run(['launch', 'claude', '--port', String(port)], { ...plain, JEV_ROUTER_UI: '127.0.0.1:0' });
+  assert.equal(
+    quiet.stderr,
+    `jev-router: reusing the jev-router ${VERSION} at http://127.0.0.1:${port}\n`,
+    'JEV_ROUTER_UI alone adds no hint',
+  );
+  const bad = await run(['launch', 'claude', '--port', String(port), '--ui', 'nowhere'], plain);
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /--ui takes a port or host:port, got "nowhere"/);
+});
+
 test('launch reuses a router that already answers on the port, and leaves it running', async () => {
   const box = sandbox();
   const { url, port } = await runningRouter();
