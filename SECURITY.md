@@ -7,8 +7,8 @@ about any way around the boundaries below are welcome.
 
 | Version | Supported |
 | --- | --- |
-| 1.4.x | Yes |
-| 1.3.x and older | No. Update with `npm install -g github:dirien/jev-router#semver:^1` |
+| 1.5.x | Yes |
+| 1.4.x and older | No. Update with `npm install -g github:dirien/jev-router#semver:^1`; for 1.4.x, first run `npm uninstall -g @dirien/jev-router` |
 
 ## Reporting a vulnerability
 

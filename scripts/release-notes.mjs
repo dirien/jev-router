@@ -4,7 +4,7 @@
 // GitHub Release. It exits 1 when the section is missing or empty, so a release can't go out without
 // notes.
 //
-//   node scripts/release-notes.mjs 1.4.0 > notes.md
+//   node scripts/release-notes.mjs 1.5.0 > notes.md
 import { readFileSync } from 'node:fs';
 
 const [version, ...extra] = process.argv.slice(2);

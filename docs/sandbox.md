@@ -49,16 +49,16 @@ printf '%s' "$OPENROUTER_API_KEY" | sbx secret set openrouter        # optional 
 printf '%s' "$OLLAMA_API_KEY"     | sbx secret set ollama-cloud      # service id declared by the kit
 printf '%s' "$OPENAI_API_KEY"     | sbx secret set openai            # optional (verified)
 export WS="$HOME/src/my-project"                                     # the project the agent works on
-sbx create --name jev-router --kit ghcr.io/dirien/jev-router-kit:1.4.0 claude "$WS"   # flags verified; kit not run yet
+sbx create --name jev-router --kit ghcr.io/dirien/jev-router-kit:1.5.0 claude "$WS"   # flags verified; kit not run yet
 ```
 
 Leave out the `printf … |` part to type a key at a prompt instead.
 
-The release workflow publishes the kit to GHCR for every release: `:1.4.0` pins this release, and `:latest` follows
+The release workflow publishes the kit to GHCR for every release: `:1.5.0` pins this release, and `:latest` follows
 the newest one. The package is public, so pulling it needs no login. sbx can also read the kit from git:
 
 ```bash
-sbx create --name jev-router --kit "git+https://github.com/dirien/jev-router.git#ref=v1.4.0&dir=sbx/jev-router-kit" claude "$WS"
+sbx create --name jev-router --kit "git+https://github.com/dirien/jev-router.git#ref=v1.5.0&dir=sbx/jev-router-kit" claude "$WS"
 ```
 
 The kit, [`sbx/jev-router-kit/spec.yaml`](../sbx/jev-router-kit/spec.yaml), declares the four keys as proxy-managed
@@ -175,7 +175,7 @@ These are the problems specific to a sandbox. [activation.md](activation.md#trou
 | --- | --- |
 | sbx refuses the kit's source | `kit.allowedSources` doesn't include `ghcr.io/dirien/` or `github.com/dirien/`. Run the `sbx settings set` line from step 1. |
 | `npm install` inside the sandbox can't reach GitHub | The network policy blocks it. The kit allows `github.com` and `codeload.github.com`; run `sbx policy log jev-router` on the host to see what was blocked. |
-| `reason: no-jev` | No channel has a key in the router's environment, so the kit isn't attached. Run `sbx kit add jev-router ghcr.io/dirien/jev-router-kit:1.4.0` on the host; this recreates the container. |
+| `reason: no-jev` | No channel has a key in the router's environment, so the kit isn't attached. Run `sbx kit add jev-router ghcr.io/dirien/jev-router-kit:1.5.0` on the host; this recreates the container. |
 | `reason: fallback:default` and a `jev.error` | Jev didn't answer. Check the channel errors in `/healthz`, then run `sbx policy log jev-router` on the host. A 402 means OpenRouter has no credits; a 401 means the key isn't injected. |
 | Every upstream answers 401, but the `curl` probes in step 2 pass | `NODE_USE_ENV_PROXY` isn't `1` in the router's shell, so Node's `fetch` bypasses the proxy. |
 | 401 from Ollama | The `ollama-cloud` key isn't injected. See step 2's probe. |

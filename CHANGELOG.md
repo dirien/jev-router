@@ -7,12 +7,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-25
+
+Starting jev-router takes one command now. `jev-router setup` asks which models Claude Code uses and for the keys,
+checks the Jev key, runs the router in the background and points Claude Code at it; `jev-router uninstall` takes it
+back out. The npm package is renamed to `@ediri/jev-router`, and the repository and the Docker Sandboxes kit are
+public.
+
+### Added
+
+- `jev-router setup`, an interactive setup that is safe to run again. It asks which models Claude Code uses (Claude
+  only, the default, or Ollama Cloud's `glm-5.3-flash` for the `fast` tier) and for the keys that config needs,
+  hidden on a terminal, with Enter keeping a saved key. It checks the Jev key with one real call (about $0.00003),
+  and writes nothing until a key works. Then it writes the config and the env file (mode 0600, its other lines kept),
+  installs a launchd agent or a systemd user unit from the packaged templates, waits for the router to answer, and
+  merges the router's variables into `~/.claude/settings.json` with a backup. A base URL that points elsewhere is
+  replaced only on a yes. `--yes` takes the defaults and the keys from the environment; `--models`, `--service` and
+  `--no-claude-settings` choose the rest. Without a service manager, as in a container, setup saves the keys and says
+  to start sessions with `jev-router launch claude`.
+- Run through npx, as `npx github:dirien/jev-router setup` (or `npx @ediri/jev-router setup` once the package is on
+  npm), setup installs the package globally before it installs the service, because npm can delete its npx cache at
+  any time. When `npm install -g` fails, it says what to do, and names 1.4.0's package when that one holds the
+  command. The commands setup suggests are the ones that work for you: `jev-router`, its path, or the npx form.
+- `jev-router uninstall` stops and removes the service, and takes setup's variables back out of Claude Code's
+  settings, restoring the values setup replaced and leaving the ones you changed since. It reads
+  `~/.config/jev-router/setup.json`, where setup records its changes without keys, and makes a careful guess without
+  it. It keeps the config, the keys and the logs, and prints the command that deletes them.
+- `launch --ui [<host>:]<port>`, or `JEV_ROUTER_UI`: a router that `launch` starts also serves the live view, whose
+  address `launch` prints before the agent starts.
+- `doctor` has a `service` line: none installed, or which service and whether its router answers. When the service
+  answers and `settings.json` points at it, `doctor` says to start Claude Code as usual.
+- `JEV_ROUTER_SETUP_WAIT`, how long setup waits for the service's router to answer: 15 seconds by default.
+- The package smoke test also runs `setup --yes --service none` against a local Jev stand-in, and `uninstall`.
+
 ### Changed
 
 - The npm package is now `@ediri/jev-router`, the npm account that holds the author's other packages. Nothing was
   published under the old name, and GitHub installs work as before. If you installed 1.4.0, the old package
   `@dirien/jev-router` owns the `jev-router` command: run `npm uninstall -g @dirien/jev-router` before you install
   1.5.0, or npm stops with `EEXIST` on the command's link.
+- `serve`, `launch`, `env` and `doctor` load `~/.config/jev-router/env` (`$XDG_CONFIG_HOME/jev-router/env`) when it
+  exists, so `--env-file` is needed only for another file. The rules stay the same: variables already set win, a loose
+  mode or a startup-only variable gets a warning, and `launch` keeps the file's variables away from the agent.
+  `doctor` reports the file with an ok line, where it used to say the file wasn't loaded.
+- The service templates pass `--config ~/.config/jev-router/config.json`, so setup and the manual route install the
+  same service; the manual route starts with `jev-router init`. The systemd install commands no longer add
+  `/usr/local/bin` to the service's `PATH`, which the router never needed.
+- The README leads with the commands that start jev-router, and the manual steps move to "Manual setup" in
+  `docs/activation.md`. The everyday examples drop `--env-file`.
+- The repository and the Docker Sandboxes kit on GHCR are public. The GitHub installs need only git, the kit pulls
+  without a login, and the notes about access to a private repository or package are gone.
+
+### Fixed
+
+- An env file that exists but can't be read was reported as "no such file", because Node's loader says so. It now
+  reads "permission denied".
 
 ## [1.4.0] - 2026-09-25
 
@@ -217,7 +266,8 @@ First release.
 - Biome, TypeScript (`checkJs`) and markdownlint checks, and CI on Node.js 22 and 24 with actionlint.
 - Documentation: activation, configuration reference, design notes, evaluation, and a Docker Sandboxes guide.
 
-[Unreleased]: https://github.com/dirien/jev-router/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/dirien/jev-router/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/dirien/jev-router/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/dirien/jev-router/compare/v1.3.3...v1.4.0
 [1.3.3]: https://github.com/dirien/jev-router/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/dirien/jev-router/compare/v1.3.1...v1.3.2
