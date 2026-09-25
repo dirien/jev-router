@@ -7,7 +7,8 @@ about any way around the boundaries below are welcome.
 
 | Version | Supported |
 | --- | --- |
-| 1.0.x | Yes |
+| 1.4.x | Yes |
+| 1.3.x and older | No. Update with `npm install -g github:dirien/jev-router#semver:^1` |
 
 ## Reporting a vulnerability
 
@@ -39,10 +40,29 @@ time for the fix before you disclose the issue publicly.
   `GET /healthz` answers without the token and returns only counters and channel health, no keys and no prompts.
 - It serves the proxied `/v1/*` routes and `/healthz` only. There is no admin API.
 
+### The live view
+
+- The view is read-only and has its own port. It listens on `127.0.0.1` unless `--ui` or `JEV_ROUTER_UI` names
+  another address, and says so on stderr when that address isn't loopback and the view has no token.
+- It answers only a `Host` that names loopback or the address it listens on, so DNS rebinding can't reach it, and
+  refuses a foreign `Origin`. It serves its page, the page's script, style and icon, and the event stream, and sends
+  a Content Security Policy that allows only its own origin. It takes at most 32 open pages.
+- With `--ui-token` or `JEV_ROUTER_UI_TOKEN`, the page and the event stream need that token, compared in constant
+  time. The first visit brings it as `?token=`; the page then keeps it in an `HttpOnly`, `SameSite=Strict` cookie and
+  drops it from the address bar. The page's script, style and icon stay open, because they're the published source.
+  Prefer the variable to the flag: other users on the machine can see a flag in `ps`.
+- The view shows log entries: models, tiers, costs and decisions. It never shows prompt text or keys, because the
+  log holds neither.
+
 ### Secret handling
 
 - Upstream and Jev keys come from environment variables. Each key goes only to the host of the target or Jev channel
   that names it, and upstream redirects are refused, so a key can't follow one.
+- On a plain machine, the keys live in an env file, `~/.config/jev-router/env` by default, which the router loads
+  with `--env-file` or `JEV_ROUTER_ENV_FILE`. Keep it at mode 0600: `serve`, `launch`, `env` and `doctor` warn, with
+  the `chmod` to run, when other users can read or change it.
+- `launch` keeps the env file's variables out of the agent's environment, so the commands Claude Code or Codex runs,
+  and the tool output an untrusted upstream receives, don't carry the router's keys.
 - The client's own credential, such as a Claude login, is forwarded only to targets marked `clientAuth`
   (Anthropic in the packaged configs).
 - A deterministic scanner checks every human message. A hit keeps the session on the `trusted` target, and pins,
@@ -58,19 +78,23 @@ time for the fix before you disclose the issue publicly.
   mode 0700. It holds SHA-256 hashes of session IDs, tiers, trust flags, turn counts, the client's model name, the
   last upstream host, and a hash of the message where the provider changed. It holds no prompt text. Entries expire
   after seven days.
-- **The logs**, on stdout and in `logFile` when it's set (mode 0600). `jev-router launch` writes its router's log to
-  `~/.local/state/jev-router/router.log`. They hold routing decisions, Jev's probabilities, token usage and cost,
-  and no prompt text or keys.
+- **The logs**, on stdout and in the log file when one is set (`--log-file`, `JEV_ROUTER_LOG_FILE` or `logFile`),
+  with mode 0600. A log file rotates to `<file>.1` at `logMaxBytes`. The service templates and `jev-router launch`
+  log to `~/.local/state/jev-router/router.log`. The logs hold routing decisions, Jev's probabilities, token usage
+  and cost, and no prompt text or keys.
 
-The router writes nothing else to disk. Of the other commands, only `jev-router init` (the config file) and
-`jev-router launch codex` (the Codex profile, `~/.codex/jev.config.toml`) write files.
+The router writes nothing else to disk. Of the other commands, `jev-router init` writes the config file,
+`jev-router launch` a `launch-<port>.pid` file next to its log while it runs, and `jev-router launch codex` the Codex
+profile, `~/.codex/jev.config.toml`, with mode 0600, since it may hold the router token.
 
 ### Out of scope
 
 - A credential format the secret scanner doesn't know. The scanner is a documented best effort; new patterns are
   welcome as ordinary issues or pull requests.
-- Attacks that need code running as your user, which can read the router's environment and keys anyway.
-- Access you widened on purpose, through `allowedHosts`, `allowedOrigins` or a non-loopback address.
+- Attacks that need code running as your user, which can read the env file, the router's environment and its keys
+  anyway.
+- Access you widened on purpose, through `allowedHosts`, `allowedOrigins` or a non-loopback address for the router
+  or the live view.
 - Vulnerabilities in Claude Code, the Codex CLI, the model providers, TypeSafe, OpenRouter or Docker Sandboxes.
   Report those to their vendors.
 - What the model providers and the Jev channel do with the data they receive. See their terms.
