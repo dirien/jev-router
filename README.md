@@ -30,27 +30,16 @@ jev-router is a small server that runs on your machine. Claude Code sends its re
 Anthropic. For each message you write, the router asks Jev which model the work needs, and forwards the request to
 that model. `jev-router setup` runs the router in the background, so you don't have to start it yourself.
 
-Once the package is on npm, two commands will do it:
+Two commands set it up:
 
 ```bash
 npx @ediri/jev-router setup
 claude
 ```
 
-The package isn't on npm yet. Until it is, run setup from GitHub. This needs git, and the first download is slower:
-
-```bash
-npx github:dirien/jev-router setup
-claude
-```
-
-You can also install jev-router first, then run setup:
-
-```bash
-npm install -g github:dirien/jev-router#semver:^1
-jev-router setup
-claude
-```
+npx asks before it downloads the package. You can also install jev-router first, with
+`npm install -g @ediri/jev-router`, and then run `jev-router setup`. To run it from GitHub instead of the npm
+registry, use `npx github:dirien/jev-router setup`, which needs git.
 
 Don't run `npx jev-router` or `npm install -g jev-router`. Without the `@ediri/` scope, that name belongs to an
 unrelated project, [gargpratyush/jev-router](https://github.com/gargpratyush/jev-router).
@@ -80,9 +69,7 @@ and your saved keys (press Enter), and restarts the router.
 - **Check it:** `jev-router doctor` lists the config, the keys, the service, and whether the router answers.
 - **Watch it:** open <http://127.0.0.1:4100>. Each message you write shows up with the model the router picked, and
   why.
-- **Upgrade:** once the package is on npm, `npx @ediri/jev-router@latest setup` installs the newest version and
-  restarts the router. Until then, run `npm install -g github:dirien/jev-router#semver:^1` again, then
-  `jev-router setup`.
+- **Upgrade:** `npx @ediri/jev-router@latest setup` installs the newest version and restarts the router.
 - **Undo it:** `jev-router uninstall` stops the router and takes setup's changes back out of Claude Code's settings.
   It keeps your config, keys and logs, and prints the command that deletes them.
 
@@ -92,7 +79,7 @@ Setup can't install a service on a machine without launchd or a systemd user ses
 and when you answer no, it saves your keys and stops. Then start Claude Code through the router for one session:
 
 ```bash
-jev-router launch claude              # through npx: npx github:dirien/jev-router launch claude
+jev-router launch claude              # through npx: npx @ediri/jev-router launch claude
 jev-router launch claude --ui 4100    # the same, with the live view on http://127.0.0.1:4100
 ```
 
@@ -121,12 +108,12 @@ account.
 The [Quick start](#quick-start) installs jev-router for you. To install it yourself, or to pin a version:
 
 ```bash
-npm install -g github:dirien/jev-router#semver:^1    # the newest 1.x release
-npm install -g github:dirien/jev-router#v1.5.0       # one release, by its tag
+npm install -g @ediri/jev-router                     # the newest release
+npm install -g @ediri/jev-router@1.5.0               # one release
+npm install -g github:dirien/jev-router#semver:^1    # the newest 1.x from GitHub, which needs git
 ```
 
-To update, run the install command again. Once the package is on npm, `npm install -g @ediri/jev-router` will work
-too.
+To update, run the install command again.
 
 Up to 1.4.0 the package was called `@dirien/jev-router`. If you installed one of those versions, run
 `npm uninstall -g @dirien/jev-router` before you install a newer one: npm won't replace a command that another

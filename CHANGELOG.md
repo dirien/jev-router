@@ -11,8 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Starting jev-router takes one command now. `jev-router setup` asks which models Claude Code uses and for the keys,
 checks the Jev key, runs the router in the background and points Claude Code at it; `jev-router uninstall` takes it
-back out. The npm package is renamed to `@ediri/jev-router`, and the repository and the Docker Sandboxes kit are
-public.
+back out. jev-router is on npm now, as `@ediri/jev-router`, so `npx @ediri/jev-router setup` followed by `claude` is
+the whole start. The repository and the Docker Sandboxes kit are public.
 
 ### Added
 
@@ -25,10 +25,10 @@ public.
   replaced only on a yes. `--yes` takes the defaults and the keys from the environment; `--models`, `--service` and
   `--no-claude-settings` choose the rest. Without a service manager, as in a container, setup saves the keys and says
   to start sessions with `jev-router launch claude`.
-- Run through npx, as `npx github:dirien/jev-router setup` (or `npx @ediri/jev-router setup` once the package is on
-  npm), setup installs the package globally before it installs the service, because npm can delete its npx cache at
-  any time. When `npm install -g` fails, it says what to do, and names 1.4.0's package when that one holds the
-  command. The commands setup suggests are the ones that work for you: `jev-router`, its path, or the npx form.
+- Run through npx, as `npx @ediri/jev-router setup` or `npx github:dirien/jev-router setup`, setup installs the package
+  globally before it installs the service, because npm can delete its npx cache at any time. When `npm install -g`
+  fails, it says what to do, and names 1.4.0's package when that one holds the command. The commands setup suggests are
+  the ones that work for you: `jev-router`, its path, or the npx form.
 - `jev-router uninstall` stops and removes the service, and takes setup's variables back out of Claude Code's
   settings, restoring the values setup replaced and leaving the ones you changed since. It reads
   `~/.config/jev-router/setup.json`, where setup records its changes without keys, and makes a careful guess without
@@ -42,10 +42,10 @@ public.
 
 ### Changed
 
-- The npm package is now `@ediri/jev-router`, the npm account that holds the author's other packages. Nothing was
-  published under the old name, and GitHub installs work as before. If you installed 1.4.0, the old package
-  `@dirien/jev-router` owns the `jev-router` command: run `npm uninstall -g @dirien/jev-router` before you install
-  1.5.0, or npm stops with `EEXIST` on the command's link.
+- The npm package is now `@ediri/jev-router`, under the npm account that holds the author's other packages, and 1.5.0 is
+  its first release on npm. Nothing was published under the old name, and GitHub installs work as before. If you
+  installed 1.4.0, the old package `@dirien/jev-router` owns the `jev-router` command: run
+  `npm uninstall -g @dirien/jev-router` before you install 1.5.0, or npm stops with `EEXIST` on the command's link.
 - `serve`, `launch`, `env` and `doctor` load `~/.config/jev-router/env` (`$XDG_CONFIG_HOME/jev-router/env`) when it
   exists, so `--env-file` is needed only for another file. The rules stay the same: variables already set win, a loose
   mode or a startup-only variable gets a warning, and `launch` keeps the file's variables away from the agent.
