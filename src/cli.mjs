@@ -38,7 +38,8 @@ const COMPACT_WINDOW = '160000';
 const HELP = `jev-router ${VERSION}: picks a model tier for every Claude Code or Codex turn with Jev.
 
 Usage:
-  jev-router [serve] [--config <file>] [--env-file <file>] [--host <h>] [--port <n>] [--ui [<host>:]<port>]
+  jev-router [serve] [--config <file>] [--env-file <file>] [--log-file <file>] [--host <h>] [--port <n>]
+                     [--ui [<host>:]<port>]
   jev-router launch claude [--config <file>] [--env-file <file>] [--port <n>] [--] [claude args…]
   jev-router launch codex  [--config <file>] [--env-file <file>] [--port <n>] [--force] [--] [codex args…]
   jev-router env claude|codex [--config <file>] [--env-file <file>] [--port <n>]
@@ -63,7 +64,13 @@ JEV_ROUTER_UI works like --ui.
 
 Keys: --env-file, else $JEV_ROUTER_ENV_FILE, names a file of KEY=VALUE lines (such as
 ~/.config/jev-router/env, mode 600) that is loaded before anything reads the environment.
-Variables already set win. launch keeps the file's variables away from the agent.
+Variables already set win. launch keeps the file's variables away from the agent. Proxy
+settings (HTTPS_PROXY, NODE_USE_ENV_PROXY) don't work from it: Node reads them at startup.
+
+Log: serve writes JSON lines to stdout and to --log-file, else $JEV_ROUTER_LOG_FILE, else the
+config's logFile (its directory is created for --log-file and $JEV_ROUTER_LOG_FILE). The file
+rotates to <file>.1 at the config's logMaxBytes (50 MiB). report and ui read $JEV_ROUTER_LOG_FILE,
+else the config's logFile, else the log launch writes.
 `;
 
 /**
@@ -151,6 +158,35 @@ function xdgDir(env, name, fallback) {
 const userConfigPath = (env) => join(xdgDir(env, 'XDG_CONFIG_HOME', '.config'), 'jev-router', 'config.json');
 /** @param {NodeJS.ProcessEnv} env */
 const routerLogPath = (env) => join(xdgDir(env, 'XDG_STATE_HOME', join('.local', 'state')), 'jev-router', 'router.log');
+/**
+ * A path as given, with a leading ~ for the home directory: launchd and systemd pass arguments
+ * without a shell to expand it.
+ * @param {string} path
+ */
+const expandHome = (path) => resolve(path.replace(/^~(?=$|[/\\])/, () => homedir()));
+/**
+ * Creates a directory (mode 0700) with its parents. One that can't be made is reported by what
+ * then fails to write into it.
+ * @param {string} dir
+ */
+function makeDirectory(dir) {
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    // the log's own warning names the problem on the first line it can't write
+  }
+}
+
+/**
+ * The log file named by `serve --log-file`, else by JEV_ROUTER_LOG_FILE. It wins over the config's logFile.
+ * @param {string | undefined} flag
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string | undefined}
+ */
+function namedLogFile(flag, env) {
+  const given = flag ?? envValue(env, 'JEV_ROUTER_LOG_FILE');
+  return given === undefined ? undefined : expandHome(given);
+}
 /** @param {NodeJS.ProcessEnv} env */
 const codexProfilePath = (env) => join(envValue(env, 'CODEX_HOME') ?? join(homedir(), '.codex'), 'jev.config.toml');
 
@@ -206,7 +242,7 @@ function fileProblem(err) {
 function loadEnvFile(flag, env) {
   const given = flag ?? envValue(env, 'JEV_ROUTER_ENV_FILE');
   if (given === undefined) return undefined;
-  const path = resolve(given);
+  const path = expandHome(given);
   const source = flag === undefined ? 'JEV_ROUTER_ENV_FILE' : '--env-file';
   const before = new Set(Object.keys(process.env));
   let mode = 0;
@@ -390,12 +426,16 @@ async function serve(args, env) {
     '--config': 'value',
     '--env-file': 'value',
     '--host': 'value',
+    '--log-file': 'value',
     '--port': 'value',
     '--ui': 'value',
   });
   if (rest.length) throw new Error(`serve takes no arguments, got "${rest.join(' ')}"`);
   loadEnvFile(values['env-file'], env);
   const { cfg: loaded, path, host, port, token } = settings(values, env);
+  // A service passes its log file on the command line, often in a directory that doesn't exist yet.
+  const logFile = namedLogFile(values['log-file'], env);
+  if (logFile) makeDirectory(dirname(logFile));
   if (!isLoopback(host) && !token) throw new Error(`Refusing to listen on ${host} without a token: set JEV_ROUTER_TOKEN.`);
   const uiAddress = parseUiAddress(values.ui ?? envValue(env, 'JEV_ROUTER_UI'));
   let cfg = { ...loaded, host, port };
@@ -406,7 +446,7 @@ async function serve(args, env) {
   });
   process.stderr.on('error', () => undefined);
   const view = uiAddress ? createUiServer() : undefined;
-  const log = logger(() => ({ files: [cfg.logFile], maxBytes: cfg.logMaxBytes }), {
+  const log = logger(() => ({ files: [logFile ?? cfg.logFile], maxBytes: cfg.logMaxBytes }), {
     echo: (entry, line) => {
       if (!stdoutBroken) process.stdout.write(line);
       view?.publish(entry);
@@ -1037,7 +1077,11 @@ function printReport(args, env) {
   if (rest.length > 1) throw new Error('Usage: jev-router report [<log.jsonl>]');
   const [named] = rest;
   const launched = routerLogPath(env);
-  const file = named ?? loadConfig(configFile(values.config, env).path).logFile ?? (existsSync(launched) ? launched : undefined);
+  const file =
+    named ??
+    namedLogFile(undefined, env) ??
+    loadConfig(configFile(values.config, env).path).logFile ??
+    (existsSync(launched) ? launched : undefined);
   if (!file) throw new Error('Usage: jev-router report <log.jsonl> (or set logFile in the config)');
   // The router's own log keeps the lines from before its last rotation in <file>.1.
   const files = named === undefined && existsSync(`${file}.1`) ? [`${file}.1`, file] : [file];
@@ -1057,7 +1101,9 @@ function printReport(args, env) {
 async function ui(args, env) {
   const { values, rest } = parseArgs(args, { '--config': 'value', '--port': 'value' });
   if (rest.length > 1) throw new Error('Usage: jev-router ui [<log.jsonl>] [--port <n>]');
-  const file = resolve(rest[0] ?? loadConfig(configFile(values.config, env).path).logFile ?? routerLogPath(env));
+  const file = resolve(
+    rest[0] ?? namedLogFile(undefined, env) ?? loadConfig(configFile(values.config, env).path).logFile ?? routerLogPath(env),
+  );
   const port = values.port === undefined ? UI_PORT : parsePort(values.port);
   const view = createUiServer({ file });
   const url = await view.listen(port).catch((err) => {

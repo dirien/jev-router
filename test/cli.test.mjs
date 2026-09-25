@@ -257,6 +257,8 @@ test('version, help, and a short error for an unknown command, option or usage',
     }
     assert.match(help.stdout, /\[--env-file <file>\]/);
     assert.match(help.stdout, /\$JEV_ROUTER_ENV_FILE/);
+    assert.match(help.stdout, /\[--log-file <file>\]/);
+    assert.match(help.stdout, /\$JEV_ROUTER_LOG_FILE/);
   }
   const unknown = await run(['frobnicate'], env);
   assert.deepEqual(unknown, {
@@ -668,6 +670,43 @@ test('serve and launch rotate their log files at logMaxBytes without losing a li
   }
 });
 
+test('serve --log-file, else JEV_ROUTER_LOG_FILE, names the log file ahead of the config, makes its directory and rotates it', async () => {
+  const box = sandbox();
+  const upstream = await mockUpstream();
+  const fromConfig = join(box.root, 'config.log');
+  const config = writeConfig(join(box.root, 'log-file.json'), { logFile: fromConfig, logMaxBytes: 2000 }, { upstream: upstream.url });
+  const flagged = join(box.root, 'logs', 'nested', 'router.log');
+  const fromEnv = join(box.root, 'env-logs', 'router.log');
+  const serving = start(['serve', '--config', config, '--port', '0', '--log-file', flagged], { ...box.env, JEV_ROUTER_LOG_FILE: fromEnv });
+  const url = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(serving.out.stderr)?.[1], 'the router to listen');
+  for (let i = 0; i < 3; i += 1) assert.equal((await ask(url)).status, 200);
+  await waitFor(() => logEvents(serving.out.stdout).filter((event) => event === 'done').length === 3, 'the three done lines');
+  serving.child.kill('SIGTERM');
+  assert.equal((await serving.done).code, 0);
+  for (const dir of [join(box.root, 'logs'), join(box.root, 'logs', 'nested')]) assert.equal(statSync(dir).mode & 0o777, 0o700, dir);
+  assert.ok(existsSync(`${flagged}.1`), 'it rotates at logMaxBytes');
+  assert.ok(serving.out.stdout.endsWith(readFileSync(`${flagged}.1`, 'utf8') + readFileSync(flagged, 'utf8')), 'with every line kept');
+  assert.ok(!existsSync(fromConfig), "the flag wins over the config's logFile");
+  assert.ok(!existsSync(fromEnv), 'and over JEV_ROUTER_LOG_FILE');
+
+  // A service manager passes a leading ~ as it is.
+  const withEnv = { ...box.env, JEV_ROUTER_LOG_FILE: '~/Library/Logs/jev-router/router.log' };
+  const second = start(['serve', '--config', config, '--port', '0'], withEnv);
+  const secondUrl = await waitFor(() => /listening on (http:\/\/127\.0\.0\.1:\d+)\n/.exec(second.out.stderr)?.[1], 'the second router');
+  assert.equal((await ask(secondUrl)).status, 200);
+  await waitFor(() => second.out.stdout.includes('"event":"done"'), 'the done line');
+  second.child.kill('SIGTERM');
+  assert.equal((await second.done).code, 0);
+  const inHome = join(box.home, 'Library', 'Logs', 'jev-router', 'router.log');
+  assert.deepEqual(
+    logEvents(readFileSync(inHome, 'utf8')),
+    ['config', 'warning', 'route', 'done'],
+    'JEV_ROUTER_LOG_FILE, with ~ as the home',
+  );
+  assert.ok(!existsSync(fromConfig));
+  assert.equal(JSON.parse((await run(['report', '--config', config], withEnv)).stdout).requests, 1, 'report reads the same file');
+});
+
 test('ui serves the live view of a log that may not exist yet, and stops on SIGTERM', async () => {
   const box = sandbox();
   const log = join(box.root, 'later.log');
@@ -878,6 +917,14 @@ test('--env-file and JEV_ROUTER_ENV_FILE load the router keys first, set variabl
     new RegExp(`^export ANTHROPIC_CUSTOM_HEADERS='x-jev-router-token: ${fileToken}'$`, 'm'),
     'env reads the token from it',
   );
+
+  // A launchd plist passes environment variables without a shell: a leading ~ is the home directory.
+  mkdirSync(join(box.home, '.config', 'jev-router'), { recursive: true });
+  copyFileSync(envFile, join(box.home, '.config', 'jev-router', 'env'));
+  chmodSync(join(box.home, '.config', 'jev-router', 'env'), 0o600);
+  const inHome = await run(['env', 'claude'], { ...box.env, JEV_ROUTER_ENV_FILE: '~/.config/jev-router/env' });
+  assert.equal(inHome.code, 0, inHome.stderr);
+  assert.match(inHome.stdout, new RegExp(`x-jev-router-token: ${fileToken}`));
 });
 
 test('an env file that cannot be read stops the command, and one other users can read or that sets startup-only variables gets a warning', async () => {
