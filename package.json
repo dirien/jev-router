@@ -63,9 +63,9 @@
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=85 --test-coverage-include='src/**' test/*.test.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14",
-    "@types/node": "22.20.4",
-    "markdownlint-cli2": "0.23.3",
+    "@biomejs/biome": "2.6.3",
+    "@types/node": "26.6.5",
+    "markdownlint-cli2": "0.24.0",
     "typescript": "7.0.2"
   }
 }
