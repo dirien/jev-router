@@ -313,6 +313,8 @@ export interface SessionEntry {
   /** The history shrank (compaction or a fork), so the next human turn is decided afresh. */
   freshNext: boolean;
   pinned?: boolean;
+  /** Tier the user tagged; Jev may raise the session above it but never below. */
+  tagFloor?: string;
   /** The model the client asked for, to notice a /model switch. */
   clientModel?: string;
   /** Human turns seen so far. */

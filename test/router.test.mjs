@@ -833,6 +833,67 @@ test('the Fable config sends deep work, /model fable and #max to Fable 5.1; afte
   assert.equal(fresh.anthropic[0].body.model, 'claude-haiku-4-5');
 });
 
+test('a tagged tier is a floor: after a compaction Jev decides afresh but never below the tag, until a new tag', async () => {
+  reset(plans.a, { option: 'mechanical', probability: 0.95 });
+  const { url, routes } = await startRouter();
+  const h = ccHeaders('s-floor');
+  const send = (/** @type {ReturnType<typeof cc>} */ body) => delta(() => post(url, '/v1/messages', body, h));
+  const t1 = cc('s-floor', 'Plan the schema change #frontier');
+  const t2 = cc('s-floor', 'Now write it up', { history: [...t1.messages, { role: 'assistant', content: 'ok' }] });
+  await send(t1);
+  await send(t2);
+  // Compaction: the conversation comes back with fewer human turns, so the next turn is decided afresh.
+  const compacted = cc('s-floor', 'Summary of the conversation so far.');
+  await send(compacted);
+  const afterCompaction = [...compacted.messages, { role: 'assistant', content: 'ok' }];
+  const held = await send(cc('s-floor', 'Fix the typo in the README.', { history: afterCompaction }));
+  assert.equal(held.jevA.length, 1, 'Jev is still asked');
+  assert.equal(held.result.headers.get('x-jev-tier'), 'frontier');
+  assert.equal(held.result.headers.get('x-jev-reason'), 'tag-floor');
+
+  // A new tag replaces the floor, even a lower one, and the new floor holds.
+  const t4 = cc('s-floor', 'Just rename the variable #balanced', {
+    history: [...afterCompaction, { role: 'user', content: 'x' }, { role: 'assistant', content: 'ok' }],
+  });
+  assert.equal((await send(t4)).result.headers.get('x-jev-tier'), 'balanced');
+  const compacted2 = cc('s-floor', 'Summary again.');
+  await send(compacted2);
+  const afterCompaction2 = [...compacted2.messages, { role: 'assistant', content: 'ok' }];
+  const held2 = await send(cc('s-floor', 'Fix another typo.', { history: afterCompaction2 }));
+  assert.equal(held2.result.headers.get('x-jev-tier'), 'balanced');
+  assert.equal(held2.result.headers.get('x-jev-reason'), 'tag-floor');
+
+  // Switching the model with /model is a new explicit choice: it clears the floor.
+  const haiku = { model: 'claude-haiku-4-5' };
+  const switched = cc('s-floor', 'Keep going', {
+    ...haiku,
+    history: [...afterCompaction2, { role: 'user', content: 'y' }, { role: 'assistant', content: 'ok' }],
+  });
+  assert.equal((await send(switched)).result.headers.get('x-jev-reason'), 'client-model:haiku');
+  const compacted3 = cc('s-floor', 'Summary once more.', haiku);
+  await send(compacted3);
+  const free = await send(
+    cc('s-floor', 'One more typo.', { ...haiku, history: [...compacted3.messages, { role: 'assistant', content: 'ok' }] }),
+  );
+  assert.equal(free.result.headers.get('x-jev-reason'), 'jev');
+  assert.equal(free.result.headers.get('x-jev-tier'), 'fast');
+  assert.deepEqual(
+    routes()
+      .map((r) => `${r.tier}:${r.reason}`)
+      .filter((r) => r.includes('tag') || r.includes('shrank') || r.includes('client-model')),
+    [
+      'frontier:tag',
+      'frontier:sticky:history-shrank',
+      'frontier:tag-floor',
+      'balanced:tag',
+      'balanced:sticky:history-shrank',
+      'balanced:tag-floor',
+      'fast:client-model:haiku',
+      'fast:sticky:history-shrank',
+    ],
+  );
+});
+
 test('a client that leaves during the Jev call costs no upstream request', async () => {
   reset(plans.a, { option: 'routine', probability: 0.9, delayMs: 300 });
   const { url, done } = await startRouter();

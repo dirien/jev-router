@@ -529,7 +529,8 @@ function settleByRequest(f, env, warn) {
   const pin = header(headers, 'x-jev-tier') ?? env.JEV_ROUTER_TIER;
   if (pin && !cfg.tiers.includes(pin))
     warn(`Ignoring unknown tier pin ${JSON.stringify(pin.slice(0, 40))}. Known tiers: ${cfg.tiers.join(', ')}.`);
-  if (pin && cfg.tiers.includes(pin)) return remember(f, pin, 'pinned', { pinned: true, clientModel: entry?.clientModel ?? body.model });
+  if (pin && cfg.tiers.includes(pin))
+    return remember(f, pin, 'pinned', { pinned: true, clientModel: entry?.clientModel ?? body.model, tagFloor: undefined });
 
   // /model in Claude Code changes the requested model; follow the user's explicit switch.
   const family = MODEL_FAMILIES.find((m) => body.model?.includes(m));
@@ -544,7 +545,7 @@ function settleByRequest(f, env, warn) {
     familyTier !== undefined &&
     cfg.tiers.includes(familyTier)
   ) {
-    return remember(f, familyTier, `client-model:${family}`, { clientModel: body.model, turns: turns.length });
+    return remember(f, familyTier, `client-model:${family}`, { clientModel: body.model, turns: turns.length, tagFloor: undefined });
   }
   return undefined;
 }
@@ -562,7 +563,7 @@ function settleByTurn(f, jevConfigured, warn) {
   const newTurn = latest && (!entry || turns.length > (entry.turns ?? 0));
   const shrank = entry && turns.length < (entry.turns ?? 0); // compaction or a fork: the cache is cold anyway
   const tag = newTurn && latest.text ? tierTag(latest.text, cfg.tiers) : undefined;
-  if (tag) return remember(f, tag, 'tag', { clientModel: entry?.clientModel ?? body.model, turns: turns.length });
+  if (tag) return remember(f, tag, 'tag', { clientModel: entry?.clientModel ?? body.model, turns: turns.length, tagFloor: tag });
   if (!newTurn && entry) {
     return {
       ...follow(f, shrank ? 'sticky:history-shrank' : 'sticky'),
@@ -606,6 +607,7 @@ function afterJevFailure(f, answer) {
       turns: turns.length,
       clientModel: entry?.clientModel ?? body.model,
       trustedOnly,
+      tagFloor: entry?.tagFloor,
     }),
     trustedOnly,
     jev: jevInfo,
@@ -646,8 +648,17 @@ function afterJevAnswer(f, answer, options) {
     claim: answer.claim,
     hardened: answer.hardened || undefined,
   };
+  // A fresh decision (compaction, idle, a removed tier) must not drop below what the user tagged.
+  const floor = entry?.tagFloor;
+  const held = floor !== undefined && cfg.tiers.indexOf(decision.tier) < cfg.tiers.indexOf(floor);
+  const tier = held ? floor : decision.tier;
+  const reason = held ? 'tag-floor' : decision.reason;
   return {
-    ...remember(f, decision.tier, decision.reason, { turns: turns.length, clientModel: entry?.clientModel ?? body.model }),
+    ...remember(f, tier, reason, {
+      turns: turns.length,
+      clientModel: entry?.clientModel ?? body.model,
+      tagFloor: cfg.tiers.includes(floor ?? '') ? floor : undefined,
+    }),
     jev: jevInfo,
     secrets: f.secrets || undefined,
   };
